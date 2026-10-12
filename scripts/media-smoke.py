@@ -29,7 +29,7 @@ def main():
                 raise RuntimeError("fixture failed to start: " + (root / "fixture-errors.log").read_text())
             output = root / "camera.mkv"
             with (root / "recording.log").open("w") as logs:
-                recorder = subprocess.Popen([binary, "--record", uri, "--output", str(output), "--seconds", "12"], stdout=logs, stderr=logs, env=env)
+                recorder = subprocess.Popen([binary, "--record", uri, "--output", str(output), "--seconds", "30"], stdout=logs, stderr=logs, env=env)
                 children.append(recorder)
                 if args.desktop:
                     with (root / "crash-preview.log").open("w") as preview_logs:
@@ -42,14 +42,19 @@ def main():
                         preview.wait(timeout=10)
                     if recorder.poll() is not None:
                         raise RuntimeError("recorder exited after desktop crash")
-                    resumed = subprocess.run([binary, "--preview", uri, "--desktop-seconds", "3"], capture_output=True, text=True, env=env, timeout=40)
+                    # Cold decoder/keyframe startup can exceed three seconds on
+                    # two-core software-rendered runners. Keep a bounded readiness
+                    # window while requiring an actual displayed frame.
+                    resumed = subprocess.run([binary, "--preview", uri, "--desktop-seconds", "10"], capture_output=True, text=True, env=env, timeout=40)
                     if resumed.returncode:
                         raise RuntimeError("preview restart failed: " + resumed.stdout + resumed.stderr)
+                    if recorder.poll() is not None:
+                        raise RuntimeError("recorder exited during preview restart")
                 if recorder.wait(timeout=40) != 0:
                     raise RuntimeError("recording failed: " + (root / "recording.log").read_text())
             inspected = subprocess.run([binary, "--inspect", str(output)], capture_output=True, text=True, env=env, timeout=20, check=True)
             info = json.loads(inspected.stdout.splitlines()[-1])
-            if info["width"] != 1920 or info["height"] != 1080 or info["duration_seconds"] < 8:
+            if info["width"] != 1920 or info["height"] != 1080 or info["duration_seconds"] < 20:
                 raise RuntimeError("unexpected media timing or dimensions: " + str(info))
             if "video/x-h264" not in info["caps"]:
                 raise RuntimeError("stream-copy output was not H.264")
