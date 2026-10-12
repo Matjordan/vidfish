@@ -3141,6 +3141,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vidfish-core",
+ "vidfish-media",
 ]
 
 [[package]]

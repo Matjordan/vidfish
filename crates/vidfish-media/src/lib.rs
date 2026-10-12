@@ -276,7 +276,7 @@ pub struct Frame {
 }
 
 pub struct Preview {
-    pub frames: tokio::sync::watch::Receiver<Option<Frame>>,
+    pub frames: tokio::sync::watch::Receiver<Option<Arc<Frame>>>,
     pub status: tokio::sync::watch::Receiver<String>,
     stopping: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -321,7 +321,7 @@ fn preview_worker(
     source: Source,
     codec: Codec,
     stop: Arc<AtomicBool>,
-    frames: tokio::sync::watch::Sender<Option<Frame>>,
+    frames: tokio::sync::watch::Sender<Option<Arc<Frame>>>,
     status: &tokio::sync::watch::Sender<String>,
 ) -> Result<()> {
     initialize()?;
@@ -383,12 +383,12 @@ fn preview_worker(
                     rgb.extend_from_slice(&row[..width * 3]);
                 }
                 number += 1;
-                frames.send_replace(Some(Frame {
+                frames.send_replace(Some(Arc::new(Frame {
                     width,
                     height,
                     rgb,
                     number,
-                }));
+                })));
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),

@@ -10,6 +10,7 @@ desktop = ["dep:eframe"]
 
 [dependencies]
 vidfish-core = { path = "../vidfish-core" }
+vidfish-media = { path = "../vidfish-media" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
