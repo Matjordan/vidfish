@@ -35,6 +35,10 @@ fn preview_delivers_rgb_and_recording_preserves_existing_files() {
     )
     .unwrap();
     assert!(std::fs::metadata(&output).unwrap().len() > 1000);
+    let info = vidfish_media::inspect_recording(&output).unwrap();
+    assert_eq!((info.width, info.height), (320, 240));
+    assert!(info.duration_seconds >= 0.5);
+    assert!(info.caps.contains("video/x-h264"));
     let original = std::fs::read(&output).unwrap();
     assert!(record_for(&source, Codec::H264, &output, Duration::from_secs(1)).is_err());
     assert_eq!(std::fs::read(&output).unwrap(), original);
@@ -92,5 +96,8 @@ fn rtsp_recording_survives_preview_restart() {
         recording.poll_error(Duration::from_millis(250)).unwrap();
     }
     recording.finish().unwrap();
-    assert!(std::fs::metadata(path).unwrap().len() > 1000);
+    assert!(std::fs::metadata(&path).unwrap().len() > 1000);
+    let info = vidfish_media::inspect_recording(&path).unwrap();
+    assert!(info.duration_seconds > 0.1);
+    assert!(info.caps.contains("video/x-h264"));
 }

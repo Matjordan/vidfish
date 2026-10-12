@@ -13,6 +13,7 @@ vidfish-core = { path = "../vidfish-core" }
 vidfish-media = { path = "../vidfish-media" }
 tokio.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"

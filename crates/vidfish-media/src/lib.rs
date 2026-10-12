@@ -1,6 +1,7 @@
 //! GStreamer spike: independent stream-copy recording and bounded CPU preview upload.
 use gst::prelude::*;
 use gstreamer as gst;
+use gstreamer_pbutils::prelude::DiscovererStreamInfoExt;
 use std::{
     path::Path,
     sync::{
@@ -424,4 +425,48 @@ pub fn record_for(source: &Source, codec: Codec, output: &Path, duration: Durati
         recording.poll_error(Duration::from_millis(100))?;
     }
     recording.finish()
+}
+
+#[derive(Debug)]
+pub struct RecordingInfo {
+    pub width: u32,
+    pub height: u32,
+    pub duration_seconds: f64,
+    pub caps: String,
+}
+
+/// Inspect a finalized file using GStreamer's bounded media discoverer.
+pub fn inspect_recording(path: &Path) -> Result<RecordingInfo> {
+    initialize()?;
+    let absolute = std::fs::canonicalize(path)
+        .map_err(|error| MediaError(format!("cannot open recording: {error}")))?;
+    let uri = url::Url::from_file_path(&absolute)
+        .map_err(|_| MediaError("cannot represent recording path as a file URI".into()))?;
+    let discoverer = gstreamer_pbutils::Discoverer::new(gst::ClockTime::from_seconds(10))
+        .map_err(|_| MediaError("cannot initialize media inspector".into()))?;
+    let info = discoverer.discover_uri(uri.as_str()).map_err(|_| {
+        MediaError("recording cannot be decoded; check file and decoder plugins".into())
+    })?;
+    if info.result() != gstreamer_pbutils::DiscovererResult::Ok {
+        return Err(MediaError(
+            "recording is incomplete or has missing decoder plugins".into(),
+        ));
+    }
+    let videos = info.video_streams();
+    let video = videos
+        .first()
+        .ok_or_else(|| MediaError("recording has no video stream".into()))?;
+    Ok(RecordingInfo {
+        width: video.width(),
+        height: video.height(),
+        duration_seconds: info
+            .duration()
+            .ok_or_else(|| MediaError("recording duration unavailable".into()))?
+            .nseconds() as f64
+            / 1e9,
+        caps: video
+            .caps()
+            .map(|caps| caps.to_string())
+            .unwrap_or_default(),
+    })
 }

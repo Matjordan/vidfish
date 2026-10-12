@@ -11,6 +11,7 @@ fixtures = ["dep:gstreamer-rtsp-server"]
 gstreamer = { version = "0.24", features = ["v1_20"] }
 gstreamer-app = { version = "0.24", features = ["v1_20"] }
 gstreamer-video = { version = "0.24", features = ["v1_20"] }
+gstreamer-pbutils = { version = "0.24", features = ["v1_20"] }
 gstreamer-rtsp-server = { version = "0.24", features = ["v1_20"], optional = true }
 tokio.workspace = true
 tracing.workspace = true
@@ -18,3 +19,7 @@ url = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[example]]
+name = "camera-fixture"
+required-features = ["fixtures"]

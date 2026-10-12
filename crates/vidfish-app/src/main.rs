@@ -7,6 +7,8 @@ mod desktop;
 
 #[derive(Parser)]
 #[command(version = option_env!("VIDFISH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "Vidfish scientific camera acquisition")]
+#[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect"])))]
+#[command(group(clap::ArgGroup::new("desktop_input").args(["demo", "preview"])))]
 struct Args {
     /// Override the platform-specific settings file.
     #[arg(long)]
@@ -36,8 +38,11 @@ struct Args {
     #[arg(long, conflicts_with_all = ["service", "check", "media_check"])]
     demo: bool,
     /// Close the desktop after a bounded validation/measurement run.
-    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=3600), conflicts_with_all = ["service", "check", "media_check", "record"])]
+    #[arg(long, requires = "desktop_input", value_parser = clap::value_parser!(u64).range(1..=3600), conflicts_with_all = ["service", "check", "media_check", "record"])]
     desktop_seconds: Option<u64>,
+    /// Inspect a finalized recording's codec, dimensions, and media duration.
+    #[arg(long)]
+    inspect: Option<PathBuf>,
     /// Select H.265 instead of the default H.264 stream profile.
     #[arg(long)]
     h265: bool,
@@ -51,6 +56,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
+    if let Some(path) = args.inspect {
+        let info = vidfish_media::inspect_recording(&path)?;
+        println!(
+            "{}",
+            serde_json::json!({"width": info.width, "height": info.height, "duration_seconds": info.duration_seconds, "caps": info.caps})
+        );
+        return Ok(());
+    }
     if args.media_check {
         let plugins = vidfish_media::check_plugins()?;
         println!("GStreamer runtime ready: {}", plugins.join(", "));
