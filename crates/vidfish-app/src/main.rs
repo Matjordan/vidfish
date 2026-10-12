@@ -6,7 +6,7 @@ use vidfish_core::{config::AppConfig, engine::Engine};
 mod desktop;
 
 #[derive(Parser)]
-#[command(version, about = "Vidfish scientific camera acquisition")]
+#[command(version = option_env!("VIDFISH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "Vidfish scientific camera acquisition")]
 struct Args {
     /// Override the platform-specific settings file.
     #[arg(long)]

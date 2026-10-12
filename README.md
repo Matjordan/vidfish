@@ -71,3 +71,22 @@ set `RUST_LOG=debug` for more detail. Configuration has no credential fields.
 The engine crate has no UI dependency. Watch channels bound lifecycle communication;
 settings writes use a single outstanding background operation. Future media workers
 must keep recording independent of preview and event operations.
+
+## Branches and releases
+
+Use one branch and PR per epic and commit each verified change. Epic PRs remain drafts
+until their acceptance criteria are met; planning PRs do not represent working features.
+
+Every push to `main` (including PR merges) runs `.github/workflows/release.yml`.
+Both Windows and Linux must pass tests, linting, release builds, and headless launch
+before publication. Version `0.1.<release workflow run number>` appears in `--version`,
+the Git tag, and archive names. Failed runs may leave gaps; reruns retain their version.
+The package manifest stays at the development version, `0.1.0`. To start a new major
+or minor series, update the version prefix in the release workflow.
+
+GitHub Releases contain a Windows ZIP, Linux tarball, and SHA-256 checksums. Packages
+need no Rust installation. Linux binaries are built on Ubuntu 22.04 and require a
+compatible glibc, graphical session, OpenGL driver, and X11/Wayland runtime libraries.
+These are executable archives, not installers. GStreamer runtime packaging and media
+fixtures remain part of #8/#9. Release publication requires GitHub Actions to be enabled;
+its token receives write access only in the publication job.
