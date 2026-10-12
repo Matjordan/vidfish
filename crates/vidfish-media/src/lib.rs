@@ -218,7 +218,9 @@ impl Recording {
                 finalized: false,
             })
         })();
-        if result.is_err() {
+        if result.is_err() && std::fs::metadata(output).is_ok_and(|metadata| metadata.len() == 0) {
+            // Clean up only the empty reservation. Preserve any partial media
+            // written during a failed state transition for later recovery.
             let _ = std::fs::remove_file(output);
         }
         result

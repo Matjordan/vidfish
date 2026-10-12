@@ -20,6 +20,7 @@ jobs:
           - os: windows-latest
             platform: windows-x86_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       VIDFISH_VERSION: ${{ inputs.version }}
       RUST_LOG: info
