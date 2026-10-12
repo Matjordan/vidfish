@@ -194,6 +194,7 @@ impl eframe::App for Desktop {
                 );
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.seconds = None;
         }
         ctx.request_repaint_after(Duration::from_millis(33));
     }

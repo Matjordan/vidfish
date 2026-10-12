@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-fixtures = ["dep:gstreamer-rtsp-server"]
+fixtures = ["dep:gstreamer-rtsp-server", "dep:quick-xml"]
 
 [dependencies]
 gstreamer = { version = "0.24", features = ["v1_20"] }
@@ -16,6 +16,7 @@ gstreamer-rtsp-server = { version = "0.24", features = ["v1_20"], optional = tru
 tokio.workspace = true
 tracing.workspace = true
 url = "2"
+quick-xml = { version = "0.41", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

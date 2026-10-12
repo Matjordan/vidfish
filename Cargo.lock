@@ -3224,6 +3224,7 @@ dependencies = [
  "gstreamer-pbutils",
  "gstreamer-rtsp-server",
  "gstreamer-video",
+ "quick-xml",
  "tempfile",
  "tokio",
  "tracing",

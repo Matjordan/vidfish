@@ -1,7 +1,9 @@
 //! Loopback-only simulated cameras for repeatable integration tests.
 use crate::{MediaError, Result};
+mod onvif;
 use gstreamer as gst;
 use gstreamer_rtsp_server as rtsp;
+pub use onvif::OnvifFixture;
 use rtsp::prelude::*;
 use std::sync::{
     Arc,
