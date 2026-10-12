@@ -403,6 +403,13 @@ fn preview_worker(
                 let height = info.height() as usize;
                 let rgb = pack_rgb(data, width, height, mapped.plane_stride()[0])?;
                 if number == 0 {
+                    let rate = info.fps();
+                    tracing::info!(
+                        width,
+                        height,
+                        nominal_fps = rate.numer() as f64 / rate.denom() as f64,
+                        "preview negotiated"
+                    );
                     frame_status.send_replace("Playing".into());
                 }
                 number += 1;

@@ -55,16 +55,18 @@ try {
     $frames = @($logs | Where-Object { $_.fields.message -eq 'preview measurement' } | ForEach-Object { $_.fields })
     $decoders = @($logs | Where-Object { $_.fields.message -eq 'preview decoder selected' } | ForEach-Object { $_.fields.decoder })
     $renderer = @($logs | Where-Object { $_.fields.message -eq 'desktop renderer initialized' } | ForEach-Object { $_.fields.renderer })
+    $profiles = @($logs | Where-Object { $_.fields.message -eq 'preview negotiated' } | ForEach-Object { $_.fields })
     $result = [pscustomobject]@{
         model=$computer.Model; manufacturer=$computer.Manufacturer; os=$os.Caption; os_version=$os.Version;
         cpu=@($processors | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors); gpu=$gpus;
         app_version=(& $binaryPath --version); camera_count=4; expected_resolution='1920x1080'; duration_seconds=$Seconds;
         exit_code=$process.ExitCode; renderer=$renderer; decoders=$decoders; frames=$frames;
+        negotiated_profiles=$profiles;
         gpu_counter_status=$gpuStatus; samples=$samples;
         acceptance='Review actual profile resolution/fps/bitrate and CPU/GPU measurements; unavailable GPU counters require separate measurements.'
     }
     $result | ConvertTo-Json -Depth 12 | Set-Content "$output/result.json" -Encoding UTF8
-    if ($process.ExitCode -ne 0 -or $frames.Count -ne 4) { throw "Preview benchmark failed; inspect $output" }
+    if ($process.ExitCode -ne 0 -or $frames.Count -ne 4 -or $profiles.Count -ne 4 -or @($profiles | Where-Object { $_.width -ne 1920 -or $_.height -ne 1080 }).Count -ne 0) { throw "Four-1080p preview benchmark failed; inspect $output" }
     Write-Output "Measurements saved to $output/result.json. Credentials/URIs are not included."
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

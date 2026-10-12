@@ -32,3 +32,23 @@ fn check_rejects_corrupt_config_without_overwriting_it() {
     assert!(!result.status.success());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "broken json");
 }
+
+#[test]
+fn conflicting_modes_and_missing_recording_output_fail_before_startup() {
+    for args in [
+        vec!["--demo", "--check"],
+        vec!["--record", "rtsp://127.0.0.1:1/camera"],
+        vec!["--desktop-seconds", "1"],
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2));
+        assert!(
+            !String::from_utf8(result.stdout)
+                .unwrap()
+                .contains("camera manager started")
+        );
+    }
+}
