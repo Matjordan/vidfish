@@ -17,7 +17,21 @@ foreach ($kind in @('', '-devel')) {
     $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', $file, '/qn', '/norestart', 'ADDLOCAL=ALL', "INSTALLDIR=$root")
     if ($process.ExitCode -notin @(0, 3010)) { throw "GStreamer installer failed: $($process.ExitCode)" }
 }
-if (-not (Test-Path "$root\bin\gst-inspect-1.0.exe")) { throw 'GStreamer runtime not found' }
+if (-not (Test-Path "$root\bin\gst-inspect-1.0.exe")) {
+    # Recent installers use Program Files; older releases used C:\gstreamer.
+    $locations = @("$env:ProgramFiles\gstreamer", "${env:ProgramFiles(x86)}\gstreamer", 'C:\gstreamer')
+    $binary = $locations | Where-Object { Test-Path $_ } | ForEach-Object {
+        Get-ChildItem $_ -Filter gst-inspect-1.0.exe -Recurse -ErrorAction SilentlyContinue
+    } | Select-Object -First 1
+    if (-not $binary) { throw 'GStreamer runtime not found in known installer locations' }
+    $root = Split-Path (Split-Path $binary.FullName)
+}
+& "$root\bin\gst-inspect-1.0.exe" --version
+if ($LASTEXITCODE -ne 0) { throw 'Installed GStreamer runtime could not launch' }
+if (-not (Test-Path "$root\bin\pkg-config.exe")) {
+    choco install pkgconfiglite --yes --no-progress
+    if ($LASTEXITCODE -ne 0) { throw 'pkg-config installation failed' }
+}
 "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
