@@ -1,5 +1,5 @@
 # Official MSVC runtime + development SDK. HTTPS verification remains enabled.
-param([string]$Version = '1.26.2')
+param([ValidateSet('1.26.10')][string]$Version = '1.26.10')
 $ErrorActionPreference = 'Stop'
 $root = 'C:\gstreamer\1.0\msvc_x86_64'
 $cache = Join-Path $env:RUNNER_TEMP 'vidfish-gstreamer'
@@ -9,7 +9,12 @@ foreach ($kind in @('', '-devel')) {
     $name = "gstreamer-1.0$kind-msvc-x86_64-$Version.msi"
     $file = Join-Path $cache $name
     Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$Version/msvc/$name" -OutFile $file
-    $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', $file, '/qn', '/norestart', 'ADDLOCAL=ALL')
+    if ($kind -eq '') {
+        # Microsoft winget-pkgs' official 1.26.10 x64 manifest pins this runtime.
+        $expected = 'A863BF3FAA49E9F33BD3CC42967B473482D4DC98655ED95CBA1AC59F26FB0CFB'
+        if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $expected) { throw 'GStreamer runtime checksum mismatch' }
+    }
+    $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', $file, '/qn', '/norestart', 'ADDLOCAL=ALL', "INSTALLDIR=$root")
     if ($process.ExitCode -notin @(0, 3010)) { throw "GStreamer installer failed: $($process.ExitCode)" }
 }
 if (-not (Test-Path "$root\bin\gst-inspect-1.0.exe")) { throw 'GStreamer runtime not found' }
