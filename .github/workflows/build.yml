@@ -27,9 +27,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install Linux media dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstrtspserver-1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav xvfb xauth
+        run: bash scripts/setup-gstreamer-linux.sh
       - name: Cache verified Windows SDK downloads
         if: runner.os == 'Windows'
         uses: actions/cache@v4
