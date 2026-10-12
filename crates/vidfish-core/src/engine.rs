@@ -24,7 +24,7 @@ impl Engine {
         let task = tokio::spawn(async move {
             tracing::info!(
                 max_cameras = config.max_cameras,
-                "camera manager started; media backend not implemented"
+                "camera manager started; automatic discovery not implemented"
             );
             status_tx.send_replace(EngineStatus::Running);
             // Closing the handle also requests shutdown; never detach a runaway worker.

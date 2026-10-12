@@ -1,47 +1,58 @@
 # Vidfish
 
 Rust desktop software for scientific camera acquisition on Windows and Linux.
-The first implementation addresses the foundation in [issue #7](https://github.com/Matjordan/vidfish/issues/7).
-It provides an egui settings shell and an independently testable Tokio manager lifecycle.
-Camera discovery, video recording, previews, and event capture are **not implemented yet**.
+Epic #1 currently provides an egui desktop, persistent typed settings, structured
+logging, an independently testable Tokio manager, and a GStreamer RTSP recording/
+preview prototype. Automated multi-camera discovery, segmentation, reconnects,
+events, and session management remain later epics.
 
 ## Development
 
-Install Rust using rustup. The repository pins its toolchain in `rust-toolchain.toml`.
+Install rustup and the GStreamer development/runtime prerequisites in
+[docs/media.md](docs/media.md). `rust-toolchain.toml` pins Rust 1.99.0.
 
 ```sh
 cargo run --locked -p vidfish
-cargo test --locked --workspace
-cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 ```
 
-The desktop needs an active display and OpenGL. Linux also needs the runtime libraries
-for X11 or Wayland, including libxkbcommon. No GStreamer dependencies are required yet.
-Windows uses the native window backend. Windows launch and Toughpad touch performance
-remain to be validated on actual hardware.
-
-For headless development:
+## Prototype workflows
 
 ```sh
-cargo run --locked -p vidfish --no-default-features -- --check
-cargo run --locked -p vidfish --no-default-features -- --service
+cargo run --locked -p vidfish -- --media-check
+cargo run --locked -p vidfish -- --demo --desktop-seconds 10
+cargo run --locked -p vidfish -- --preview rtsp://CAMERA/PROFILE
+cargo run --locked -p vidfish -- --record rtsp://CAMERA/PROFILE --output NEW_FILE.mkv
+cargo run --locked -p vidfish -- --inspect NEW_FILE.mkv
+cargo run --locked -p vidfish -- --check
+cargo run --locked -p vidfish -- --service
 ```
 
-`--check` validates configuration and exercises manager startup/shutdown. `--service`
-runs the manager until Ctrl+C, independently of a desktop process; it does not record
-media yet. The current desktop starts its own manager and shuts it down when the
-window closes. Service-to-desktop IPC and recording survival after desktop crashes
-are follow-up work; do not run both expecting a shared manager.
+Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
+runs in a separate process and survives preview window closure/restart. Ctrl+C
+finalizes the recording. The current prototype is manually configured; the manager
+service has no automatic discovery or recording policy integration yet. There is no
+UI-to-service IPC. See [media setup, tests, and limitations](docs/media.md).
+
+For a simulated 1080p camera with ONVIF endpoints:
+
+```sh
+cargo run --locked -p vidfish-media --example camera-fixture --features fixtures
+```
+
+Fixtures bind only loopback. They exercise RTSP stream-copy, preview restarts,
+H.264/H.265 media inspection, ONVIF SOAP/WS-Discovery, and snapshots. Process smoke
+tests verify recording remains usable after a preview process is killed.
 
 ## Settings
 
-Settings default to the platform configuration directory (`directories::ProjectDirs`),
-or a path supplied with `--config PATH`. A missing file uses defaults without writing
-anything. Save settings in the desktop to persist them. Writes run off the UI thread
-and use a synced temporary file followed by atomic replacement. Invalid or newer
-configuration files fail visibly rather than being silently reset. Settings changes
-take effect on the next manager start.
+Settings use the platform configuration directory (`directories::ProjectDirs`),
+or `--config PATH`. A missing file uses defaults without writing anything. Save
+settings in the desktop to persist them. Writes run off the UI thread and use a
+synced temporary file followed by atomic replacement. Invalid/future settings fail
+visibly. Changes take effect on the next manager start.
 
 ```json
 {
@@ -54,39 +65,43 @@ take effect on the next manager start.
 }
 ```
 
-Relative output directories are relative to the launch working directory. No files
-are recorded or deleted by this foundation. JSON structured logs go to stdout;
-set `RUST_LOG=debug` for more detail. Configuration has no credential fields.
+Relative paths use the launch working directory. Auto-record/segment preferences
+are foundations for the later recording engine, not enabled prototype behavior.
+The prototype refuses existing output files and never deletes scientific data.
+JSON structured logs go to stdout; `RUST_LOG=debug` increases detail. Settings have
+no credential fields. Raw GStreamer error/debug strings are excluded from errors
+because camera URIs can contain credentials.
 
-## Implementation sequence
+## Branches, CI, and releases
 
-1. #7: foundation (this implementation); validate desktop launch on Windows/Linux.
-2. #8: GStreamer recording and preview spike; measure target hardware before choosing media integration.
-3. #9: extend the initial CI with packaging and simulated RTSP/ONVIF fixtures.
-4. #10–12: discovery, stable identities, and camera reconnection.
-5. #13–16: isolated recording, segment metadata, controls, and health.
-6. #17–19: bounded four-slot previews and operator controls.
+[AGENTS.md](AGENTS.md) records the per-epic branches/PRs and commit rules. Each
+verified coherent change is committed on its epic branch. Planning PRs remain drafts.
+
+CI and release workflows share the same Windows/Linux build, lint, tests, RTSP smoke,
+desktop launch checks, and package steps. PR CI uploads executable packages. Every
+push to `main`, including PR merges, publishes only after both platform packages pass.
+Version `0.1.<release workflow run number>` appears in `--version`, Git tags, and
+archive names. Failed runs may leave gaps; reruns retain their version and do not
+replace an existing release. PR packages use `0.1.0-ci.<CI run number>`. The Cargo
+manifest remains at development version `0.1.0`; update the release version prefix
+to start a new major/minor series.
+
+GitHub Releases include a Windows ZIP with GStreamer runtime, a Linux tarball with
+runtime installation instructions, and SHA-256 checksums. No Rust installation is
+needed to launch packages. See [deployment instructions](docs/media.md). Publishing
+needs Actions enabled; its token has write access only in the publication job.
+
+## Epic sequence and outstanding acceptance
+
+1. #7: workspace, settings, desktop/manager lifecycle.
+2. #8: GStreamer recording/preview spike and four-preview Toughpad measurements.
+3. #9: Windows/Linux delivery, runtime packaging, and simulated camera fixtures.
+4. #10–12: discovery, stable identities, and reconnection.
+5. #13–16: isolated multi-camera recording, segments, controls, and health.
+6. #17–19: operator preview controls and resource limits.
 7. #20–25: event capture, sessions, browsing, retention, and export.
 
-The engine crate has no UI dependency. Watch channels bound lifecycle communication;
-settings writes use a single outstanding background operation. Future media workers
-must keep recording independent of preview and event operations.
-
-## Branches and releases
-
-Use one branch and PR per epic and commit each verified change. Epic PRs remain drafts
-until their acceptance criteria are met; planning PRs do not represent working features.
-
-Every push to `main` (including PR merges) runs `.github/workflows/release.yml`.
-Both Windows and Linux must pass tests, linting, release builds, and headless launch
-before publication. Version `0.1.<release workflow run number>` appears in `--version`,
-the Git tag, and archive names. Failed runs may leave gaps; reruns retain their version.
-The package manifest stays at the development version, `0.1.0`. To start a new major
-or minor series, update the version prefix in the release workflow.
-
-GitHub Releases contain a Windows ZIP, Linux tarball, and SHA-256 checksums. Packages
-need no Rust installation. Linux binaries are built on Ubuntu 22.04 and require a
-compatible glibc, graphical session, OpenGL driver, and X11/Wayland runtime libraries.
-These are executable archives, not installers. GStreamer runtime packaging and media
-fixtures remain part of #8/#9. Release publication requires GitHub Actions to be enabled;
-its token receives write access only in the publication job.
+Cloud virtual-display checks establish functionality, not target hardware performance.
+Epic #1/#8 remain incomplete until actual Toughpad CPU/GPU measurements and required
+Windows/Linux acceptance evidence are recorded. Do not claim zero-copy preview upload,
+frame-perfect synchronization, or sustained 16-camera acquisition from this spike.

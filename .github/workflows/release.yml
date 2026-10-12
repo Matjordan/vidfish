@@ -1,5 +1,4 @@
 name: Release
-
 on:
   push:
     branches: [main]
@@ -8,65 +7,13 @@ permissions:
   contents: read
 
 jobs:
-  package:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-          - os: windows-latest
-            platform: windows-x86_64
-    runs-on: ${{ matrix.os }}
-    env:
-      VIDFISH_VERSION: 0.1.${{ github.run_number }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux media dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstrtspserver-1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav xvfb
-      - name: Install Windows media dependencies
-        if: runner.os == 'Windows'
-        run: ./scripts/setup-gstreamer.ps1
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.99.0'
-          components: rustfmt, clippy
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --workspace --all-features
-      - run: cargo build --locked --release -p vidfish
-      - run: ./target/release/vidfish --check
-        if: runner.os == 'Linux'
-      - run: ./target/release/vidfish.exe --check
-        if: runner.os == 'Windows'
-      - name: Package Linux executable
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(./target/release/vidfish --version)" = "vidfish $VIDFISH_VERSION"
-          mkdir -p dist
-          cp target/release/vidfish README.md dist/
-          tar -C dist -czf "vidfish-${VIDFISH_VERSION}-linux-x86_64.tar.gz" vidfish README.md
-      - name: Package Windows executable
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if ((& ./target/release/vidfish.exe --version) -ne "vidfish $env:VIDFISH_VERSION") { throw 'Version mismatch' }
-          New-Item -ItemType Directory dist
-          Copy-Item target/release/vidfish.exe, README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath "vidfish-$env:VIDFISH_VERSION-windows-x86_64.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vidfish-${{ matrix.platform }}
-          path: vidfish-0.1.${{ github.run_number }}-${{ matrix.platform }}.*
-          if-no-files-found: error
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: 0.1.${{ github.run_number }}
 
   publish:
-    needs: package
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
