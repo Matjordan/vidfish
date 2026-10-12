@@ -1,6 +1,7 @@
 # Official MSVC runtime + development SDK. HTTPS verification remains enabled.
 param([ValidateSet('1.26.10')][string]$Version = '1.26.10')
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $root = 'C:\gstreamer\1.0\msvc_x86_64'
 $temporary = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
 $cache = Join-Path $temporary 'vidfish-gstreamer'

@@ -22,6 +22,8 @@ apt_command() {
     fi
 }
 apt_command update
-apt_command install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+# Request the distro unwind development package explicitly so APT can replace
+# conflicting LLVM-specific unwind headers preinstalled on hosted runners.
+apt_command install -y libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   libgstrtspserver-1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav xvfb xauth
