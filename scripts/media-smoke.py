@@ -20,6 +20,7 @@ def main():
     children = []
     with tempfile.TemporaryDirectory(prefix="vidfish-smoke-") as directory:
         root = Path(directory)
+        fixture_errors = None
         try:
             fixture_errors = (root / "fixture-errors.log").open("w")
             fixture = subprocess.Popen([fixture_binary], stdout=subprocess.PIPE, stderr=fixture_errors, text=True, env=env)
@@ -65,6 +66,13 @@ def main():
                     # Fixture has no scientific outputs; kill safely on all platforms.
                     child.kill()
                 child.wait(timeout=10)
+                if child.stdout is not None:
+                    child.stdout.close()
+                if child.stderr is not None:
+                    child.stderr.close()
+            # Windows forbids deleting an open log file during temp-dir cleanup.
+            if fixture_errors is not None:
+                fixture_errors.close()
 
 
 if __name__ == "__main__":
