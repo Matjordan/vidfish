@@ -19,6 +19,9 @@ pub struct RtspFixture {
 
 impl RtspFixture {
     pub fn start(width: u32, height: u32) -> Result<Self> {
+        Self::start_codec(width, height, crate::Codec::H264)
+    }
+    pub fn start_codec(width: u32, height: u32, codec: crate::Codec) -> Result<Self> {
         crate::initialize()?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -30,7 +33,11 @@ impl RtspFixture {
                 server.set_address("127.0.0.1");
                 server.set_service("0");
                 let factory = rtsp::RTSPMediaFactory::new();
-                factory.set_launch(&format!("( videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 ! rtph264pay name=pay0 pt=96 config-interval=1 )"));
+                let (encoder, pay, options) = match codec {
+                    crate::Codec::H264 => ("x264enc", "rtph264pay", ""),
+                    crate::Codec::H265 => ("x265enc", "rtph265pay", "option-string=pools=1:frame-threads=1"),
+                };
+                factory.set_launch(&format!("( videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
                 factory.set_shared(true);
                 let mounts = server.mount_points().ok_or_else(|| MediaError("fixture mount points unavailable".into()))?;
                 mounts.add_factory("/camera", factory);

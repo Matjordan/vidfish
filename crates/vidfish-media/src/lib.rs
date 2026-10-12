@@ -47,11 +47,24 @@ pub fn initialize() -> Result<()> {
 }
 
 pub fn check_plugins() -> Result<Vec<&'static str>> {
+    check_plugins_for(Codec::H264)
+}
+pub fn check_plugins_for(codec: Codec) -> Result<Vec<&'static str>> {
     initialize()?;
     let required = [
         "rtspsrc",
-        "rtph264depay",
-        "h264parse",
+        match codec {
+            Codec::H264 => "rtph264depay",
+            Codec::H265 => "rtph265depay",
+        },
+        match codec {
+            Codec::H264 => "h264parse",
+            Codec::H265 => "h265parse",
+        },
+        match codec {
+            Codec::H264 => "avdec_h264",
+            Codec::H265 => "avdec_h265",
+        },
         "matroskamux",
         "filesink",
         "decodebin",
@@ -329,6 +342,19 @@ fn preview_worker(
     let pipeline = gst::Pipeline::new();
     let parser = encoded_source(&pipeline, &source, codec)?;
     let decoder = element("decodebin", "decoder")?;
+    decoder
+        .clone()
+        .downcast::<gst::Bin>()
+        .map_err(|_| MediaError("decoder is not a bin".into()))?
+        .connect_element_added(|_, child| {
+            if let Some(factory) = child.factory()
+                && factory
+                    .metadata("klass")
+                    .is_some_and(|klass| klass.contains("Decoder"))
+            {
+                tracing::info!(decoder = %factory.name(), "preview decoder selected");
+            }
+        });
     let convert = element("videoconvert", "convert")?;
     let sink = gstreamer_app::AppSink::builder()
         .name("preview")
@@ -359,6 +385,7 @@ fn preview_worker(
         }
     });
     let mut number = 0u64;
+    let frame_status = status.clone();
     sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -374,14 +401,9 @@ fn preview_worker(
                 let data = mapped.plane_data(0).map_err(|_| gst::FlowError::Error)?;
                 let width = info.width() as usize;
                 let height = info.height() as usize;
-                let stride = mapped.plane_stride()[0] as usize;
-                // Reject extreme camera dimensions before allocation.
-                if width > 4096 || height > 2160 || stride < width * 3 {
-                    return Err(gst::FlowError::Error);
-                }
-                let mut rgb = Vec::with_capacity(width * height * 3);
-                for row in data.chunks(stride).take(height) {
-                    rgb.extend_from_slice(&row[..width * 3]);
+                let rgb = pack_rgb(data, width, height, mapped.plane_stride()[0])?;
+                if number == 0 {
+                    frame_status.send_replace("Playing".into());
                 }
                 number += 1;
                 frames.send_replace(Some(Arc::new(Frame {
@@ -394,10 +416,10 @@ fn preview_worker(
             })
             .build(),
     );
+    status.send_replace("Waiting for frames".into());
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|_| MediaError("cannot start preview".into()))?;
-    status.send_replace("Playing".into());
     let bus = pipeline
         .bus()
         .ok_or_else(|| MediaError("preview bus unavailable".into()))?;
@@ -415,6 +437,48 @@ fn preview_worker(
     }
     let _ = pipeline.set_state(gst::State::Null);
     result
+}
+
+fn pack_rgb(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    stride: i32,
+) -> std::result::Result<Vec<u8>, gst::FlowError> {
+    if width == 0 || height == 0 || width > 4096 || height > 2160 || stride <= 0 {
+        return Err(gst::FlowError::Error);
+    }
+    let stride = stride as usize;
+    if stride < width * 3 || data.len() < (height - 1) * stride + width * 3 {
+        return Err(gst::FlowError::Error);
+    }
+    let mut rgb = Vec::with_capacity(width * height * 3);
+    for row in 0..height {
+        rgb.extend_from_slice(&data[row * stride..row * stride + width * 3]);
+    }
+    Ok(rgb)
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #[test]
+    fn frame_packing_removes_padding_and_rejects_invalid_layouts() {
+        assert_eq!(
+            super::pack_rgb(&[1, 2, 3, 99, 4, 5, 6], 1, 2, 4).unwrap(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        for (width, height, stride) in [
+            (0, 1, 4),
+            (1, 0, 4),
+            (1, 1, -1),
+            (2, 1, 4),
+            (4097, 1, 4),
+            (1, 2161, 4),
+            (1, 3, 4),
+        ] {
+            assert!(super::pack_rgb(&[0; 7], width, height, stride).is_err());
+        }
+    }
 }
 
 /// Bounded headless prototype used by CI and benchmark harnesses.

@@ -65,7 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.media_check {
-        let plugins = vidfish_media::check_plugins()?;
+        let plugins = vidfish_media::check_plugins_for(if args.h265 {
+            vidfish_media::Codec::H265
+        } else {
+            vidfish_media::Codec::H264
+        })?;
         println!("GStreamer runtime ready: {}", plugins.join(", "));
         return Ok(());
     }

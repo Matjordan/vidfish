@@ -101,3 +101,46 @@ fn rtsp_recording_survives_preview_restart() {
     assert!(info.duration_seconds > 0.1);
     assert!(info.caps.contains("video/x-h264"));
 }
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn h265_rtsp_stream_copy_produces_inspectable_media() {
+    let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, Codec::H265).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("camera-h265.mkv");
+    record_for(
+        &Source::Rtsp(camera.uri.clone()),
+        Codec::H265,
+        &path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let info = vidfish_media::inspect_recording(&path).unwrap();
+    assert_eq!((info.width, info.height), (320, 240));
+    assert!(info.caps.contains("video/x-h265"));
+    assert!(info.duration_seconds > 0.5);
+}
+
+#[test]
+fn connection_errors_do_not_expose_camera_credentials() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unreachable.mkv");
+    let recording = vidfish_media::Recording::start(
+        &Source::Rtsp("rtsp://fixture-user:fixture-password@127.0.0.1:1/camera".into()),
+        Codec::H264,
+        &path,
+    )
+    .unwrap();
+    let start = Instant::now();
+    let error = loop {
+        if let Err(error) = recording.poll_error(Duration::from_millis(100)) {
+            break error.to_string();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "expected refused connection"
+        );
+    };
+    assert!(!error.contains("fixture-user"));
+    assert!(!error.contains("fixture-password"));
+}
