@@ -65,6 +65,19 @@ Headless recording and inspection need no display. Developers additionally insta
 and `pkg-config`. UI smoke tests use Xvfb with software rendering; that is not a
 Toughpad performance measurement.
 
+For the rootless Debian 13 cloud machine, `bash scripts/setup-cloud-media.sh` downloads
+signature-verified Debian archives and extracts headers/libraries into `/workspace/.media`.
+It does not install packages into the host. In each shell, activate:
+
+```sh
+export CARGO_HOME=/workspace/.cargo RUSTUP_HOME=/workspace/.rust
+export PATH="/workspace/.cargo/bin:/workspace/.media/usr/bin:$PATH"
+export PKG_CONFIG_PATH=/workspace/.media/usr/lib/x86_64-linux-gnu/pkgconfig:/workspace/.media/usr/share/pkgconfig
+export LD_LIBRARY_PATH=/workspace/.media/usr/lib/x86_64-linux-gnu
+export GST_PLUGIN_PATH=/workspace/.media/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+export XDG_CACHE_HOME=/workspace/.media-cache
+```
+
 ### Windows
 
 The ZIP carries GStreamer runtime DLLs, plugins, presets, scanner, and original
