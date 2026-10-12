@@ -22,6 +22,9 @@ process has separate connections and never owns the recording pipeline. Close or
 restart the desktop while a recording process continues. Stop the recorder with
 Ctrl+C; EOS drains the muxer with a 10-second finalization limit. A failure exits
 nonzero and leaves partial media for recovery. Existing recording paths are refused.
+Timed recordings count their requested duration after the first encoded video buffer
+arrives, with a separate 15-second camera startup deadline. A Playing pipeline state
+alone is not reported as active recording.
 Do not place credentials in command history. Secure credential binding is part of #11.
 
 `--demo` includes four local 1080p encoders as well as decoders, so its CPU load is
@@ -55,7 +58,7 @@ sudo apt-get update
 sudo apt-get install libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
-  libxkbcommon0 libgl1
+  libxkbcommon0 libxkbcommon-x11-0 libgl1
 ./launch-vidfish.sh
 ```
 

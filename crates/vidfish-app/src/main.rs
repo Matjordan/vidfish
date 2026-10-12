@@ -93,11 +93,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(uri) = args.record {
         let output = args.output.ok_or("recording needs --output")?;
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let seconds = args.seconds;
         let mut worker = runtime.spawn_blocking(move || {
             let recording =
                 vidfish_media::Recording::start(&vidfish_media::Source::Rtsp(uri), codec, &output)?;
+            recording.wait_started(std::time::Duration::from_secs(15))?;
             tracing::info!("independent recording started");
-            while stop_rx.try_recv() == Err(std::sync::mpsc::TryRecvError::Empty) {
+            let started = std::time::Instant::now();
+            while stop_rx.try_recv() == Err(std::sync::mpsc::TryRecvError::Empty)
+                && seconds
+                    .is_none_or(|limit| started.elapsed() < std::time::Duration::from_secs(limit))
+            {
                 recording.poll_error(std::time::Duration::from_millis(100))?;
             }
             recording.finish()?;
@@ -107,12 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.block_on(async {
             tokio::select! {
                 result = &mut worker => { result??; }
-                result = async {
-                    match args.seconds {
-                        Some(seconds) => { tokio::time::sleep(std::time::Duration::from_secs(seconds)).await; Ok(()) }
-                        None => tokio::signal::ctrl_c().await,
-                    }
-                } => { result?; let _ = stop_tx.send(()); worker.await??; }
+                result = tokio::signal::ctrl_c() => { result?; let _ = stop_tx.send(()); worker.await??; }
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;

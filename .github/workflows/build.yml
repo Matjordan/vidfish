@@ -55,7 +55,7 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --workspace --all-features
+      - run: python scripts/run-cargo-tests.py
       - run: cargo build --locked --release -p vidfish
       - run: cargo build --locked --all-features -p vidfish-media --example camera-fixture
       - name: Check Linux runtime and desktop crash isolation

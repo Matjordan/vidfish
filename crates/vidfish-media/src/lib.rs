@@ -183,6 +183,7 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
 pub struct Recording {
     pipeline: gst::Pipeline,
     finalized: bool,
+    received_video: Arc<AtomicBool>,
 }
 impl Recording {
     pub fn start(source: &Source, codec: Codec, output: &Path) -> Result<Self> {
@@ -197,6 +198,15 @@ impl Recording {
         let result = (|| {
             let pipeline = gst::Pipeline::new();
             let parser = encoded_source(&pipeline, source, codec)?;
+            let received_video = Arc::new(AtomicBool::new(false));
+            let received = received_video.clone();
+            parser
+                .static_pad("src")
+                .ok_or_else(|| MediaError("parser source pad missing".into()))?
+                .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                    received.store(true, Ordering::Release);
+                    gst::PadProbeReturn::Remove
+                });
             let mux = element("matroskamux", "mux")?;
             let file = element("filesink", "file")?;
             file.set_property(
@@ -216,6 +226,7 @@ impl Recording {
             Ok(Self {
                 pipeline,
                 finalized: false,
+                received_video,
             })
         })();
         if result.is_err() && std::fs::metadata(output).is_ok_and(|metadata| metadata.len() == 0) {
@@ -236,6 +247,18 @@ impl Recording {
             &[gst::MessageType::Error],
         ) {
             return Err(bus_error(&message));
+        }
+        Ok(())
+    }
+
+    /// A Playing state alone does not prove camera video has arrived.
+    pub fn wait_started(&self, timeout: Duration) -> Result<()> {
+        let started = Instant::now();
+        while !self.received_video.load(Ordering::Acquire) {
+            if started.elapsed() >= timeout {
+                return Err(MediaError("camera supplied no encoded video before the startup deadline; check profile and connectivity".into()));
+            }
+            self.poll_error(Duration::from_millis(100))?;
         }
         Ok(())
     }
@@ -493,6 +516,7 @@ mod frame_tests {
 /// Bounded headless prototype used by CI and benchmark harnesses.
 pub fn record_for(source: &Source, codec: Codec, output: &Path, duration: Duration) -> Result<()> {
     let recording = Recording::start(source, codec, output)?;
+    recording.wait_started(Duration::from_secs(15))?;
     let start = Instant::now();
     while start.elapsed() < duration {
         recording.poll_error(Duration::from_millis(100))?;

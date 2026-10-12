@@ -29,7 +29,7 @@ APT_CONFIG="$apt_prefix/apt.conf" /usr/bin/apt-get update
 APT_CONFIG="$apt_prefix/apt.conf" /usr/bin/apt-get -o Debug::NoLocking=true \
   --download-only -y --no-install-recommends install libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev libgstrtspserver-1.0-dev \
-  gstreamer1.0-tools gstreamer1.0-libav xvfb
+  gstreamer1.0-tools gstreamer1.0-libav libxkbcommon0 libxkbcommon-x11-0 libgl1 xvfb
 python3 - <<'PY'
 import pathlib, subprocess
 root = pathlib.Path('/workspace/.media')
