@@ -12,8 +12,8 @@ clock and name that recording run as the clock epoch. This survives viewer
 restart while that run continues. Without an active recording clock, elapsed
 nanoseconds use the viewer's monotonic clock, explicitly labeled as such. Changing
 or stopping the anchor run changes the named epoch; do not compare elapsed values
-across different epochs as one continuous acquisition. Named session lifetimes
-and manifests belong to Epic 6.
+across different epochs as one continuous acquisition. Named session lifetimes and manifests are independent of these clock epochs; see
+[sessions](sessions.md).
 
 ## Recording file references
 
@@ -61,7 +61,8 @@ still records the camera's recording state without waiting for image work.
 
 ## Durability, notes and exports
 
-Events live next to the settings in `operator-events/<event-UUID>/`. Each folder
+New events live in `session-…/events/<event-UUID>/` under the acquisition output root.
+Earlier settings-adjacent `operator-events` folders remain accessible in the library. Each folder
 contains `event.json`, `event.csv`, and collision-free `snapshot-N.png` files.
 JSON is the canonical record. CSV has one quoted row per camera, with event ID,
 UTC time, elapsed clock/scope, note, run, segment, offset, recording state, image,
@@ -79,9 +80,8 @@ Expand an event in **Show events**, choose **Edit note**, and save the corrected
 note. Notes are optional and may include commas, quotes and newlines; JSON and CSV
 are updated together through the same background service. Latest 200 events load
 on restart, with periodic boundary reconciliation. Up to four latest thumbnails
-are retained. Full historical session browsing and exporting associated recording
-segments are Epic 6 work. Event metadata and CSV are already available in each
-folder for post-processing.
+are retained. The session library adds historical filtering and portable bundles with associated
+closed recording segments; see [sessions and export](sessions.md).
 
 ## Validation
 

@@ -142,8 +142,9 @@ needs Actions enabled; its token has write access only in the publication job.
 The operator reported successful four-stream operation after merging the foundation.
 Cloud virtual-display checks establish functionality, not target hardware performance.
 Numerical Toughpad CPU/GPU measurements are deferred at the user's request; the operator
-observed that the earlier four-stream build looked fine. Native Windows/Linux checks
-validate functionality. Do not claim zero-copy preview upload, frame-perfect
+observed that the earlier four-stream build looked fine. Native Linux checks validate functionality; Windows checks are paused by user request. Do not claim zero-copy preview upload, frame-perfect
 synchronization, or sustained physical 16-camera throughput without measurements.
 
 Scientific events (Epic 5): [all-camera grabs, recording references, notes and JSON/CSV](docs/events.md). F6 marks, F7 grabs all cameras, and F8 combines both. Captures run independently of recording; timing uncertainty is explicit.
+
+Sessions (Epic 6): [named acquisitions, media library, portable export and opt-in retention](docs/sessions.md). All six epics are implemented; platform and timing limitations are documented.
