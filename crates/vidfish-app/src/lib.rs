@@ -3,3 +3,5 @@ pub mod acquisition;
 pub mod camera_preview;
 
 pub mod operator_events;
+
+pub mod event_references;

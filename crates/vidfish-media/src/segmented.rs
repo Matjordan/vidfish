@@ -175,6 +175,10 @@ impl SegmentedRecording {
         }
         Ok(())
     }
+    /// Clock running time shares the splitmux fragment timestamp domain.
+    pub fn running_time_ns(&self) -> Option<u64> {
+        self.pipeline.current_running_time().map(|t| t.nseconds())
+    }
     pub fn current_output(&self) -> Option<PathBuf> {
         self.current.clone()
     }
