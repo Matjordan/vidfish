@@ -217,6 +217,23 @@ def main():
             until(lambda: state().get("fullscreen") == 0)
             mouse.escape()
             until(lambda: state().get("fullscreen") is None)
+            app.terminate()
+            app.wait(timeout=20)
+            settings["preview_slots"] = 1
+            config.write_text(json.dumps(settings))
+            choices["slots"] = [identifiers[0], None, None, identifiers[1]]
+            choices["selected_slot"] = 0
+            (root / "views.json").write_text(json.dumps(choices))
+            app = start("800x600")
+            single = until(ready)
+            if len(single["slots"]) != 1:
+                raise RuntimeError("Configured single-preview limit was ignored")
+            click("Next")
+            until(lambda: state().get("page") == 1)
+            single = until(ready)
+            if single["slots"][0]["camera"] != identifiers[1] or single["peak_workers"] > 1:
+                raise RuntimeError("A hidden preference exceeded the configured decoder limit")
+            until(lambda: json.loads((root / "views.json").read_text())["slots"][3] is None)
             print(json.dumps({"resolutions": ["1280x800", "800x600"], "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible and excluded from grabs", "recording": "uninterrupted by swaps/fullscreen/capture"}))
         finally:
             if sys.exc_info()[0] is not None:

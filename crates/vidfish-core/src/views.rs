@@ -45,14 +45,26 @@ impl Views {
     }
     /// Selecting a camera already displayed focuses it instead of duplicating a decoder.
     pub fn select(&mut self, slot: usize, id: String) -> io::Result<usize> {
-        if slot >= 4 || uuid::Uuid::parse_str(&id).is_err() {
+        self.select_with_limit(slot, id, 4)
+    }
+    pub fn select_with_limit(
+        &mut self,
+        slot: usize,
+        id: String,
+        limit: usize,
+    ) -> io::Result<usize> {
+        if !(1..=4).contains(&limit) || slot >= limit || uuid::Uuid::parse_str(&id).is_err() {
             return Err(io::Error::other("Invalid preview selection"));
         }
-        let index = self
-            .slots
+        let index = self.slots[..limit]
             .iter()
             .position(|s| s.as_ref() == Some(&id))
             .unwrap_or(slot);
+        for hidden in &mut self.slots[limit..] {
+            if hidden.as_ref() == Some(&id) {
+                *hidden = None;
+            }
+        }
         self.slots[index] = Some(id);
         self.selected_slot = index;
         Ok(index)
@@ -101,5 +113,19 @@ mod tests {
         assert_eq!(Views::load(&path).unwrap(), views);
         std::fs::write(&path, "{").unwrap();
         assert!(Views::load(&path).is_err());
+    }
+    #[test]
+    fn hidden_preference_moves_into_active_slots_without_exceeding_the_limit() {
+        let mut views = Views::default();
+        let id = uuid::Uuid::new_v4().to_string();
+        views.select(3, id.clone()).unwrap();
+        assert_eq!(views.select_with_limit(0, id, 1).unwrap(), 0);
+        assert!(views.slots[3].is_none());
+        views.validate().unwrap();
+        assert!(
+            views
+                .select_with_limit(1, uuid::Uuid::new_v4().to_string(), 1)
+                .is_err()
+        );
     }
 }

@@ -105,7 +105,7 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.interact_size.y = 40.0;
+            style.spacing.interact_size.y = 44.0;
             style.spacing.button_padding = egui::vec2(10.0, 8.0);
             style.visuals.panel_fill = egui::Color32::from_rgb(11, 20, 32);
             cc.egui_ctx.set_style(style);
@@ -518,6 +518,9 @@ impl Desktop {
             && index != self.selected_slot
         {
             self.selected_slot = index;
+            if self.fullscreen.is_some() {
+                self.fullscreen = Some(index);
+            }
             self.message = format!("Camera already shown in slot {}", index + 1);
             return;
         }
@@ -526,9 +529,12 @@ impl Desktop {
         }
         let selected = self
             .views
-            .select(self.selected_slot, camera.id.clone())
+            .select_with_limit(self.selected_slot, camera.id.clone(), self.slots.len())
             .unwrap();
         self.selected_slot = selected;
+        if self.fullscreen.is_some() {
+            self.fullscreen = Some(selected);
+        }
         self.views_dirty = true;
         let slot = &mut self.slots[self.selected_slot];
         let old = slot.preview.take();
