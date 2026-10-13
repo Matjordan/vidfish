@@ -547,8 +547,8 @@ impl Desktop {
             .get_or_insert(self.config.retention_days);
         egui::Window::new("Settings").open(&mut open).vscroll(true).default_size([420.0,400.0]).show(ctx,|ui|{
             ui.label(format!("Manager: {:?}",*self.status.borrow()));
-            ui.label("Camera adapter IPv4 (blank disables discovery)");ui.text_edit_singleline(&mut self.interface);
-            let valid=self.interface.trim().is_empty() || self.interface.parse::<std::net::Ipv4Addr>().is_ok();
+            ui.label("Camera adapter IPv4 (blank searches all active adapters)");ui.text_edit_singleline(&mut self.interface);
+            let valid=self.interface.trim().is_empty() || self.interface.trim().parse::<std::net::Ipv4Addr>().is_ok();
             let mut output=self.config.output_directory.to_string_lossy().into_owned();ui.label("Output directory");if ui.text_edit_singleline(&mut output).changed(){self.config.output_directory=output.into();}
             ui.label("Default session name / test ID (blank generates a name)");ui.add(egui::TextEdit::singleline(&mut self.config.session_name).char_limit(128));
             let mut retention=retention_draft.is_some();if ui.checkbox(&mut retention,"Automatically delete old closed sessions").changed(){*retention_draft=if retention{Some(7)}else{None};}
@@ -559,7 +559,7 @@ impl Desktop {
             let mut stop_on_low=self.config.disk_policy==vidfish_core::config::DiskPolicy::Stop;if ui.checkbox(&mut stop_on_low,"Stop at disk threshold").changed(){self.config.disk_policy=if stop_on_low{vidfish_core::config::DiskPolicy::Stop}else{vidfish_core::config::DiskPolicy::Warn};}
             ui.label("Save applies recording settings to new runs; output directory applies to new sessions. Restart discovery for adapter changes.");
             if ui.add_enabled(valid && self.saving.is_none(),egui::Button::new("Save settings").min_size(egui::vec2(160.0,44.0))).clicked(){
-                self.config.retention_days = *retention_draft;self.config.camera_interface=self.interface.parse().ok();let config=self.config.clone();let path=self.path.clone();let (sender,receiver)=tokio::sync::oneshot::channel();self.runtime.spawn_blocking(move||{let _=sender.send(config.save(&path));});self.saving=Some(receiver);
+                self.config.retention_days = *retention_draft;self.config.camera_interface=self.interface.trim().parse().ok();let config=self.config.clone();let path=self.path.clone();let (sender,receiver)=tokio::sync::oneshot::channel();self.runtime.spawn_blocking(move||{let _=sender.send(config.save(&path));});self.saving=Some(receiver);
             }
         });
         self.show_settings = open;

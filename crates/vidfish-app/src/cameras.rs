@@ -68,7 +68,7 @@ enum Action {
     },
     Scan {
         #[arg(long)]
-        interface: Ipv4Addr,
+        interface: Option<Ipv4Addr>,
         #[arg(long, default_value = "239.255.255.250:3702")]
         target: SocketAddrV4,
     },
@@ -205,7 +205,12 @@ pub fn run(
             store.save(&path)?;
         }
         Action::Scan { interface, target } => {
-            let found = vidfish_onvif::discover(interface, target, Duration::from_secs(2))?;
+            let report =
+                vidfish_onvif::discovery::selected(interface, target, Duration::from_secs(2))?;
+            for warning in report.warnings {
+                tracing::warn!("{warning}");
+            }
+            let found = report.cameras;
             // Duplicate UUIDs at different addresses are quarantined before any mutation.
             let mut addresses =
                 std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();

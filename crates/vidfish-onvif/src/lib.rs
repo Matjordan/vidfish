@@ -3,6 +3,7 @@ use base64::Engine;
 use reqwest::{Url, blocking::Client};
 use sha1::{Digest, Sha1};
 pub mod credentials;
+pub mod discovery;
 pub mod manager;
 use serde::Serialize;
 use std::{

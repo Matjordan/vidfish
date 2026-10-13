@@ -1,5 +1,5 @@
 //! Independent network workers with bounded channels and retry timers.
-use crate::{Camera, Error, OnvifClient, Profile, credentials, discover};
+use crate::{Camera, Error, OnvifClient, Profile, credentials, discovery};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -339,12 +339,18 @@ fn run(
         }
         if next_discovery <= Instant::now() {
             next_discovery = Instant::now() + options.discovery_interval;
-            if let Some(interface) = options.interface {
+            {
                 changed = true;
-                match discover(interface, options.target, Duration::from_millis(500)) {
+                match discovery::selected(
+                    options.interface,
+                    options.target,
+                    Duration::from_millis(500),
+                ) {
                     Err(error) => discovery_error = Some(error.to_string()),
-                    Ok(devices) => {
-                        discovery_error = None;
+                    Ok(report) => {
+                        discovery_error =
+                            (!report.warnings.is_empty()).then(|| report.warnings.join("; "));
+                        let devices = report.cameras;
                         let mut identities = BTreeMap::<String, Vec<String>>::new();
                         for device in &devices {
                             identities

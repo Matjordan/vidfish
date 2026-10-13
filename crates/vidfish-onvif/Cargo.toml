@@ -20,6 +20,7 @@ tempfile.workspace = true
 vidfish-core = { path = "../vidfish-core" }
 tokio.workspace = true
 tracing.workspace = true
+if-addrs = "0.14"
 
 [dev-dependencies]
 vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }
