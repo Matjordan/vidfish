@@ -1,0 +1,11 @@
+/target/
+/dist/
+*.credentials.json
+*.credentials.json.lock
+/vidfish-*.tar.gz
+/vidfish-*.zip
+
+views.json
+operator-events/
+recordings/
+acquisition/
