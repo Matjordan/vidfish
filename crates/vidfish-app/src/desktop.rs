@@ -146,6 +146,9 @@ pub fn run(
                 show_settings: false,
                 note: String::new(),
                 event_job: None,
+                history_job: None,
+                history_last: Instant::now() - Duration::from_secs(10),
+                edit_note: None,
                 events: std::collections::VecDeque::new(),
                 thumbnails: Vec::new(),
                 probe_path,
@@ -238,6 +241,11 @@ struct Desktop {
     note: String,
     event_job:
         Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
+    history_job: Option<
+        tokio::sync::oneshot::Receiver<Result<Vec<vidfish::operator_events::Event>, String>>,
+    >,
+    history_last: Instant,
+    edit_note: Option<(String, String)>,
     events: std::collections::VecDeque<vidfish::operator_events::Event>,
     thumbnails: Vec<(String, egui::TextureHandle)>,
     probe_path: Option<PathBuf>,

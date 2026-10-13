@@ -218,11 +218,11 @@ def main():
             stalled_fixture.stdin.write("pause\n")
             stalled_fixture.stdin.flush()
             until(lambda: all("STALE" in s["state"] for s in state().get("slots", []) if s["camera"] not in identifiers[:4]) and any(s["camera"] not in identifiers[:4] for s in state().get("slots", [])))
-            click("Grab All")
+            click("Mark")
             until(lambda: state().get("events", 0) >= 1)
             stale_records = list((root / "operator-events").glob("*/event.json"))
             if any(c["image"] for c in json.loads(stale_records[0].read_text())["captures"] if c["camera"] not in identifiers[:4]):
-                raise RuntimeError("Stale preview frames were presented as fresh captures")
+                raise RuntimeError("Mark unexpectedly captured images")
             stalled_fixture.stdin.write("resume\n")
             stalled_fixture.stdin.flush()
             click("Show this group")
@@ -231,8 +231,8 @@ def main():
             until(lambda: state().get("events", 0) >= 2)
             records = list((root / "operator-events").glob("*/event.json"))
             event = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Mark + Grab All")
-            if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 4:
-                raise RuntimeError("Preview grab results did not report four selected and twelve unviewed cameras")
+            if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 16:
+                raise RuntimeError("All-camera grab did not capture all sixteen, including hidden cameras")
             after = statuses()
             if len(after) != 4 or any(r["state"] != "Recording" or r["run_id"] != original_runs[r["camera_id"]][0] for r in after):
                 raise RuntimeError("Viewer actions changed an active recorder's state or run ID")
@@ -273,7 +273,7 @@ def main():
             if single["slots"][0]["camera"] != identifiers[1] or single["peak_workers"] > 1:
                 raise RuntimeError("A hidden preference exceeded the configured decoder limit")
             until(lambda: json.loads((root / "views.json").read_text())["slots"][3] is None)
-            print(json.dumps({"requested_resolutions": ["1280x800", "800x600"], "actual_viewports": actual_resolutions, "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible and excluded from grabs", "recording": "uninterrupted by swaps/fullscreen/capture"}))
+            print(json.dumps({"requested_resolutions": ["1280x800", "800x600"], "actual_viewports": actual_resolutions, "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible without blocking Mark", "recording": "uninterrupted by swaps/fullscreen/capture"}))
         finally:
             if sys.exc_info()[0] is not None:
                 current = json.loads(probe.read_text()) if probe.exists() else {}

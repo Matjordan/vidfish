@@ -550,21 +550,28 @@ impl Desktop {
         if let Some(job) = &mut self.event_job {
             match job.try_recv() {
                 Ok(Ok(saved)) => {
-                    self.thumbnails = saved
-                        .thumbnails
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (label, w, h, rgb))| {
-                            (
-                                label,
-                                ctx.load_texture(
-                                    format!("event-thumb-{i}"),
-                                    egui::ColorImage::from_rgb([w, h], &rgb),
-                                    egui::TextureOptions::LINEAR,
-                                ),
-                            )
-                        })
-                        .collect();
+                    if !saved.thumbnails.is_empty() {
+                        self.thumbnails = saved
+                            .thumbnails
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, (label, w, h, rgb))| {
+                                (
+                                    label,
+                                    ctx.load_texture(
+                                        format!("event-thumb-{i}"),
+                                        egui::ColorImage::from_rgb([w, h], &rgb),
+                                        egui::TextureOptions::LINEAR,
+                                    ),
+                                )
+                            })
+                            .collect();
+                    }
+                    self.events.retain(|e| e.id != saved.event.id);
+                    if self.note == saved.event.note && self.edit_note.is_none() {
+                        self.note.clear();
+                    }
+                    self.edit_note = None;
                     self.events.push_front(saved.event);
                     self.events.truncate(200);
                     self.event_job = None;
@@ -581,7 +588,50 @@ impl Desktop {
                 Err(_) => {}
             }
         }
+        if let Some(job) = &mut self.history_job {
+            match job.try_recv() {
+                Ok(Ok(events)) => {
+                    if self.event_job.is_none() {
+                        self.events = events.into();
+                    }
+                    self.history_job = None;
+                }
+                Ok(Err(e)) => {
+                    self.message = e;
+                    self.history_job = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.history_job = None;
+                }
+                Err(_) => {}
+            }
+        }
+        if self.history_job.is_none()
+            && self.event_job.is_none()
+            && self.history_last.elapsed() > std::time::Duration::from_secs(5)
+        {
+            let root = self.path.with_file_name("operator-events");
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            self.runtime.spawn_blocking(move || {
+                let _ = sender.send(vidfish::operator_events::load(&root));
+            });
+            self.history_job = Some(receiver);
+            self.history_last = std::time::Instant::now();
+        }
         let mut action = None;
+        if self.event_job.is_none() {
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::F6) {
+                    action = Some(("Mark", false));
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::F7) {
+                    action = Some(("Grab All", true));
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::F8) {
+                    action = Some(("Mark + Grab All", true));
+                }
+            });
+        }
         egui::TopBottomPanel::bottom("operator-events").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(self.event_job.is_none(), |ui| {
@@ -615,23 +665,22 @@ impl Desktop {
                     self.views_dirty = true;
                 }
             });
-            ui.small("Grabs use fresh selected previews; unviewed cameras are reported.");
+            ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · captures all cameras asynchronously");
+            if self.event_job.is_some(){ui.label("Saving / capturing cameras… recording continues independently");}
             if self.views.events_expanded {
                 ui.label(
-                    "Grabs save fresh selected previews; unviewed cameras are explicitly reported.",
+                    "Per-camera captures are asynchronous. Offsets are estimates; pending boundaries reconcile after close.",
                 );
                 egui::ScrollArea::vertical()
                     .id_salt("events-scroll")
                     .max_height(100.0)
                     .show(ui, |ui| {
                         for event in &self.events {
-                            ui.label(format!(
-                                "{} · {}s · {} · {} captured",
-                                event.kind,
-                                event.elapsed_seconds,
-                                event.note,
-                                event.captures.iter().filter(|c| c.image.is_some()).count()
-                            ));
+                            egui::CollapsingHeader::new(format!("{} · {}s · {} · {} captured{}",event.kind,event.elapsed_seconds,event.note,event.captures.iter().filter(|c|c.image.is_some()).count(),if event.complete {""} else {" · INCOMPLETE"})).id_salt(&event.id).show(ui,|ui|{
+                                ui.label(format!("{} · UTC Unix ms {}",event.id,event.unix_ms));
+                                if ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note")).clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
+                                for capture in &event.captures {ui.label(format!("{} · {} · {} · offset {}",capture.label,capture.result,capture.recording.state,capture.recording.offset_ns.map(|n|format!("{:.3}s",n as f64/1e9)).unwrap_or_else(||"unavailable".into())));}
+                            });
                         }
                         ui.horizontal_wrapped(|ui| {
                             for (label, texture) in &self.thumbnails {
@@ -645,46 +694,72 @@ impl Desktop {
             }
         });
         if let Some((kind, grab)) = action {
-            let mut inputs: Vec<_> = self
+            let action_ms = vidfish::operator_events::now();
+            let inputs: Vec<_> = self
                 .camera_status
                 .cameras
                 .iter()
-                .map(|camera| {
-                    let frame = self
-                        .slots
-                        .iter()
-                        .find(|s| s.camera_id.as_ref() == Some(&camera.camera.id))
-                        .and_then(|s| s.preview.as_ref())
-                        .and_then(|p| p.frames.borrow().clone());
-                    vidfish::operator_events::Input {
+                .map(|camera| vidfish::operator_events::CameraInput {
+                    input: vidfish::operator_events::Input {
                         camera: camera.camera.id.clone(),
                         label: camera.camera.alias.clone(),
-                        frame,
-                    }
+                        frame: None,
+                    },
+                    camera: Some(camera.camera.clone()),
+                    profile: camera.profiles.first().cloned(),
+                    recording: vidfish::event_references::Reference::at(
+                        self.record_status
+                            .cameras
+                            .iter()
+                            .find(|s| s.camera_id == camera.camera.id),
+                        action_ms,
+                    ),
                 })
                 .collect();
-            if inputs.is_empty() {
-                inputs = self
-                    .slots
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| vidfish::operator_events::Input {
-                        camera: format!("slot-{}", i + 1),
-                        label: s.label.clone(),
-                        frame: s.preview.as_ref().and_then(|p| p.frames.borrow().clone()),
-                    })
-                    .collect();
-            }
             let root = self.path.with_file_name("operator-events");
             let note = self.note.clone();
-            let elapsed = self.started.elapsed().as_secs();
+            let elapsed_ns = self.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let inventory = self.path.with_file_name("cameras.json");
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
-                let _ = sender.send(vidfish::operator_events::save(
-                    &root, kind, note, elapsed, inputs, grab,
+                let _ = sender.send(vidfish::operator_events::save_request(
+                    &root,
+                    vidfish::operator_events::Request {
+                        kind: kind.into(),
+                        note,
+                        elapsed_ns,
+                        unix_ms: action_ms,
+                        inputs,
+                        inventory,
+                        grab,
+                    },
                 ));
             });
             self.event_job = Some(receiver);
+        }
+        if let Some((id, note)) = &mut self.edit_note {
+            let mut save = false;
+            let mut cancel = false;
+            egui::Window::new("Edit event note").show(ctx, |ui| {
+                ui.add(egui::TextEdit::multiline(note).char_limit(4096));
+                save = ui
+                    .add_enabled(self.event_job.is_none(), egui::Button::new("Save note"))
+                    .clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+            if save {
+                let root = self.path.with_file_name("operator-events");
+                let id = id.clone();
+                let note = note.clone();
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                self.runtime.spawn_blocking(move || {
+                    let _ = sender.send(vidfish::operator_events::edit_note(&root, &id, note));
+                });
+                self.event_job = Some(receiver);
+            }
+            if cancel {
+                self.edit_note = None;
+            }
         }
     }
 }
