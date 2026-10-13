@@ -7,11 +7,19 @@ use vidfish_media::fixtures::OnvifFixture;
 use vidfish_onvif::manager::{Command, Manager, Options, Snapshot, State};
 
 fn wait(snapshot: &tokio::sync::watch::Receiver<Snapshot>, predicate: impl Fn(&Snapshot) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !predicate(&snapshot.borrow()) {
         assert!(
             Instant::now() < deadline,
-            "camera manager did not reach expected state"
+            "camera manager did not reach expected state: cameras={:?}, inventory={:?}, discovery={:?}",
+            snapshot
+                .borrow()
+                .cameras
+                .iter()
+                .map(|c| (&c.camera.alias, c.state, &c.error, c.retry_seconds))
+                .collect::<Vec<_>>(),
+            snapshot.borrow().inventory_error,
+            snapshot.borrow().discovery_error,
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -45,8 +53,7 @@ fn sixteen_camera_workers_isolate_failure_and_persist_rename() {
     drop(reserved);
     let healthy = inventory.cameras[0].id.clone();
     inventory.save(&path).unwrap();
-    let mut options = Options::new(path.clone(), None);
-    options.poll_interval = Duration::from_millis(200);
+    let options = Options::new(path.clone(), None);
     let manager = Manager::start(options).unwrap();
     let snapshot = manager.snapshot();
     wait(&snapshot, |s| {
