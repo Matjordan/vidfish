@@ -343,7 +343,22 @@ impl eframe::App for Desktop {
                         if ui.text_edit_singleline(&mut output).changed() {
                             self.config.output_directory = output.into();
                         }
-                        ui.label("Settings take effect on manager restart.");
+                        ui.label("Segment interval (seconds)");
+                        ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400));
+                        ui.label("File stall deadline (seconds)");
+                        ui.add(egui::DragValue::new(&mut self.config.stall_seconds).range(1..=3600));
+                        ui.label("Disk warning / stop thresholds (MiB)");
+                        let mut warning = self.config.disk_warning_bytes / (1024 * 1024);
+                        let mut stop = self.config.disk_stop_bytes / (1024 * 1024);
+                        ui.add(egui::DragValue::new(&mut warning).range(0..=1048576));
+                        ui.add(egui::DragValue::new(&mut stop).range(0..=warning));
+                        self.config.disk_warning_bytes = warning * 1024 * 1024;
+                        self.config.disk_stop_bytes = stop * 1024 * 1024;
+                        let mut stop_on_low = self.config.disk_policy == vidfish_core::config::DiskPolicy::Stop;
+                        if ui.checkbox(&mut stop_on_low, "Stop recording at disk stop threshold").changed() {
+                            self.config.disk_policy = if stop_on_low { vidfish_core::config::DiskPolicy::Stop } else { vidfish_core::config::DiskPolicy::Warn };
+                        }
+                        ui.label("Saved recording settings apply to new recorder runs. Restart discovery for adapter changes.");
                         if ui
                             .add_enabled_ui(self.saving.is_none() && interface_valid, |ui| {
                                 ui.add_sized([160.0, 48.0], egui::Button::new("Save settings"))
@@ -406,6 +421,12 @@ impl eframe::App for Desktop {
                                     "Recording: {:?} — {} bytes",
                                     record.state, record.bytes_written
                                 ));
+                                if let Some(warning) = &record.warning {
+                                    ui.colored_label(egui::Color32::YELLOW, warning);
+                                }
+                                if let Some(available) = record.disk_available_bytes {
+                                    ui.label(format!("Disk free: {} MiB", available / (1024 * 1024)));
+                                }
                                 if let Some(error) = &record.error {
                                     ui.colored_label(egui::Color32::RED, error);
                                 }

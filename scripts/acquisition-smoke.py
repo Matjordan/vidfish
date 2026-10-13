@@ -74,7 +74,7 @@ def main():
             media = json.loads(info.stdout)
             if media["width"] != 1920 or media["height"] != 1080 or media["duration_seconds"] < 1:
                 raise RuntimeError("Recorder did not finalize valid 1080p media")
-            if len(list((root / "media").glob("*.mkv"))) != 1:
+            if len(list((root / "media").rglob("*.mkv"))) != 1:
                 raise RuntimeError("Owner restart created duplicate recordings")
             print(json.dumps({"owner_crash": "survived", "reattached_run": True, "duplicate_recordings": False, "finalized_media": media}))
         finally:

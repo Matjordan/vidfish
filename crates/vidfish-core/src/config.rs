@@ -4,6 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiskPolicy {
+    Warn,
+    Stop,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
@@ -11,6 +17,10 @@ pub struct AppConfig {
     pub output_directory: PathBuf,
     pub auto_record: bool,
     pub segment_seconds: u64,
+    pub disk_warning_bytes: u64,
+    pub disk_stop_bytes: u64,
+    pub disk_policy: DiskPolicy,
+    pub stall_seconds: u64,
     pub max_cameras: usize,
     pub preview_slots: usize,
     pub camera_interface: Option<std::net::Ipv4Addr>,
@@ -23,6 +33,10 @@ impl Default for AppConfig {
             output_directory: "recordings".into(),
             auto_record: true,
             segment_seconds: 600,
+            disk_warning_bytes: 1024 * 1024 * 1024,
+            disk_stop_bytes: 256 * 1024 * 1024,
+            disk_policy: DiskPolicy::Stop,
+            stall_seconds: 30,
             max_cameras: 16,
             preview_slots: 4,
             camera_interface: None,
@@ -34,14 +48,16 @@ impl AppConfig {
     pub fn validate(&self) -> io::Result<()> {
         if self.schema_version != 1
             || self.output_directory.as_os_str().is_empty()
-            || self.segment_seconds == 0
+            || !(1..=86400).contains(&self.segment_seconds)
+            || !(1..=3600).contains(&self.stall_seconds)
+            || self.disk_stop_bytes > self.disk_warning_bytes
             || !(1..=16).contains(&self.max_cameras)
             || !(1..=4).contains(&self.preview_slots)
             || self.preview_slots > self.max_cameras
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid settings: schema must be 1, output nonempty, segment positive, cameras 1–16, previews 1–4 and no greater than cameras",
+                "invalid settings: schema must be 1, output nonempty, segment 1–86400s, stall 1–3600s, stop threshold <= warning threshold, cameras 1–16, previews 1–4 and no greater than cameras",
             ));
         }
         Ok(())
