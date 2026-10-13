@@ -77,8 +77,10 @@ because camera URIs can contain credentials.
 [AGENTS.md](AGENTS.md) records the per-epic branches/PRs and commit rules. Each
 verified coherent change is committed on its epic branch. Planning PRs remain drafts.
 
-CI and release workflows share the same Windows/Linux build, lint, tests, RTSP smoke,
-desktop launch checks, and package steps. PR CI uploads executable packages. Every
+CI and release workflows share build, lint, tests, RTSP smoke, desktop launch checks,
+and package steps. Draft PR updates run Linux only; marking a PR ready for review
+runs both Windows and Linux, as do later updates to ready PRs. Manual CI runs and
+releases always check both platforms. PR CI uploads executable packages. Every
 push to `main`, including PR merges, publishes only after both platform packages pass.
 Version `0.1.<release workflow run number>` appears in `--version`, Git tags, and
 archive names. Failed runs may leave gaps; reruns retain their version and do not

@@ -5,6 +5,10 @@ on:
       version:
         required: true
         type: string
+      windows:
+        description: Include Windows validation and packaging
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -14,11 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-          - os: windows-latest
-            platform: windows-x86_64
+        include: ${{ fromJSON(inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:

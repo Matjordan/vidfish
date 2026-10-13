@@ -5,6 +5,7 @@
 - Maintain one PR per epic (#1–#6). Reuse its existing branch and PR as implementation progresses.
 - Draft PRs may contain implementation plans; clearly distinguish plans from implemented acceptance criteria.
 - Do not close an epic until its child issues and required platform checks are complete.
+- Draft PR updates run Linux CI only. Marking a PR ready for review runs Windows and Linux; subsequent ready PR updates also run both. Manual CI runs and releases always validate both platforms.
 - Each push to `main`, including merged PRs, runs the versioned release workflow.
 - Keep recording independent of preview, UI, and event operations. Support Windows and Linux.
 - Activate the cloud Rust toolchain with `CARGO_HOME=/workspace/.cargo`, `RUSTUP_HOME=/workspace/.rust`, and `/workspace/.cargo/bin` on PATH when needed.
