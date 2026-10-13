@@ -105,13 +105,34 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let directory = root.join(&id);
         std::fs::create_dir(&directory)?;
+        #[cfg(unix)]
+        std::fs::File::open(root)?.sync_all()?;
+        // Reuse an active acquisition clock across viewer restarts. Explicitly
+        // identify its run epoch; with no acquisition, use viewer monotonic time.
+        let clock = inputs
+            .iter()
+            .map(|i| &i.recording)
+            .filter(|r| r.running_time_ns.is_some() && r.run_started_unix_ms > 0)
+            .min_by_key(|r| (r.run_started_unix_ms, r.run_id.clone()));
+        let (elapsed_ns, elapsed_scope) = match clock {
+            Some(r) => (
+                r.running_time_ns.unwrap_or(elapsed_ns),
+                format!(
+                    "Acquisition GStreamer monotonic clock, run {} (UTC-extrapolated sample)",
+                    r.run_id.as_deref().unwrap_or("unknown")
+                ),
+            ),
+            None => (
+                elapsed_ns,
+                "Viewer monotonic clock; no active acquisition clock".into(),
+            ),
+        };
         let mut event = Event {
             id,
             unix_ms,
             elapsed_seconds: elapsed_ns / 1_000_000_000,
             elapsed_ns,
-            elapsed_scope:
-                "Viewer monotonic clock; recording clock offsets are separate per camera".into(),
+            elapsed_scope,
             kind,
             note,
             captures: inputs
@@ -235,6 +256,8 @@ fn persist_event(directory: &Path, event: &Event) -> Result<(), Box<dyn std::err
         .persist(directory.join("event.json"))
         .map_err(|e| e.error)?;
     persist_csv(directory, event)?;
+    #[cfg(unix)]
+    std::fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
 
@@ -384,9 +407,9 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
     fn quote(s: impl ToString) -> String {
         format!("\"{}\"", s.to_string().replace('"', "\"\""))
     }
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    let mut rows = Vec::new();
     writeln!(
-        file,
+        rows,
         "event_id,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
     )?;
     for c in &event.captures {
@@ -421,8 +444,13 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
             quote(c.delay_ms.map(|t| t.to_string()).unwrap_or_default()),
             quote(&c.result),
         ];
-        writeln!(file, "{}", fields.join(","))?;
+        writeln!(rows, "{}", fields.join(","))?;
     }
+    if std::fs::read(directory.join("event.csv")).is_ok_and(|old| old == rows) {
+        return Ok(());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(&rows)?;
     file.as_file().sync_all()?;
     file.persist(directory.join("event.csv"))
         .map_err(|e| e.error)?;
@@ -448,10 +476,15 @@ pub fn load(root: &Path) -> Result<Vec<Event>, String> {
                 return Err("Event metadata too large".into());
             }
             let mut event: Event = serde_json::from_slice(&std::fs::read(file)?)?;
+            let before = serde_json::to_vec(&event)?;
             for c in &mut event.captures {
                 c.recording.resolve();
             }
-            persist_event(&path.path(), &event)?;
+            if before != serde_json::to_vec(&event)? {
+                persist_event(&path.path(), &event)?;
+            } else {
+                persist_csv(&path.path(), &event)?;
+            }
             events.push(event);
         }
         events.sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
@@ -524,5 +557,44 @@ mod recovery_tests {
         assert!(csv.contains(&saved.event.id));
         assert!(csv.contains("monotonic_elapsed_ns"));
         assert!(edit_note(root.path(), "../../bad", "bad".into()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn acquisition_elapsed_clock_keeps_its_epoch_across_viewer_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let input = |t| CameraInput {
+            input: Input {
+                camera: "id".into(),
+                label: "Bench".into(),
+                frame: None,
+            },
+            camera: None,
+            profile: None,
+            recording: crate::event_references::Reference {
+                run_id: Some("ongoing-run".into()),
+                run_started_unix_ms: 1000,
+                running_time_ns: Some(t),
+                ..Default::default()
+            },
+        };
+        let request = |elapsed_ns, t| Request {
+            kind: "Mark".into(),
+            note: String::new(),
+            unix_ms: 2000,
+            elapsed_ns,
+            inputs: vec![input(t)],
+            inventory: PathBuf::new(),
+            grab: false,
+        };
+        let before = save_request(root.path(), request(10_000_000_000, 100_000_000_000)).unwrap();
+        let after = save_request(root.path(), request(1_000_000_000, 103_000_000_000)).unwrap();
+        assert_eq!(before.event.elapsed_ns, 100_000_000_000);
+        assert_eq!(after.event.elapsed_ns, 103_000_000_000);
+        assert_eq!(before.event.elapsed_scope, after.event.elapsed_scope);
+        assert!(after.event.elapsed_scope.contains("ongoing-run"));
     }
 }

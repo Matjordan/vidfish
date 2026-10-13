@@ -15,6 +15,8 @@ pub struct Reference {
     pub state: String,
     pub timing: String,
     pub sample_age_ms: Option<u64>,
+    #[serde(default)]
+    pub run_started_unix_ms: u64,
 }
 impl Reference {
     pub fn at(status: Option<&crate::acquisition::Status>, action_ms: u64) -> Self {
@@ -27,6 +29,7 @@ impl Reference {
         let mut r = Self {
             run_id: Some(s.run_id.clone()),
             state: format!("{:?}", s.state),
+            run_started_unix_ms: s.started_unix_ms,
             ..Self::default()
         };
         if s.state != crate::acquisition::State::Recording {
@@ -142,5 +145,24 @@ mod tests {
         std::fs::remove_file(&b).unwrap();
         r.resolve();
         assert_eq!(r.state, "Referenced media missing");
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn stale_or_backward_clock_is_a_gap_not_an_invented_offset() {
+        let status:crate::acquisition::Status=serde_json::from_value(serde_json::json!({"camera_id":"camera","run_id":"run","state":"Recording","output":"media/segment-00000000.mkv","bytes_written":100,"heartbeat_unix_ms":1000,"error":null,"started_unix_ms":500,"media_running_time_ns":500_000_000u64,"media_observed_unix_ms":1000})).unwrap();
+        let current = Reference::at(Some(&status), 1500);
+        assert_eq!(current.running_time_ns, Some(1_000_000_000));
+        assert_eq!(current.sample_age_ms, Some(500));
+        for at in [999, 4001] {
+            let r = Reference::at(Some(&status), at);
+            assert!(r.running_time_ns.is_none());
+            assert!(r.segment.is_none());
+            assert!(r.state.starts_with("Gap"));
+        }
+        assert!(Reference::at(None, 1500).segment.is_none());
     }
 }

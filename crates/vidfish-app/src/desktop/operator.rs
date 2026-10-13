@@ -676,11 +676,12 @@ impl Desktop {
                     .max_height(100.0)
                     .show(ui, |ui| {
                         for event in &self.events {
-                            egui::CollapsingHeader::new(format!("{} · {}s · {} · {} captured{}",event.kind,event.elapsed_seconds,event.note,event.captures.iter().filter(|c|c.image.is_some()).count(),if event.complete {""} else {" · INCOMPLETE"})).id_salt(&event.id).show(ui,|ui|{
+                            let response=egui::CollapsingHeader::new(format!("{} · {}s · {} · {} captured{}",event.kind,event.elapsed_seconds,event.note,event.captures.iter().filter(|c|c.image.is_some()).count(),if event.complete {""} else {" · INCOMPLETE"})).id_salt(&event.id).show(ui,|ui|{
                                 ui.label(format!("{} · UTC Unix ms {}",event.id,event.unix_ms));
-                                if ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note")).clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
+                                let edit=ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note"));super::probe::button(ui,"Edit note",&edit);if edit.clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
                                 for capture in &event.captures {ui.label(format!("{} · {} · {} · offset {}",capture.label,capture.result,capture.recording.state,capture.recording.offset_ns.map(|n|format!("{:.3}s",n as f64/1e9)).unwrap_or_else(||"unavailable".into())));}
                             });
+                            super::probe::button(ui,&format!("Event {}",event.id),&response.header_response);
                         }
                         ui.horizontal_wrapped(|ui| {
                             for (label, texture) in &self.thumbnails {
@@ -741,10 +742,12 @@ impl Desktop {
             let mut save = false;
             let mut cancel = false;
             egui::Window::new("Edit event note").show(ctx, |ui| {
-                ui.add(egui::TextEdit::multiline(note).char_limit(4096));
-                save = ui
-                    .add_enabled(self.event_job.is_none(), egui::Button::new("Save note"))
-                    .clicked();
+                let field = ui.add(egui::TextEdit::multiline(note).char_limit(4096));
+                super::probe::button(ui, "Event note field", &field);
+                let response =
+                    ui.add_enabled(self.event_job.is_none(), egui::Button::new("Save note"));
+                super::probe::button(ui, "Save note", &response);
+                save = response.clicked();
                 cancel = ui.button("Cancel").clicked();
             });
             if save {

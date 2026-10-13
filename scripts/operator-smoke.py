@@ -100,6 +100,21 @@ class Mouse:
             self.test.XTestFakeButtonEvent(self.display, 1, 0, 0)
             self.api.XFlush(self.display)
 
+    def type_note(self, text):
+        for char in text:
+            key = self.api.XKeysymToKeycode(self.display, ord(char))
+            self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
+            self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
+        self.api.XFlush(self.display)
+
+    def mark_shortcut(self):
+        if os.name == "nt":
+            raise RuntimeError("Windows checks are paused")
+        key = self.api.XKeysymToKeycode(self.display, 0xFFC3)  # F6
+        self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
+        self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
+        self.api.XFlush(self.display)
+
     def escape(self):
         if os.name == "nt":
             window = self.window()
@@ -218,7 +233,7 @@ def main():
             stalled_fixture.stdin.write("pause\n")
             stalled_fixture.stdin.flush()
             until(lambda: all("STALE" in s["state"] for s in state().get("slots", []) if s["camera"] not in identifiers[:4]) and any(s["camera"] not in identifiers[:4] for s in state().get("slots", [])))
-            click("Mark")
+            mouse.mark_shortcut()
             until(lambda: state().get("events", 0) >= 1)
             stale_records = list((root / "operator-events").glob("*/event.json"))
             if any(c["image"] for c in json.loads(stale_records[0].read_text())["captures"] if c["camera"] not in identifiers[:4]):
@@ -233,6 +248,22 @@ def main():
             event = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Mark + Grab All")
             if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 16:
                 raise RuntimeError("All-camera grab did not capture all sixteen, including hidden cameras")
+            click("Grab All")
+            until(lambda: state().get("events", 0) >= 3)
+            records = list((root / "operator-events").glob("*/event.json"))
+            grab = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Grab All")
+            if not all(c["image"] and c["capture_unix_ms"] is not None for c in grab["captures"]):
+                raise RuntimeError("Separate Grab All did not capture every camera")
+            click("Show events")
+            click("Event " + grab["id"])
+            click("Edit note")
+            click("Event note field")
+            mouse.type_note("reviewed")
+            click("Save note")
+            until(lambda: json.loads((root / "operator-events" / grab["id"] / "event.json").read_text())["note"] == "reviewed")
+            if '"reviewed"' not in (root / "operator-events" / grab["id"] / "event.csv").read_text():
+                raise RuntimeError("Edited note was not exported to CSV")
+            click("Hide events")
             after = statuses()
             if len(after) != 4 or any(r["state"] != "Recording" or r["run_id"] != original_runs[r["camera_id"]][0] for r in after):
                 raise RuntimeError("Viewer actions changed an active recorder's state or run ID")
@@ -247,6 +278,7 @@ def main():
             config.write_text(json.dumps(settings))
             app = start("800x600")
             restored = until(ready)
+            until(lambda: state().get("events", 0) >= 2)
             actual_resolutions.append(restored["viewport"])
             if [s["camera"] for s in restored["slots"]] != choices["slots"] or abs(restored["viewport"][0] - 800) > 10:
                 raise RuntimeError("Compact restart did not restore the selected views")

@@ -10,6 +10,8 @@ pub fn capture(
     profile: Option<&vidfish_onvif::Profile>,
     inventory: &Path,
 ) -> Result<(Arc<vidfish_media::Frame>, String), String> {
+    let attempted_http =
+        camera.device_url.is_some() && profile.is_some_and(|p| p.snapshot_uri.is_some());
     if let (Some(device), Some(uri)) = (
         &camera.device_url,
         profile.and_then(|p| p.snapshot_uri.as_ref()),
@@ -25,6 +27,7 @@ pub fn capture(
                 None => vidfish_onvif::OnvifClient::new()?,
             };
             let bytes = client.snapshot(device, uri)?;
+            let received_at = Instant::now();
             let mut reader =
                 image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
             let mut limits = image::Limits::default();
@@ -38,7 +41,7 @@ pub fn capture(
                 height: image.height() as usize,
                 rgb: image.into_raw(),
                 number: 1,
-                received_at: Instant::now(),
+                received_at,
             }))
         })();
         if let Ok(frame) = http {
@@ -54,7 +57,7 @@ pub fn capture(
     })?;
     Ok((
         frame,
-        "Temporary RTSP frame; local receipt time, camera exposure time unavailable".into(),
+        if attempted_http {"Temporary RTSP fallback after ONVIF snapshot failure; local receipt time, camera exposure time unavailable"} else {"Temporary RTSP frame; local receipt time, camera exposure time unavailable"}.into(),
     ))
 }
 
