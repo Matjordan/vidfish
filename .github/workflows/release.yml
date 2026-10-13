@@ -1,0 +1,43 @@
+name: Release
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: 0.1.${{ github.run_number }}
+      windows: true
+      windows_tests: false
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release at the tested merge commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum vidfish-* > SHA256SUMS
+          # A successful rerun must not replace an already-published release.
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists; leaving it unchanged."
+          else
+            gh release create "v${VERSION}" vidfish-* SHA256SUMS \
+              --target "$GITHUB_SHA" --title "Vidfish ${VERSION}" --generate-notes
+          fi
