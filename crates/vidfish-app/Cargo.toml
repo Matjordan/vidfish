@@ -12,9 +12,14 @@ wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 [dependencies]
 vidfish-core = { path = "../vidfish-core" }
 vidfish-media = { path = "../vidfish-media" }
+vidfish-onvif = { path = "../vidfish-onvif" }
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"
@@ -26,4 +31,4 @@ eframe = { version = "0.33", optional = true, default-features = false, features
 wgpu = { version = "27.0.1", optional = true, default-features = false, features = ["dx12"] }
 
 [dev-dependencies]
-tempfile.workspace = true
+vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }

@@ -1,15 +1,36 @@
 use clap::Parser;
 use std::path::PathBuf;
+use vidfish::acquisition;
 use vidfish_core::{config::AppConfig, engine::Engine};
+mod cameras;
 
 #[cfg(feature = "desktop")]
 mod desktop;
 
 #[derive(Parser)]
 #[command(version = option_env!("VIDFISH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "Vidfish scientific camera acquisition")]
-#[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect"])))]
+#[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect", "discover", "onvif", "record_camera"])))]
 #[command(group(clap::ArgGroup::new("desktop_input").args(["demo", "preview"])))]
 struct Args {
+    /// Record a saved camera independently, using its saved login and recording policy.
+    #[arg(long)]
+    record_camera: Option<String>,
+    #[arg(long, requires = "record_camera", hide = true)]
+    record_run_id: Option<String>,
+    #[command(subcommand)]
+    command: Option<cameras::Command>,
+    /// Probe ONVIF cameras on the selected IPv4 adapter and resolve their profiles.
+    #[arg(long)]
+    discover: bool,
+    /// Resolve a manually supplied ONVIF device service URL without discovery.
+    #[arg(long)]
+    onvif: Option<String>,
+    /// Local IPv4 address of the camera-network adapter (required for discovery).
+    #[arg(long, requires = "discover")]
+    interface: Option<std::net::Ipv4Addr>,
+    /// Discovery destination; override only for a known unicast camera or fixture.
+    #[arg(long, requires = "discover", default_value = "239.255.255.250:3702")]
+    discovery_target: std::net::SocketAddrV4,
     /// Override the platform-specific settings file.
     #[arg(long)]
     config: Option<PathBuf>,
@@ -59,6 +80,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
+    if let Some(command) = args.command {
+        if args.discover
+            || args.onvif.is_some()
+            || args.service
+            || args.record.is_some()
+            || args.record_camera.is_some()
+            || args.check
+            || args.media_check
+            || args.demo
+            || !args.preview.is_empty()
+            || args.inspect.is_some()
+        {
+            return Err("camera commands cannot be combined with another application mode".into());
+        }
+        return cameras::run(command);
+    }
+    if args.discover || args.onvif.is_some() {
+        let client = vidfish_onvif::OnvifClient::new()?;
+        if let Some(address) = args.onvif {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.resolve(&address)?)?
+            );
+        } else {
+            let interface = args.interface.ok_or(
+                "discovery needs --interface LOCAL_IPV4; choose the camera-network adapter",
+            )?;
+            let devices = vidfish_onvif::discover(
+                interface,
+                args.discovery_target,
+                std::time::Duration::from_secs(2),
+            )?;
+            let results: Vec<_> = devices
+                .into_iter()
+                .map(|device| match client.resolve(&device.device_url) {
+                    Ok(camera) => serde_json::json!({"device": device, "camera": camera}),
+                    Err(error) => serde_json::json!({"device": device, "error": error.to_string()}),
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
+        return Ok(());
+    }
     if let Some(path) = args.inspect {
         let info = vidfish_media::inspect_recording(&path)?;
         println!(
@@ -92,7 +156,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("config.json"),
     };
     let config = AppConfig::load(&path)?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(if args.record_camera.is_some() { 1 } else { 2 })
+        .enable_all()
+        .build()?;
+    if let Some(id) = args.record_camera {
+        let run_id = args
+            .record_run_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = interrupted.clone();
+        runtime.spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                stopping.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
+        acquisition::record_camera(&path, &config, &id, &run_id, &interrupted)?;
+        return Ok(());
+    }
     if let Some(uri) = args.record {
         let output = args.output.ok_or("recording needs --output")?;
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
@@ -125,14 +206,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.service || args.check {
-        runtime.block_on(async {
+        let cameras = if args.service {
+            Some(vidfish_onvif::manager::Manager::start(
+                vidfish_onvif::manager::Options::new(
+                    path.with_file_name("cameras.json"),
+                    config.camera_interface,
+                ),
+            )?)
+        } else {
+            None
+        };
+        let recordings = cameras
+            .as_ref()
+            .map(|cameras| {
+                acquisition::Supervisor::start(path.clone(), config.clone(), cameras.snapshot())
+            })
+            .transpose()?;
+        let result = runtime.block_on(async {
             let engine = Engine::start(config)?;
             if args.service {
                 tokio::signal::ctrl_c().await?;
             }
             engine.shutdown().await?;
             Ok::<_, Box<dyn std::error::Error>>(())
-        })?;
+        });
+        if let Some(cameras) = &cameras {
+            cameras.stop();
+        }
+        if let Some(recordings) = recordings {
+            recordings.finish_all()?;
+        }
+        if let Some(cameras) = cameras {
+            cameras.join();
+        }
+        result?;
         return Ok(());
     }
     #[cfg(feature = "desktop")]

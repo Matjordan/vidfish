@@ -1,10 +1,11 @@
 # Vidfish
 
 Rust desktop software for scientific camera acquisition on Windows and Linux.
-Epic #1 currently provides an egui desktop, persistent typed settings, structured
-logging, an independently testable Tokio manager, and a GStreamer RTSP recording/
-preview prototype. Automated multi-camera discovery, segmentation, reconnects,
-events, and session management remain later epics.
+The foundation provides an egui desktop, persistent typed settings, structured
+logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
+preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, app-managed local
+credentials, and independent camera polling/reconnection. Arriving cameras can auto-record in independent processes with observable file progress.
+Segmentation, disk-space policies, events, and session management remain later work.
 
 ## Target operator UI
 
@@ -47,13 +48,18 @@ cargo run --locked -p vidfish -- --record rtsp://CAMERA/PROFILE --output NEW_FIL
 cargo run --locked -p vidfish -- --inspect NEW_FILE.mkv
 cargo run --locked -p vidfish -- --check
 cargo run --locked -p vidfish -- --service
+cargo run --locked -p vidfish -- --discover --interface LOCAL_IPV4
+cargo run --locked -p vidfish -- cameras list
 ```
 
 Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
 runs in a separate process and survives preview window closure/restart. Ctrl+C
-finalizes the recording. The current prototype is manually configured; the manager
-service has no automatic discovery or recording policy integration yet. There is no
-UI-to-service IPC. See [media setup, tests, and limitations](docs/media.md).
+finalizes the recording. The desktop and service discover/poll cameras when an adapter
+is configured. Use View feed in the camera list to open a preview. Auto-record is on
+by default for registered/arriving cameras; Record all, Stop all, and per-camera controls
+operate independent recorder processes. A desktop restart reattaches to active recordings.
+Use either the desktop or headless service as the camera manager for an inventory. See [media setup](docs/media.md)
+and [camera discovery, credentials, and lifecycle](docs/cameras.md).
 
 For a simulated 1080p camera with ONVIF endpoints:
 
@@ -80,12 +86,15 @@ visibly. Changes take effect on the next manager start.
   "auto_record": true,
   "segment_seconds": 600,
   "max_cameras": 16,
-  "preview_slots": 4
+  "preview_slots": 4,
+  "camera_interface": null
 }
 ```
 
-Relative paths use the launch working directory. Auto-record/segment preferences
-are foundations for the later recording engine, not enabled prototype behavior.
+Relative paths use the launch working directory. Auto-record changes persist immediately
+and affect future starts; turning it off leaves active recordings running. Stop all
+suppresses automatic restarts until Record all or an application restart. Recordings
+currently use one collision-free MKV per run; segmentation is the next epic.
 The prototype refuses existing output files and never deletes scientific data.
 JSON structured logs go to stdout; `RUST_LOG=debug` increases detail. Settings have
 no credential fields. Raw GStreamer error/debug strings are excluded from errors
@@ -122,6 +131,7 @@ needs Actions enabled; its token has write access only in the publication job.
 6. #17–19: operator preview controls and resource limits.
 7. #20–25: event capture, sessions, browsing, retention, and export.
 
+The operator reported successful four-stream operation after merging the foundation.
 Cloud virtual-display checks establish functionality, not target hardware performance.
 Epic #1/#8 remain incomplete until actual Toughpad CPU/GPU measurements and required
 Windows/Linux acceptance evidence are recorded. Do not claim zero-copy preview upload,

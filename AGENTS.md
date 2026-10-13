@@ -7,6 +7,7 @@
 - Do not close an epic until its child issues and required platform checks are complete.
 - Draft PR updates run Linux CI only. Marking a PR ready for review runs Windows and Linux; subsequent ready PR updates also run both. Manual CI runs and releases always validate both platforms.
 - Each push to `main`, including merged PRs, runs the versioned release workflow.
+- For the current closed deployment, credentials use an app-managed local plaintext file and runtime login dialog. Do not require manual OS keyring setup. Keep passwords out of logs. If secure storage is added later, provision it during install/runtime.
 - Keep recording independent of preview, UI, and event operations. Support Windows and Linux.
 - Activate the cloud Rust toolchain with `CARGO_HOME=/workspace/.cargo`, `RUSTUP_HOME=/workspace/.rust`, and `/workspace/.cargo/bin` on PATH when needed.
 - Run formatting, relevant tests, and Clippy before committing Rust changes. Use the committed Cargo lockfile.
@@ -22,6 +23,7 @@
 | #5 Events | `epic/5-scientific-events` | https://github.com/Matjordan/vidfish/pull/30 |
 | #6 Sessions | `epic/6-session-management` | https://github.com/Matjordan/vidfish/pull/31 |
 
-Epics #2–#6 currently contain planning documents only and branch from the initial
-`main`. After the foundation merges, bring the updated `main` into each branch before
+Epic #2 contains implemented discovery, identity/credential storage, and camera polling
+plus a hot-arrival recording-policy bridge and in-app camera previews on top of the merged foundation. Epics #3–#6 contain planning documents only and branch
+from the initial `main`. Bring the updated `main` into each branch before
 implementation. Preserve existing work and commit any conflict resolutions.

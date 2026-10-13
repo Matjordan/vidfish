@@ -144,3 +144,40 @@ fn connection_errors_do_not_expose_camera_credentials() {
     assert!(!error.contains("fixture-user"));
     assert!(!error.contains("fixture-password"));
 }
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn saved_rtsp_credentials_support_preview_and_stream_copy_without_uri_passwords() {
+    let fixture = vidfish_media::fixtures::RtspFixture::start_authenticated(
+        320,
+        240,
+        "fixture-user".into(),
+        "fixture-password".into(),
+    )
+    .unwrap();
+    let source = vidfish_media::Source::AuthenticatedRtsp {
+        uri: fixture.uri.clone(),
+        username: zeroize::Zeroizing::new("fixture-user".into()),
+        password: zeroize::Zeroizing::new("fixture-password".into()),
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("authenticated.mkv");
+    let recording =
+        vidfish_media::Recording::start(&source, vidfish_media::Codec::H264, &output).unwrap();
+    recording
+        .wait_started(std::time::Duration::from_secs(10))
+        .unwrap();
+    let preview = vidfish_media::Preview::start(source, vidfish_media::Codec::H264);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while preview.frames.borrow().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "authenticated preview timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    preview.join();
+    recording.finish().unwrap();
+    let info = vidfish_media::inspect_recording(&output).unwrap();
+    assert_eq!((info.width, info.height), (320, 240));
+}

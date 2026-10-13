@@ -21,9 +21,31 @@ pub struct OnvifFixture {
 }
 impl OnvifFixture {
     pub fn start(rtsp_uri: String) -> Result<Self> {
+        Self::start_at(
+            rtsp_uri,
+            0,
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+    }
+    /// Distinct identities and stable loopback ports for arrival/reconnection tests.
+    pub fn start_at(
+        rtsp_uri: String,
+        camera_number: u32,
+        http: SocketAddr,
+        discovery: SocketAddr,
+    ) -> Result<Self> {
+        if !http.ip().is_loopback() || !discovery.ip().is_loopback() {
+            return Err(MediaError("camera fixture must bind loopback only".into()));
+        }
+        let serial = format!("fixture-{:03}", camera_number.max(1));
+        let uuid = if camera_number == 0 {
+            "11111111-1111-4111-8111-111111111111".into()
+        } else {
+            format!("11111111-1111-4111-8111-{camera_number:012x}")
+        };
         let jpeg = snapshot()?;
-        let listener =
-            TcpListener::bind("127.0.0.1:0").map_err(|error| MediaError(error.to_string()))?;
+        let listener = TcpListener::bind(http).map_err(|error| MediaError(error.to_string()))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| MediaError(error.to_string()))?;
@@ -32,7 +54,7 @@ impl OnvifFixture {
             .map_err(|error| MediaError(error.to_string()))?;
         let base = format!("http://{address}");
         let device_url = format!("{base}/onvif/device_service");
-        let udp = UdpSocket::bind("127.0.0.1:0").map_err(|error| MediaError(error.to_string()))?;
+        let udp = UdpSocket::bind(discovery).map_err(|error| MediaError(error.to_string()))?;
         udp.set_read_timeout(Some(Duration::from_millis(50)))
             .map_err(|error| MediaError(error.to_string()))?;
         let discovery_address = udp
@@ -44,7 +66,7 @@ impl OnvifFixture {
             while !stopping.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let _ = serve(&mut stream, &base, &rtsp_uri, &jpeg);
+                        let _ = serve(&mut stream, &base, &rtsp_uri, &jpeg, &serial);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5))
@@ -66,7 +88,7 @@ impl OnvifFixture {
                     let id = text(&body, "MessageID").unwrap_or_default();
                     let id = quick_xml::escape::escape(&id);
                     let response = format!(
-                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl"><s:Header><a:MessageID>urn:uuid:22222222-2222-4222-8222-222222222222</a:MessageID><a:RelatesTo>{id}</a:RelatesTo><a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</a:Action></s:Header><s:Body><d:ProbeMatches><d:ProbeMatch><a:EndpointReference><a:Address>urn:uuid:11111111-1111-4111-8111-111111111111</a:Address></a:EndpointReference><d:Types>dn:NetworkVideoTransmitter</d:Types><d:Scopes>onvif://www.onvif.org/name/VidfishFixture</d:Scopes><d:XAddrs>{xaddr}</d:XAddrs><d:MetadataVersion>1</d:MetadataVersion></d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>"#
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl"><s:Header><a:MessageID>urn:uuid:22222222-2222-4222-8222-222222222222</a:MessageID><a:RelatesTo>{id}</a:RelatesTo><a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</a:Action></s:Header><s:Body><d:ProbeMatches><d:ProbeMatch><a:EndpointReference><a:Address>urn:uuid:{uuid}</a:Address></a:EndpointReference><d:Types>dn:NetworkVideoTransmitter</d:Types><d:Scopes>onvif://www.onvif.org/name/VidfishFixture</d:Scopes><d:XAddrs>{xaddr}</d:XAddrs><d:MetadataVersion>1</d:MetadataVersion></d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>"#
                     );
                     let _ = udp.send_to(response.as_bytes(), peer);
                 }
@@ -120,7 +142,13 @@ fn text(xml: &str, name: &str) -> Option<String> {
     }
 }
 
-fn serve(stream: &mut TcpStream, base: &str, rtsp: &str, jpeg: &[u8]) -> std::io::Result<()> {
+fn serve(
+    stream: &mut TcpStream,
+    base: &str,
+    rtsp: &str,
+    jpeg: &[u8],
+    serial: &str,
+) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(1)))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
     let mut request = Vec::new();
@@ -174,7 +202,9 @@ fn serve(stream: &mut TcpStream, base: &str, rtsp: &str, jpeg: &[u8]) -> std::io
     }
     let xml = String::from_utf8_lossy(&request[header_end..header_end + length]);
     let body = if operation(&xml, "GetDeviceInformation") {
-        "<tds:GetDeviceInformationResponse><tds:Manufacturer>Vidfish</tds:Manufacturer><tds:Model>Fixture</tds:Model><tds:FirmwareVersion>1</tds:FirmwareVersion><tds:SerialNumber>fixture-001</tds:SerialNumber><tds:HardwareId>vidfish-fixture</tds:HardwareId></tds:GetDeviceInformationResponse>".into()
+        format!(
+            "<tds:GetDeviceInformationResponse><tds:Manufacturer>Vidfish</tds:Manufacturer><tds:Model>Fixture</tds:Model><tds:FirmwareVersion>1</tds:FirmwareVersion><tds:SerialNumber>{serial}</tds:SerialNumber><tds:HardwareId>vidfish-fixture</tds:HardwareId></tds:GetDeviceInformationResponse>"
+        )
     } else if operation(&xml, "GetCapabilities") {
         format!(
             "<tds:GetCapabilitiesResponse><tds:Capabilities><tt:Media><tt:XAddr>{base}/onvif/media_service</tt:XAddr></tt:Media></tds:Capabilities></tds:GetCapabilitiesResponse>"
