@@ -22,6 +22,14 @@ pub struct InventoryArgs {
 #[derive(Subcommand)]
 enum Action {
     List,
+    Watch {
+        #[arg(long)]
+        interface: Option<Ipv4Addr>,
+        #[arg(long, default_value = "239.255.255.250:3702")]
+        target: SocketAddrV4,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        seconds: Option<u64>,
+    },
     AddOnvif {
         #[arg(long)]
         alias: String,
@@ -70,8 +78,49 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
             .config_dir()
             .join("cameras.json"),
     };
+    let _lock = if matches!(
+        &args.action,
+        Action::List | Action::Resolve { .. } | Action::Watch { .. }
+    ) {
+        None
+    } else {
+        Some(CameraStore::lock(&path)?)
+    };
     let mut store = CameraStore::load(&path)?;
     match args.action {
+        Action::Watch {
+            interface,
+            target,
+            seconds,
+        } => {
+            let mut options = vidfish_onvif::manager::Options::new(path, interface);
+            options.target = target;
+            let manager = vidfish_onvif::manager::Manager::start(options)?;
+            let mut snapshot = manager.snapshot();
+            let runtime = tokio::runtime::Runtime::new()?;
+            let result = runtime.block_on(async {
+                let finish = async {
+                    match seconds {
+                        Some(seconds) => tokio::time::sleep(Duration::from_secs(seconds)).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(finish);
+                loop {
+                    tokio::select! {
+                        result = tokio::signal::ctrl_c() => { result?; break; }
+                        _ = &mut finish => break,
+                        changed = snapshot.changed() => {
+                            if changed.is_err() { break; }
+                            println!("{}", serde_json::to_string(&*snapshot.borrow_and_update())?);
+                        }
+                    }
+                }
+                Ok::<(), Box<dyn std::error::Error>>(())
+            });
+            manager.join();
+            result?;
+        }
         Action::List => println!("{}", serde_json::to_string_pretty(&store)?),
         Action::AddOnvif { alias, device } => {
             let id = store.add_onvif(&alias, &device)?;

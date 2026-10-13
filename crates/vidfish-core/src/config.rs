@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub segment_seconds: u64,
     pub max_cameras: usize,
     pub preview_slots: usize,
+    pub camera_interface: Option<std::net::Ipv4Addr>,
 }
 
 impl Default for AppConfig {
@@ -24,6 +25,7 @@ impl Default for AppConfig {
             segment_seconds: 600,
             max_cameras: 16,
             preview_slots: 4,
+            camera_interface: None,
         }
     }
 }

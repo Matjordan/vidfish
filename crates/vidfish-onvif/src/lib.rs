@@ -3,6 +3,7 @@ use base64::Engine;
 use reqwest::{Url, blocking::Client};
 use sha1::{Digest, Sha1};
 pub mod credentials;
+pub mod manager;
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
@@ -169,8 +170,21 @@ impl OnvifClient {
         client.credentials = Some(credentials);
         Ok(client)
     }
-    fn soap(&self, address: &str, namespace: &str, operation: &str, inner: &str) -> Result<String> {
+    fn soap(
+        &self,
+        address: &str,
+        namespace: &str,
+        operation: &str,
+        inner: &str,
+        deadline: Instant,
+    ) -> Result<String> {
         validate_url(address, &["http", "https"])?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error(
+                "camera profile resolution timed out; check camera responsiveness",
+            ));
+        }
         let security = self
             .credentials
             .as_ref()
@@ -183,6 +197,7 @@ impl OnvifClient {
         let request = self
             .http
             .post(address)
+            .timeout(remaining.min(Duration::from_secs(5)))
             .header(
                 "Content-Type",
                 format!("application/soap+xml; charset=utf-8; action=\"{namespace}/{operation}\""),
@@ -221,8 +236,18 @@ impl OnvifClient {
                 .respond(&context)
                 .map_err(|_| Error("unsupported camera HTTP Digest challenge"))?
                 .to_string();
+            if deadline <= Instant::now() {
+                return Err(Error(
+                    "camera authentication timed out; check camera responsiveness",
+                ));
+            }
             response = request
                 .header(reqwest::header::AUTHORIZATION, answer)
+                .timeout(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_secs(5)),
+                )
                 .send()
                 .map_err(|_| {
                     Error("authenticated ONVIF request failed; check network and credentials")
@@ -259,13 +284,15 @@ impl OnvifClient {
         Ok(xml)
     }
     pub fn resolve(&self, address: &str) -> Result<Camera> {
-        let info = self.soap(address, DEVICE, "GetDeviceInformation", "")?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let info = self.soap(address, DEVICE, "GetDeviceInformation", "", deadline)?;
         let info = document(&info)?;
         let caps = self.soap(
             address,
             DEVICE,
             "GetCapabilities",
             "<t:Category>Media</t:Category>",
+            deadline,
         )?;
         let caps = document(&caps)?;
         let media = caps
@@ -287,7 +314,7 @@ impl OnvifClient {
                 "ONVIF media service points to another host; verify camera configuration before using credentials",
             ));
         }
-        let profiles = self.soap(media, MEDIA, "GetProfiles", "")?;
+        let profiles = self.soap(media, MEDIA, "GetProfiles", "", deadline)?;
         let profiles = document(&profiles)?;
         let mut resolved = Vec::new();
         for node in profiles
@@ -307,7 +334,7 @@ impl OnvifClient {
                 "<t:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></t:StreamSetup><t:ProfileToken>{}</t:ProfileToken>",
                 escape(token)
             );
-            let stream = self.soap(media, MEDIA, "GetStreamUri", &inner)?;
+            let stream = self.soap(media, MEDIA, "GetStreamUri", &inner, deadline)?;
             let stream = document(&stream)?;
             let uri =
                 text(stream.root(), "Uri").ok_or(Error("camera did not return an RTSP URI"))?;
@@ -318,6 +345,7 @@ impl OnvifClient {
                     MEDIA,
                     "GetSnapshotUri",
                     &format!("<t:ProfileToken>{}</t:ProfileToken>", escape(token)),
+                    deadline,
                 )
                 .ok()
                 .and_then(|xml| {
@@ -518,7 +546,13 @@ mod authentication_tests {
         .unwrap();
         assert!(
             client
-                .soap(&address, DEVICE, "GetDeviceInformation", "")
+                .soap(
+                    &address,
+                    DEVICE,
+                    "GetDeviceInformation",
+                    "",
+                    Instant::now() + Duration::from_secs(30)
+                )
                 .unwrap()
                 .contains("auth-fixture")
         );

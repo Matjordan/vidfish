@@ -121,3 +121,31 @@ fn camera_inventory_commands_persist_aliases_and_reject_credentials_in_urls() {
     );
     assert!(run(&["remove", id.trim()]).status.success());
 }
+
+#[test]
+fn headless_camera_watch_reports_real_availability_and_exits_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cameras.json");
+    let fixture =
+        vidfish_media::fixtures::OnvifFixture::start("rtsp://127.0.0.1/live".into()).unwrap();
+    let mut store = vidfish_core::cameras::CameraStore::default();
+    store.add_onvif("Bench", &fixture.device_url).unwrap();
+    store.save(&path).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
+        .args(["cameras", "--inventory"])
+        .arg(&path)
+        .args(["watch", "--seconds", "5"])
+        .env_remove("DISPLAY")
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let output = String::from_utf8(result.stdout).unwrap();
+    assert!(
+        output
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|value| value["cameras"][0]["state"] == "Available"),
+        "{output}"
+    );
+    assert!(vidfish_core::cameras::CameraStore::lock(&path).is_ok());
+}

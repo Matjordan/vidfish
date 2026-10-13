@@ -182,14 +182,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.service || args.check {
-        runtime.block_on(async {
+        let cameras = if args.service {
+            Some(vidfish_onvif::manager::Manager::start(
+                vidfish_onvif::manager::Options::new(
+                    path.with_file_name("cameras.json"),
+                    config.camera_interface,
+                ),
+            )?)
+        } else {
+            None
+        };
+        let result = runtime.block_on(async {
             let engine = Engine::start(config)?;
             if args.service {
                 tokio::signal::ctrl_c().await?;
             }
             engine.shutdown().await?;
             Ok::<_, Box<dyn std::error::Error>>(())
-        })?;
+        });
+        if let Some(cameras) = cameras {
+            cameras.join();
+        }
+        result?;
         return Ok(());
     }
     #[cfg(feature = "desktop")]

@@ -17,6 +17,9 @@ time = { version = "0.3", features = ["formatting"] }
 digest_auth = "0.3"
 zeroize = "1"
 keyring = { version = "3.6", default-features = false }
+vidfish-core = { path = "../vidfish-core" }
+tokio.workspace = true
+tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["linux-native"] }
@@ -26,3 +29,4 @@ keyring = { version = "3.6", default-features = false, features = ["windows-nati
 
 [dev-dependencies]
 vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }
+tempfile.workspace = true

@@ -56,6 +56,29 @@ fn valid_url(value: &str, schemes: &[&str]) -> bool {
     })
 }
 impl CameraStore {
+    /// Hold this guard across inventory read/modify/write or manager lifetime.
+    pub fn lock(path: &Path) -> io::Result<std::fs::File> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut lock_path = path.as_os_str().to_os_string();
+        lock_path.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(std::path::PathBuf::from(lock_path))?;
+        file.try_lock().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "camera inventory is in use; stop the other desktop/service/watch before editing",
+            )
+        })?;
+        Ok(file)
+    }
     pub fn validate(&self) -> io::Result<()> {
         if self.schema_version != 1 || self.cameras.len() > 16 {
             return Err(invalid(
@@ -185,19 +208,27 @@ impl CameraStore {
             }
             return Ok(Observation::Known(existing.id.clone()));
         }
-        if hardware
-            .as_ref()
-            .is_some_and(|h| self.cameras.iter().any(|c| c.hardware.as_ref() == Some(h)))
-        {
+        let manual_index = self
+            .cameras
+            .iter()
+            .position(|c| c.endpoint_id.is_none() && c.device_url.as_deref() == Some(address));
+        if hardware.as_ref().is_some_and(|h| {
+            self.cameras
+                .iter()
+                .enumerate()
+                .any(|(index, c)| Some(index) != manual_index && c.hardware.as_ref() == Some(h))
+        }) {
             return Err(invalid(
                 "hardware now reports a different ONVIF identity; confirm identity change before adding",
             ));
         }
-        if let Some(existing) = self
-            .cameras
-            .iter_mut()
-            .find(|c| c.endpoint_id.is_none() && c.device_url.as_deref() == Some(address))
-        {
+        if let Some(index) = manual_index {
+            let existing = &mut self.cameras[index];
+            if existing.hardware.is_some() && existing.hardware != hardware {
+                return Err(invalid(
+                    "manually registered camera hardware changed; confirm identity explicitly",
+                ));
+            }
             existing.endpoint_id = Some(endpoint.into());
             existing.hardware = hardware;
             return Ok(Observation::Known(existing.id.clone()));
