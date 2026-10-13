@@ -170,6 +170,80 @@ impl OnvifClient {
         client.credentials = Some(credentials);
         Ok(client)
     }
+    /// Fetch an ONVIF snapshot without following redirects or forwarding login
+    /// credentials to a different host. Limit response size before decoding.
+    pub fn snapshot(&self, device: &str, address: &str) -> Result<Vec<u8>> {
+        use std::io::Read;
+        validate_url(address, &["http", "https"])?;
+        let origin = Url::parse(device).map_err(|_| Error("Invalid device URL"))?;
+        let url = Url::parse(address).map_err(|_| Error("Invalid snapshot URL"))?;
+        if origin.host_str() != url.host_str() {
+            return Err(Error(
+                "Snapshot host differs from camera; use RTSP fallback",
+            ));
+        }
+        let request = self.http.get(address);
+        let mut response = request
+            .try_clone()
+            .ok_or(Error("Cannot construct snapshot request"))?
+            .send()
+            .map_err(|_| Error("Snapshot request failed"))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            let login = self
+                .credentials
+                .as_ref()
+                .ok_or(Error("Snapshot requires camera login"))?;
+            let challenge = response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|h| h.to_str().ok())
+                .ok_or(Error("Snapshot authentication challenge missing"))?;
+            if challenge.len() > 8192 || !challenge.is_ascii() {
+                return Err(Error("Invalid snapshot authentication challenge"));
+            }
+            if challenge.starts_with("Digest ") {
+                let mut prompt = digest_auth::parse(challenge)
+                    .map_err(|_| Error("Invalid snapshot Digest challenge"))?;
+                let mut resource = url.path().to_owned();
+                if let Some(query) = url.query() {
+                    resource.push('?');
+                    resource.push_str(query);
+                }
+                let context = digest_auth::AuthContext::new(
+                    login.username.as_str(),
+                    login.password.as_str(),
+                    resource.as_str(),
+                );
+                let answer = prompt
+                    .respond(&context)
+                    .map_err(|_| Error("Unsupported snapshot Digest challenge"))?
+                    .to_string();
+                response = request
+                    .header(reqwest::header::AUTHORIZATION, answer)
+                    .send()
+                    .map_err(|_| Error("Authenticated snapshot failed"))?;
+            } else if challenge.starts_with("Basic ") {
+                response = request
+                    .basic_auth(login.username.as_str(), Some(login.password.as_str()))
+                    .send()
+                    .map_err(|_| Error("Authenticated snapshot failed"))?;
+            } else {
+                return Err(Error("Unsupported snapshot authentication"));
+            }
+        }
+        if !response.status().is_success() {
+            return Err(Error("Camera snapshot unavailable"));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error("Snapshot response interrupted"))?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(Error("Snapshot exceeds size limit"));
+        }
+        Ok(bytes)
+    }
     fn soap(
         &self,
         address: &str,
