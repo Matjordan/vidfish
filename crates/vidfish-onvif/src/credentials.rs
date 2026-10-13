@@ -17,16 +17,17 @@ impl Drop for Credentials {
 }
 impl Credentials {
     pub fn new(username: String, password: String) -> Result<Self> {
-        if username.is_empty()
-            || password.is_empty()
-            || username.len() > 256
-            || password.len() > 1024
+        let credentials = Self { username, password };
+        if credentials.username.is_empty()
+            || credentials.password.is_empty()
+            || credentials.username.len() > 256
+            || credentials.password.len() > 1024
         {
             return Err(Error(
                 "camera username/password must be nonempty and within supported limits",
             ));
         }
-        Ok(Self { username, password })
+        Ok(credentials)
     }
     /// Named environment variables avoid secrets in process arguments/history.
     pub fn from_environment(username_variable: &str, password_variable: &str) -> Result<Self> {
