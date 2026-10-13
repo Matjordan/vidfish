@@ -307,6 +307,11 @@ def main():
                 raise RuntimeError("Viewer actions changed an active recorder's state or run ID")
             after_bytes = {r["camera_id"]: r["bytes_written"] for r in after}
             until(lambda: len(values) == 4 and all(r["state"] == "Recording" and r["run_id"] == original_runs[r["camera_id"]][0] and r["bytes_written"] > after_bytes[r["camera_id"]] for r in values) if (values := statuses()) else False)
+            click("Hide cameras")
+            until(lambda: state()["cameras_collapsed"])
+            until(lambda: json.loads((root / "views.json").read_text())["cameras_collapsed"])
+            click("Show cameras")
+            until(lambda: not state()["cameras_collapsed"])
             original_session = json.loads((root / "sessions.json").read_text())["active"]
             click("Sessions / recordings")
             until(lambda: state().get("library", {}).get("open") and not state()["library"]["loading"] and (state()["library"].get("events") or 0) >= 4)

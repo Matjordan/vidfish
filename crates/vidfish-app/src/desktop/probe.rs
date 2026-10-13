@@ -42,7 +42,7 @@ impl Desktop {
             .unwrap_or_default();
         let slots:Vec<_>=self.slots.iter().enumerate().map(|(i,s)|serde_json::json!({"camera":s.camera_id,"label":s.label,"frame":s.number,"size":s.texture.as_ref().map(|t|t.size()),"state":self.preview_state(i),"pending":s.pending.is_some()})).collect();
         let (active, peak) = vidfish_media::preview_worker_counts();
-        let snapshot = serde_json::json!({"buttons":buttons,"scale":ctx.pixels_per_point(),"fullscreen":self.fullscreen,"page":self.page,"camera_count":self.camera_status.cameras.len(),"slots":slots,"active_workers":active,"peak_workers":peak,"events":self.events.len(),"session_id":self.active_session.as_ref().map(|s|&s.id),"library":self.library.probe(),"viewport":ctx.input(|i|[i.content_rect().width(),i.content_rect().height()])});
+        let snapshot = serde_json::json!({"buttons":buttons,"scale":ctx.pixels_per_point(),"fullscreen":self.fullscreen,"page":self.page,"cameras_collapsed":self.views.cameras_collapsed,"camera_count":self.camera_status.cameras.len(),"slots":slots,"active_workers":active,"peak_workers":peak,"events":self.events.len(),"session_id":self.active_session.as_ref().map(|s|&s.id),"library":self.library.probe(),"viewport":ctx.input(|i|[i.content_rect().width(),i.content_rect().height()])});
         let (sender, receiver) = tokio::sync::oneshot::channel();
         self.runtime.spawn_blocking(move || {
             let result = (|| -> std::io::Result<()> {

@@ -1,11 +1,24 @@
 use super::*;
 use vidfish::acquisition::{Control, State};
-const RED: egui::Color32 = egui::Color32::from_rgb(255, 100, 100);
-const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 220, 155);
+const RED: egui::Color32 = super::theme::DANGER;
+const GREEN: egui::Color32 = super::theme::GOOD;
 fn touch(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Response {
     let label = label.into();
     let name = label.text().to_owned();
-    let response = ui.add(egui::Button::new(label).min_size(egui::vec2(44.0, 44.0)));
+    let mut button = egui::Button::new(label)
+        .min_size(egui::vec2(44.0, 44.0))
+        .corner_radius(6);
+    if name == "Mark + Grab All" {
+        button = button
+            .fill(egui::Color32::from_rgb(166, 45, 56))
+            .stroke(egui::Stroke::new(1.0_f32, RED))
+            .min_size(egui::vec2(174.0, 48.0));
+    } else if name == "Record all" {
+        button = button.fill(egui::Color32::from_rgb(23, 74, 65));
+    } else if name == "Stop all" {
+        button = button.fill(egui::Color32::from_rgb(80, 36, 46));
+    }
+    let response = ui.add(button);
     super::probe::button(ui, &name, &response);
     response
 }
@@ -105,13 +118,16 @@ impl Desktop {
         egui::TopBottomPanel::top("operator-header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(egui::RichText::new("Vidfish").color(egui::Color32::LIGHT_BLUE));
-                ui.label(format!(
-                    "Session: {}",
-                    self.active_session
-                        .as_ref()
-                        .map(|s| s.label.as_str())
-                        .unwrap_or(&self.views.session_label)
-                ));
+                let label = self
+                    .active_session
+                    .as_ref()
+                    .map(|s| s.label.as_str())
+                    .unwrap_or(&self.views.session_label);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(format!("Session · {label}")).strong())
+                        .truncate(),
+                )
+                .on_hover_text(label);
                 let first = self
                     .record_status
                     .cameras
@@ -130,8 +146,10 @@ impl Desktop {
                     seconds % 60
                 ));
                 ui.colored_label(
-                    if failed > 0 || missing > 0 {
+                    if failed > 0 {
                         RED
+                    } else if missing > 0 {
+                        super::theme::WARNING
                     } else {
                         GREEN
                     },
@@ -176,7 +194,19 @@ impl Desktop {
                 if self.fullscreen.is_some() && touch(ui, "Return to grid").clicked() {
                     self.return_grid(ctx);
                 }
-                ui.label("Closing the viewer leaves recorders running.");
+                if touch(
+                    ui,
+                    if self.views.cameras_collapsed {
+                        "Show cameras"
+                    } else {
+                        "Hide cameras"
+                    },
+                )
+                .clicked()
+                {
+                    self.views.cameras_collapsed = !self.views.cameras_collapsed;
+                    self.views_dirty = true;
+                }
             });
             for error in [
                 &self.record_status.error,
@@ -196,178 +226,198 @@ impl Desktop {
         let mut selected = None;
         let camera_rows = self.camera_status.cameras.clone();
         let record_rows = self.record_status.cameras.clone();
-        egui::SidePanel::right("camera-roster")
-            .default_width(280.0)
-            .width_range(240.0..=360.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Cameras");
-                    if touch(ui, "Add").clicked() {
-                        self.adding_camera = true;
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    for i in 0..self.slots.len() {
-                        if ui
-                            .add(
-                                egui::Button::new(format!("Slot {}", i + 1))
-                                    .selected(self.selected_slot == i)
-                                    .min_size(egui::vec2(44.0, 44.0)),
-                            )
-                            .clicked()
-                        {
-                            self.selected_slot = i;
-                            if self.fullscreen.is_some() {
-                                self.fullscreen = Some(i);
+        if !self.views.cameras_collapsed {
+            egui::SidePanel::right("camera-roster")
+                .default_width(280.0)
+                .width_range(240.0..=360.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("Cameras");
+                        if touch(ui, "Add").clicked() {
+                            self.adding_camera = true;
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        for i in 0..self.slots.len() {
+                            if ui
+                                .add(
+                                    egui::Button::new(format!("Slot {}", i + 1))
+                                        .selected(self.selected_slot == i)
+                                        .min_size(egui::vec2(44.0, 44.0)),
+                                )
+                                .clicked()
+                            {
+                                self.selected_slot = i;
+                                if self.fullscreen.is_some() {
+                                    self.fullscreen = Some(i);
+                                }
                             }
                         }
+                    });
+                    let pages = self
+                        .camera_status
+                        .cameras
+                        .len()
+                        .div_ceil(self.slots.len())
+                        .max(1);
+                    ui.horizontal(|ui| {
+                        if touch(ui, "Previous").clicked() {
+                            self.group((self.page + pages - 1) % pages);
+                        }
+                        ui.label(format!("{}/{}", self.page + 1, pages));
+                        if touch(ui, "Next").clicked() {
+                            self.group((self.page + 1) % pages);
+                        }
+                    });
+                    if touch(ui, "Show this group").clicked() {
+                        self.group(self.page.min(pages - 1));
                     }
-                });
-                let pages = self
-                    .camera_status
-                    .cameras
-                    .len()
-                    .div_ceil(self.slots.len())
-                    .max(1);
-                ui.horizontal(|ui| {
-                    if touch(ui, "Previous").clicked() {
-                        self.group((self.page + pages - 1) % pages);
-                    }
-                    ui.label(format!("{}/{}", self.page + 1, pages));
-                    if touch(ui, "Next").clicked() {
-                        self.group((self.page + 1) % pages);
-                    }
-                });
-                if touch(ui, "Show this group").clicked() {
-                    self.group(self.page.min(pages - 1));
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("roster-scroll")
-                    .show(ui, |ui| {
-                        for camera in &camera_rows {
-                            let record =
-                                record_rows.iter().find(|s| s.camera_id == camera.camera.id);
-                            let color = if record.is_some_and(|r| {
-                                r.state == State::Recording
-                                    && r.error.is_none()
-                                    && r.warning.is_none()
-                                    && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
-                            }) {
-                                GREEN
-                            } else {
-                                RED
-                            };
-                            egui::Frame::group(ui.style())
-                                .fill(egui::Color32::from_rgb(20, 37, 56))
-                                .show(ui, |ui| {
-                                    ui.strong(&camera.camera.alias);
-                                    ui.label(format!("Available: {:?}", camera.state));
-                                    ui.colored_label(
-                                        color,
-                                        match record {
-                                            Some(r) => format!(
-                                                "Recording: {:?} · {} bytes",
-                                                r.state, r.bytes_written
-                                            ),
-                                            None => "NOT RECORDING".into(),
+                    egui::ScrollArea::vertical()
+                        .id_salt("roster-scroll")
+                        .show(ui, |ui| {
+                            for camera in &camera_rows {
+                                let record =
+                                    record_rows.iter().find(|s| s.camera_id == camera.camera.id);
+                                let color = if record.is_some_and(|r| {
+                                    r.state == State::Recording
+                                        && r.error.is_none()
+                                        && r.warning.is_none()
+                                        && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
+                                }) {
+                                    GREEN
+                                } else {
+                                    RED
+                                };
+                                egui::Frame::group(ui.style())
+                                    .fill(super::theme::CARD)
+                                    .corner_radius(7)
+                                    .stroke(egui::Stroke::new(
+                                        1.0_f32,
+                                        if self.slots[self.selected_slot].camera_id.as_ref()
+                                            == Some(&camera.camera.id)
+                                        {
+                                            super::theme::ACCENT
+                                        } else {
+                                            super::theme::BORDER
                                         },
-                                    );
-                                    if let Some(record) = record {
-                                        for error in
-                                            [&record.error, &record.warning].into_iter().flatten()
-                                        {
-                                            ui.colored_label(RED, error);
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.strong(&camera.camera.alias);
+                                        let (state_text, state_color) =
+                                            super::theme::camera_state(camera.state);
+                                        ui.colored_label(state_color, state_text);
+                                        ui.colored_label(
+                                            color,
+                                            match record {
+                                                Some(r) if r.state == State::Recording => format!(
+                                                    "REC · {:.1} MiB",
+                                                    r.bytes_written as f64 / (1024.0 * 1024.0)
+                                                ),
+                                                Some(r) => format!("Recording · {:?}", r.state),
+                                                None => "NOT RECORDING".into(),
+                                            },
+                                        );
+                                        if let Some(record) = record {
+                                            for error in [&record.error, &record.warning]
+                                                .into_iter()
+                                                .flatten()
+                                            {
+                                                ui.colored_label(RED, error);
+                                            }
                                         }
-                                    }
-                                    let shown = self.slots.iter().position(|s| {
-                                        s.camera_id.as_ref() == Some(&camera.camera.id)
-                                    });
-                                    if let Some(index) = shown {
-                                        ui.label(format!(
-                                            "Shown in slot {} · {}",
-                                            index + 1,
-                                            self.preview_state(index)
-                                        ));
-                                    }
-                                    if camera.state
-                                        == vidfish_onvif::manager::State::AuthenticationRequired
-                                        && touch(ui, "Enter camera login").clicked()
-                                    {
-                                        self.login_username.zeroize();
-                                        self.login_password.zeroize();
-                                        self.login_camera = Some(camera.camera.id.clone());
-                                    }
-                                    if let Some(error) = &camera.error {
-                                        ui.colored_label(RED, error);
-                                    }
-                                    if let Some(retry) = camera.retry_seconds {
-                                        ui.label(format!("Retry {retry}s"));
-                                    }
-                                    ui.horizontal_wrapped(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                self.slots[self.selected_slot].pending.is_none(),
-                                                egui::Button::new(if shown.is_some() {
-                                                    "Focus feed"
-                                                } else {
-                                                    "View feed"
-                                                })
-                                                .min_size(egui::vec2(88.0, 44.0)),
-                                            )
-                                            .clicked()
-                                        {
-                                            selected = Some((
-                                                camera.camera.clone(),
-                                                camera.profiles.first().cloned(),
+                                        let shown = self.slots.iter().position(|s| {
+                                            s.camera_id.as_ref() == Some(&camera.camera.id)
+                                        });
+                                        if let Some(index) = shown {
+                                            ui.label(format!(
+                                                "Shown in slot {} · {}",
+                                                index + 1,
+                                                self.preview_state(index)
                                             ));
                                         }
-                                        if touch(ui, "Record").clicked()
-                                            && let Err(e) = self
-                                                .record_control
-                                                .command(Control::Record(camera.camera.id.clone()))
+                                        if camera.state
+                                            == vidfish_onvif::manager::State::AuthenticationRequired
+                                            && touch(ui, "Enter camera login").clicked()
                                         {
-                                            self.message = e.into();
+                                            self.login_username.zeroize();
+                                            self.login_password.zeroize();
+                                            self.login_camera = Some(camera.camera.id.clone());
                                         }
-                                        if touch(ui, "Stop").clicked()
-                                            && let Err(e) = self
-                                                .record_control
-                                                .command(Control::Stop(camera.camera.id.clone()))
-                                        {
-                                            self.message = e.into();
+                                        if let Some(error) = &camera.error {
+                                            ui.colored_label(RED, error);
                                         }
-                                    });
-                                    let editor_id =
-                                        egui::Id::new(("camera-editor", &camera.camera.id));
-                                    let mut editing = ctx
-                                        .data(|d| d.get_temp::<bool>(editor_id).unwrap_or(false));
-                                    if touch(ui, "Rename / login").clicked() {
-                                        editing = !editing;
-                                        ctx.data_mut(|d| d.insert_temp(editor_id, editing));
-                                    }
-                                    if editing {
-                                        let alias = self
-                                            .aliases
-                                            .entry(camera.camera.id.clone())
-                                            .or_insert_with(|| camera.camera.alias.clone());
-                                        ui.add(
-                                            egui::TextEdit::singleline(alias)
-                                                .id(egui::Id::new((
-                                                    "camera-alias",
-                                                    &camera.camera.id,
-                                                )))
-                                                .char_limit(256),
-                                        );
-                                        if touch(ui, "Save alias").clicked()
-                                            && let Err(e) = self.camera_control.command(
-                                                vidfish_onvif::manager::Command::Rename {
-                                                    id: camera.camera.id.clone(),
-                                                    alias: alias.clone(),
-                                                },
-                                            )
-                                        {
-                                            self.message = e.to_string();
+                                        if let Some(retry) = camera.retry_seconds {
+                                            ui.label(format!("Retry {retry}s"));
                                         }
-                                        if touch(ui, "Clear camera login").clicked()
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    self.slots[self.selected_slot]
+                                                        .pending
+                                                        .is_none(),
+                                                    egui::Button::new(if shown.is_some() {
+                                                        "Focus feed"
+                                                    } else {
+                                                        "View feed"
+                                                    })
+                                                    .min_size(egui::vec2(88.0, 44.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                selected = Some((
+                                                    camera.camera.clone(),
+                                                    camera.profiles.first().cloned(),
+                                                ));
+                                            }
+                                            if touch(ui, "Record").clicked()
+                                                && let Err(e) = self.record_control.command(
+                                                    Control::Record(camera.camera.id.clone()),
+                                                )
+                                            {
+                                                self.message = e.into();
+                                            }
+                                            if touch(ui, "Stop").clicked()
+                                                && let Err(e) = self.record_control.command(
+                                                    Control::Stop(camera.camera.id.clone()),
+                                                )
+                                            {
+                                                self.message = e.into();
+                                            }
+                                        });
+                                        let editor_id =
+                                            egui::Id::new(("camera-editor", &camera.camera.id));
+                                        let mut editing = ctx.data(|d| {
+                                            d.get_temp::<bool>(editor_id).unwrap_or(false)
+                                        });
+                                        if touch(ui, "Rename / login").clicked() {
+                                            editing = !editing;
+                                            ctx.data_mut(|d| d.insert_temp(editor_id, editing));
+                                        }
+                                        if editing {
+                                            let alias = self
+                                                .aliases
+                                                .entry(camera.camera.id.clone())
+                                                .or_insert_with(|| camera.camera.alias.clone());
+                                            ui.add(
+                                                egui::TextEdit::singleline(alias)
+                                                    .id(egui::Id::new((
+                                                        "camera-alias",
+                                                        &camera.camera.id,
+                                                    )))
+                                                    .margin(egui::vec2(6.0, 14.0))
+                                                    .char_limit(256),
+                                            );
+                                            if touch(ui, "Save alias").clicked()
+                                                && let Err(e) = self.camera_control.command(
+                                                    vidfish_onvif::manager::Command::Rename {
+                                                        id: camera.camera.id.clone(),
+                                                        alias: alias.clone(),
+                                                    },
+                                                )
+                                            {
+                                                self.message = e.to_string();
+                                            }
+                                            if touch(ui, "Clear camera login").clicked()
                                             && let Err(error) = self.camera_control.command(
                                                 vidfish_onvif::manager::Command::ClearCredentials {
                                                     id: camera.camera.id.clone(),
@@ -376,17 +426,18 @@ impl Desktop {
                                         {
                                             self.message = error.to_string();
                                         }
-                                        if touch(ui, "Camera login").clicked() {
-                                            self.login_username.zeroize();
-                                            self.login_password.zeroize();
-                                            self.login_camera = Some(camera.camera.id.clone());
+                                            if touch(ui, "Camera login").clicked() {
+                                                self.login_username.zeroize();
+                                                self.login_password.zeroize();
+                                                self.login_camera = Some(camera.camera.id.clone());
+                                            }
                                         }
-                                    }
-                                });
-                            ui.add_space(4.0);
-                        }
-                    });
-            });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        });
+                });
+        }
         if let Some((camera, profile)) = selected {
             if camera.manual_rtsp.is_none() && profile.is_none() {
                 if let Some(index) = self
@@ -471,6 +522,21 @@ impl Desktop {
                             |ui| {
                                 ui.set_max_width(width);
                                 ui.set_min_size(egui::vec2(width, height));
+                                let rect = ui.max_rect();
+                                ui.painter().rect_filled(rect, 7, super::theme::PANEL);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    7,
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        if self.selected_slot == index {
+                                            super::theme::ACCENT
+                                        } else {
+                                            super::theme::BORDER
+                                        },
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
                                 let slot = &self.slots[index];
                                 let record = self
                                     .record_status
@@ -495,7 +561,7 @@ impl Desktop {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         if okay { GREEN } else { RED },
-                                        if okay { "REC" } else { "NOT RECORDING" },
+                                        if okay { "REC" } else { "○ NOT RECORDING" },
                                     );
                                     ui.add(
                                         egui::Label::new(egui::RichText::new(&state).color(
@@ -529,7 +595,10 @@ impl Desktop {
                                         close = Some(index);
                                     }
                                 });
-                                let size = egui::vec2(width, (height - 100.0).max(1.0));
+                                let size = egui::vec2(
+                                    (width - 2.0).max(1.0),
+                                    (rect.bottom() - ui.cursor().top() - 4.0).max(1.0),
+                                );
                                 if let Some(texture) = &slot.texture {
                                     ui.add(
                                         egui::Image::new(texture)
@@ -570,10 +639,10 @@ impl Desktop {
                 if touch(ui,"Set shared camera login").clicked(){self.login_username.zeroize();self.login_password.zeroize();self.login_camera=Some("shared-defaults".into());}
                 if touch(ui,"Clear shared camera login").clicked(){if let Err(error)=self.camera_control.command(vidfish_onvif::manager::Command::SaveDefaults{credentials:None}){self.message=error.to_string();}else{self.message="Clearing shared login; per-camera overrides are retained".into();}}
             });
-            ui.label("Camera adapter IPv4 (blank searches all active adapters)");ui.text_edit_singleline(&mut self.interface);
+            ui.label("Camera adapter IPv4 (blank searches all active adapters)");super::theme::edit(ui,&mut self.interface);
             let valid=self.interface.trim().is_empty() || self.interface.trim().parse::<std::net::Ipv4Addr>().is_ok();
-            let mut output=self.config.output_directory.to_string_lossy().into_owned();ui.label("Output directory");if ui.text_edit_singleline(&mut output).changed(){self.config.output_directory=output.into();}
-            ui.label("Default session name / test ID (blank generates a name)");ui.add(egui::TextEdit::singleline(&mut self.config.session_name).char_limit(128));
+            let mut output=self.config.output_directory.to_string_lossy().into_owned();ui.label("Output directory");if super::theme::edit(ui,&mut output).changed(){self.config.output_directory=output.into();}
+            ui.label("Default session name / test ID (blank generates a name)");ui.add(egui::TextEdit::singleline(&mut self.config.session_name).margin(egui::vec2(6.0,14.0)).char_limit(128));
             let mut retention=retention_draft.is_some();if ui.checkbox(&mut retention,"Automatically delete old closed sessions").changed(){*retention_draft=if retention{Some(7)}else{None};}
             if let Some(days)=retention_draft {ui.horizontal(|ui|{ui.label("Keep closed sessions for days");ui.add(egui::DragValue::new(days).range(1..=36500));});ui.colored_label(egui::Color32::LIGHT_RED,"Deletes recordings, snapshots and logs after the saved age. Active/busy sessions and legacy files are preserved.");}
             ui.label("Segment interval / stall deadline (seconds)");ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400));ui.add(egui::DragValue::new(&mut self.config.stall_seconds).range(1..=3600));
@@ -724,6 +793,7 @@ impl Desktop {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.note)
                         .hint_text("Optional note")
+                        .id_salt("event-note-draft").margin(egui::vec2(6.0,14.0))
                         .char_limit(4096)
                         .desired_width(180.0),
                 );
@@ -749,15 +819,17 @@ impl Desktop {
                 );
                 egui::ScrollArea::vertical()
                     .id_salt("events-scroll")
-                    .max_height(100.0)
+                    .max_height(180.0)
                     .show(ui, |ui| {
                         for event in &self.events {
                             let response=egui::CollapsingHeader::new(format!("{} · {}s · {} · {} captured{}",event.kind,event.elapsed_seconds,event.note,event.captures.iter().filter(|c|c.image.is_some()).count(),if event.complete {""} else {" · INCOMPLETE"})).id_salt(&event.id).show(ui,|ui|{
                                 ui.label(format!("{} · UTC Unix ms {}",event.id,event.unix_ms));
-                                let edit=ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note"));super::probe::button(ui,"Edit note",&edit);if edit.clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
+                                let edit=ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note"));super::probe::button(ui,"Edit note",&edit);if ui.ctx().data(|d|d.get_temp::<String>(egui::Id::new("scroll-to-event-note"))).as_deref()==Some(event.id.as_str()){edit.scroll_to_me(Some(egui::Align::Min));ui.ctx().data_mut(|d|{d.remove::<String>(egui::Id::new("scroll-to-event-note"));});}
+                                if edit.clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
                                 for capture in &event.captures {ui.label(format!("{} · {} · {} · offset {}",capture.label,capture.result,capture.recording.state,capture.recording.offset_ns.map(|n|format!("{:.3}s",n as f64/1e9)).unwrap_or_else(||"unavailable".into())));}
                             });
                             super::probe::button(ui,&format!("Event {}",event.id),&response.header_response);
+                            if response.header_response.clicked(){ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("scroll-to-event-note"),event.id.clone()));}
                         }
                         ui.horizontal_wrapped(|ui| {
                             for (label, texture) in &self.thumbnails {

@@ -11,6 +11,7 @@ pub struct Views {
     pub slots: [Option<String>; 4],
     pub selected_slot: usize,
     pub events_expanded: bool,
+    pub cameras_collapsed: bool,
     pub session_label: String,
 }
 impl Default for Views {
@@ -20,6 +21,7 @@ impl Default for Views {
             slots: Default::default(),
             selected_slot: 0,
             events_expanded: false,
+            cameras_collapsed: false,
             session_label: "Acquisition".into(),
         }
     }
@@ -109,6 +111,7 @@ mod tests {
         assert_eq!(views.select(0, id).unwrap(), 2);
         assert!(views.slots[0].is_none());
         views.events_expanded = true;
+        views.cameras_collapsed = true;
         views.save(&path).unwrap();
         assert_eq!(Views::load(&path).unwrap(), views);
         std::fs::write(&path, "{").unwrap();

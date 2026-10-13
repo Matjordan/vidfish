@@ -1,6 +1,7 @@
 mod library;
 mod operator;
 mod probe;
+mod theme;
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -104,12 +105,7 @@ pub fn run(
             }
             cc.egui_ctx
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.interact_size.y = 44.0;
-            style.spacing.button_padding = egui::vec2(10.0, 8.0);
-            style.visuals.panel_fill = egui::Color32::from_rgb(11, 20, 32);
-            cc.egui_ctx.set_style(style);
+            theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
                 interface: config
                     .camera_interface
@@ -459,7 +455,12 @@ impl eframe::App for Desktop {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label("Username");
-                ui.add(egui::TextEdit::singleline(&mut *self.login_username).char_limit(256));
+                ui.add(
+                    egui::TextEdit::singleline(&mut *self.login_username)
+                        .id_salt("login-username")
+                        .margin(egui::vec2(6.0, 14.0))
+                        .char_limit(256),
+                );
                 ui.label("Password");
                 ui.add(
                     egui::TextEdit::singleline(&mut *self.login_password)
