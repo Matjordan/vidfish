@@ -98,3 +98,14 @@ The operator observed that the earlier four-stream build looked fine. Numerical
 Toughpad CPU/GPU measurements are deferred at the user's request. Native/cloud
 functional checks are not a measurement of sustained physical Toughpad throughput.
 The bundled `benchmark-toughpad.ps1` remains available when measurements are desired.
+
+## Operator presentation
+
+The operator screen uses a shared dark palette, consistent type and touch controls,
+outlined selected feeds, separate recording/preview/connection states and a prominent
+Mark + Grab All action. Camera rows distinguish ready, connecting, reconnecting,
+offline, identity conflict and authentication required. **Hide cameras / Show cameras**
+collapses the roster without changing preview workers or recorder ownership; this
+choice persists with view preferences. Events remain collapsible, and preview images
+fit within the remaining card area at smaller resolutions. Keyboard shortcuts remain
+F6/F7/F8 for events, F9 for the session library, and Escape to return from fullscreen.

@@ -57,8 +57,7 @@ cargo run --locked -p vidfish -- cameras list
 
 Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
 runs in a separate process and survives preview window closure/restart. Ctrl+C
-finalizes the recording. The desktop and service discover/poll cameras when an adapter
-is configured. Use View feed in the camera list to open a preview. Auto-record is on
+finalizes the recording. The desktop and service automatically discover cameras across active IPv4 adapters and poll the inventory. Use View feed in the camera list to open a preview. Auto-record is on
 by default for registered/arriving cameras; Record all, Stop all, and per-camera controls
 operate independent recorder processes. A desktop restart reattaches to active recordings.
 Use either the desktop or headless service as the camera manager for an inventory. See [media setup](docs/media.md)
@@ -148,3 +147,5 @@ synchronization, or sustained physical 16-camera throughput without measurements
 Scientific events (Epic 5): [all-camera grabs, recording references, notes and JSON/CSV](docs/events.md). F6 marks, F7 grabs all cameras, and F8 combines both. Captures run independently of recording; timing uncertainty is explicit.
 
 Sessions (Epic 6): [named acquisitions, media library, portable export and opt-in retention](docs/sessions.md). All six epics are implemented; platform and timing limitations are documented.
+
+Follow-ups #32–#34 add operator visual polish, automatic all-adapter IPv4 discovery and shared camera login defaults with isolated authentication recovery.
