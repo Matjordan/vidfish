@@ -335,6 +335,28 @@ pub struct Frame {
     pub received_at: Instant,
 }
 
+static PREVIEW_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PREVIEW_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub fn preview_worker_counts() -> (usize, usize) {
+    (
+        PREVIEW_WORKERS.load(Ordering::Acquire),
+        PREVIEW_PEAK.load(Ordering::Acquire),
+    )
+}
+struct PreviewGuard;
+impl PreviewGuard {
+    fn enter() -> Self {
+        let active = PREVIEW_WORKERS.fetch_add(1, Ordering::AcqRel) + 1;
+        PREVIEW_PEAK.fetch_max(active, Ordering::AcqRel);
+        Self
+    }
+}
+impl Drop for PreviewGuard {
+    fn drop(&mut self) {
+        PREVIEW_WORKERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub struct Preview {
     pub frames: tokio::sync::watch::Receiver<Option<Arc<Frame>>>,
     pub status: tokio::sync::watch::Receiver<String>,
@@ -348,6 +370,7 @@ impl Preview {
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = stopping.clone();
         let worker = std::thread::spawn(move || {
+            let _active = PreviewGuard::enter();
             let result = preview_worker(source, codec, stop, frames_tx, &status_tx);
             status_tx.send_replace(match result {
                 Ok(()) => "Stopped".into(),

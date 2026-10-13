@@ -11,6 +11,7 @@ pub struct Views {
     pub slots: [Option<String>; 4],
     pub selected_slot: usize,
     pub events_expanded: bool,
+    pub session_label: String,
 }
 impl Default for Views {
     fn default() -> Self {
@@ -19,13 +20,16 @@ impl Default for Views {
             slots: Default::default(),
             selected_slot: 0,
             events_expanded: false,
+            session_label: "Acquisition".into(),
         }
     }
 }
 impl Views {
     pub fn validate(&self) -> io::Result<()> {
         let mut ids = std::collections::BTreeSet::new();
-        if self.schema_version != 1
+        if self.session_label.trim().is_empty()
+            || self.session_label.chars().count() > 128
+            || self.schema_version != 1
             || self.selected_slot >= 4
             || self
                 .slots

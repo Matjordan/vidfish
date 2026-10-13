@@ -1,4 +1,5 @@
 mod operator;
+mod probe;
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -21,6 +22,16 @@ pub fn run(
     seconds: Option<u64>,
     force_opengl: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let probe_path = std::env::var_os("VIDFISH_UI_PROBE").map(PathBuf::from);
+    let window_size = std::env::var("VIDFISH_UI_SIZE")
+        .ok()
+        .and_then(|s| {
+            s.split_once('x')
+                .map(|(w, h)| (w.parse::<u32>().ok(), h.parse::<u32>().ok()))
+        })
+        .and_then(|(w, h)| Some([w? as f32, h? as f32]))
+        .filter(|s| s[0] >= 800.0 && s[1] >= 600.0 && s[0] <= 3840.0 && s[1] <= 2160.0)
+        .unwrap_or([1280.0, 800.0]);
     let views = vidfish_core::views::Views::load(&path.with_file_name("views.json"))?;
     let engine = {
         let _guard = runtime.enter();
@@ -74,7 +85,7 @@ pub fn run(
         eframe::NativeOptions {
             renderer,
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1280.0, 800.0])
+                .with_inner_size(window_size)
                 .with_min_inner_size([800.0, 600.0]),
             ..Default::default()
         },
@@ -90,6 +101,8 @@ pub fn run(
                 let info = state.adapter.get_info();
                 tracing::info!(renderer = %info.name, backend = ?info.backend, device_type = ?info.device_type, "desktop renderer initialized");
             }
+            cc.egui_ctx
+                .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             let mut style = (*cc.egui_ctx.style()).clone();
             style.spacing.interact_size.y = 40.0;
@@ -135,6 +148,9 @@ pub fn run(
                 event_job: None,
                 events: std::collections::VecDeque::new(),
                 thumbnails: Vec::new(),
+                probe_path,
+                probe_last: Instant::now() - Duration::from_secs(2),
+                probe_job: None,
                 required_previews,
                 retired,
                 preview_jobs,
@@ -224,6 +240,9 @@ struct Desktop {
         Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
     events: std::collections::VecDeque<vidfish::operator_events::Event>,
     thumbnails: Vec<(String, egui::TextureHandle)>,
+    probe_path: Option<PathBuf>,
+    probe_last: Instant,
+    probe_job: Option<tokio::sync::oneshot::Receiver<()>>,
     required_previews: usize,
     retired: std::sync::mpsc::SyncSender<Preview>,
     preview_jobs: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
@@ -238,6 +257,13 @@ impl eframe::App for Desktop {
         }
         if self.camera_snapshot.has_changed().unwrap_or(true) {
             self.camera_status = self.camera_snapshot.borrow_and_update().clone();
+            self.camera_status.cameras.sort_by(|a, b| {
+                a.camera
+                    .alias
+                    .to_lowercase()
+                    .cmp(&b.camera.alias.to_lowercase())
+                    .then_with(|| a.camera.id.cmp(&b.camera.id))
+            });
         }
         if let Some(saving) = &mut self.saving {
             match saving.try_recv() {
@@ -354,7 +380,14 @@ impl eframe::App for Desktop {
                 slot.label = camera.camera.alias.clone();
             }
         }
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("probe-buttons"),
+                Vec::<(String, [f32; 4])>::new(),
+            )
+        });
         self.draw_operator(ctx);
+        self.write_probe(ctx);
         if self.adding_camera {
             egui::Window::new("Add camera")
                 .collapsible(false)
@@ -550,6 +583,19 @@ impl Desktop {
 }
 impl Drop for Desktop {
     fn drop(&mut self) {
+        if self.views_dirty {
+            self.views.selected_slot = self.selected_slot;
+            let views = self.views.clone();
+            let path = self.path.with_file_name("views.json");
+            let previous = self.views_saving.take();
+            let job = self.runtime.spawn(async move {
+                if let Some(previous) = previous {
+                    let _ = previous.await;
+                }
+                let _ = tokio::task::spawn_blocking(move || views.save(&path)).await;
+            });
+            self.preview_jobs.lock().unwrap().push(job);
+        }
         for slot in &mut self.slots {
             if let Some(preview) = slot.preview.take() {
                 preview.request_stop();

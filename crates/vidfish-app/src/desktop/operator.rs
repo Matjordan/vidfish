@@ -3,7 +3,11 @@ use vidfish::acquisition::{Control, State};
 const RED: egui::Color32 = egui::Color32::from_rgb(255, 100, 100);
 const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 220, 155);
 fn touch(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Response {
-    ui.add(egui::Button::new(label).min_size(egui::vec2(44.0, 44.0)))
+    let label = label.into();
+    let name = label.text().to_owned();
+    let response = ui.add(egui::Button::new(label).min_size(egui::vec2(44.0, 44.0)));
+    super::probe::button(ui, &name, &response);
+    response
 }
 impl Desktop {
     pub(super) fn poll_view_save(&mut self) {
@@ -95,10 +99,20 @@ impl Desktop {
         egui::TopBottomPanel::top("operator-header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(egui::RichText::new("Vidfish").color(egui::Color32::LIGHT_BLUE));
-                ui.label("Session: acquisition");
-                let seconds = self.started.elapsed().as_secs();
+                ui.label(format!("Session: {}", self.views.session_label));
+                let first = self
+                    .record_status
+                    .cameras
+                    .iter()
+                    .filter(|r| r.state.active() && r.started_unix_ms > 0)
+                    .map(|r| r.started_unix_ms)
+                    .min();
+                let (clock, seconds) = match first {
+                    Some(start) => ("Recording", unix_ms().saturating_sub(start) / 1000),
+                    None => ("Viewer", self.started.elapsed().as_secs()),
+                };
                 ui.label(format!(
-                    "Viewer {:02}:{:02}:{:02}",
+                    "{clock} {:02}:{:02}:{:02}",
                     seconds / 3600,
                     seconds / 60 % 60,
                     seconds % 60
@@ -218,6 +232,7 @@ impl Desktop {
                                 r.state == State::Recording
                                     && r.error.is_none()
                                     && r.warning.is_none()
+                                    && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
                             }) {
                                 GREEN
                             } else {
@@ -279,15 +294,19 @@ impl Desktop {
                                                 camera.profiles.first().cloned(),
                                             ));
                                         }
-                                        if touch(ui, "Record").clicked() {
-                                            let _ = self
+                                        if touch(ui, "Record").clicked()
+                                            && let Err(e) = self
                                                 .record_control
-                                                .command(Control::Record(camera.camera.id.clone()));
+                                                .command(Control::Record(camera.camera.id.clone()))
+                                        {
+                                            self.message = e.into();
                                         }
-                                        if touch(ui, "Stop").clicked() {
-                                            let _ = self
+                                        if touch(ui, "Stop").clicked()
+                                            && let Err(e) = self
                                                 .record_control
-                                                .command(Control::Stop(camera.camera.id.clone()));
+                                                .command(Control::Stop(camera.camera.id.clone()))
+                                        {
+                                            self.message = e.into();
                                         }
                                     });
                                     egui::CollapsingHeader::new("Rename / login")
@@ -345,7 +364,7 @@ impl Desktop {
             self.settings(ctx);
         }
     }
-    fn preview_state(&self, index: usize) -> String {
+    pub(super) fn preview_state(&self, index: usize) -> String {
         let slot = &self.slots[index];
         if slot.pending.is_some() {
             return "Switching…".into();
@@ -565,6 +584,7 @@ impl Desktop {
                     self.views_dirty = true;
                 }
             });
+            ui.small("Grabs use fresh selected previews; unviewed cameras are reported.");
             if self.views.events_expanded {
                 ui.label(
                     "Grabs save fresh selected previews; unviewed cameras are explicitly reported.",
@@ -625,7 +645,7 @@ impl Desktop {
                     .collect();
             }
             let root = self.path.with_file_name("operator-events");
-            let note = std::mem::take(&mut self.note);
+            let note = self.note.clone();
             let elapsed = self.started.elapsed().as_secs();
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {

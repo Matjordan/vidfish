@@ -21,6 +21,8 @@ pub struct Event {
     pub kind: String,
     pub note: String,
     pub captures: Vec<Capture>,
+    #[serde(default)]
+    pub complete: bool,
 }
 pub struct Saved {
     pub event: Event,
@@ -54,8 +56,11 @@ pub fn save(
             kind: kind.into(),
             note,
             captures: Vec::new(),
+            complete: false,
         };
+        persist_event(&directory, &event)?;
         let mut thumbnails = Vec::new();
+        let action_at = std::time::Instant::now();
         for input in inputs {
             let mut capture = Capture {
                 camera: input.camera,
@@ -69,22 +74,39 @@ pub fn save(
                 .into(),
             };
             if grab
-                && let Some(frame) = input
-                    .frame
-                    .filter(|f| f.received_at.elapsed() < std::time::Duration::from_secs(5))
+                && let Some(frame) = input.frame.filter(|f| {
+                    action_at.saturating_duration_since(f.received_at)
+                        < std::time::Duration::from_secs(5)
+                })
             {
                 let path = directory.join(format!("snapshot-{}.png", event.captures.len()));
-                let file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&path)?;
-                let mut encoder = png::Encoder::new(file, frame.width as u32, frame.height as u32);
-                encoder.set_color(png::ColorType::Rgb);
-                encoder.set_depth(png::BitDepth::Eight);
-                let mut writer = encoder.write_header()?;
-                writer.write_image_data(&frame.rgb)?;
-                writer.finish()?;
-                std::fs::File::open(&path)?.sync_all()?;
+                let written = (|| -> Result<(), Box<dyn std::error::Error>> {
+                    if !(1..=4096).contains(&frame.width)
+                        || !(1..=2160).contains(&frame.height)
+                        || frame.rgb.len() != frame.width * frame.height * 3
+                    {
+                        return Err("Invalid snapshot dimensions".into());
+                    }
+                    let file = std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&path)?;
+                    let mut encoder =
+                        png::Encoder::new(file, frame.width as u32, frame.height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    let mut writer = encoder.write_header()?;
+                    writer.write_image_data(&frame.rgb)?;
+                    writer.finish()?;
+                    std::fs::File::open(&path)?.sync_all()?;
+                    Ok(())
+                })();
+                if written.is_err() {
+                    capture.result = "Snapshot write failed; partial image retained".into();
+                    event.captures.push(capture);
+                    persist_event(&directory, &event)?;
+                    continue;
+                }
                 capture.image = Some(path);
                 capture.result = "Latest displayed frame (not synchronized)".into();
                 let width = 128;
@@ -101,17 +123,24 @@ pub fn save(
                 thumbnails.push((capture.label.clone(), width, height, rgb));
             }
             event.captures.push(capture);
+            persist_event(&directory, &event)?;
         }
-        let mut metadata = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(directory.join("event.json"))?;
-        serde_json::to_writer_pretty(&mut metadata, &event)?;
-        metadata.write_all(b"\n")?;
-        metadata.sync_all()?;
+        event.complete = true;
+        persist_event(&directory, &event)?;
         Ok(Saved { event, thumbnails })
     })();
     result.map_err(|_|"Operator event could not be saved; check output permissions and disk space. Partial files retained.".into())
+}
+
+fn persist_event(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error::Error>> {
+    let mut metadata = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer_pretty(&mut metadata, event)?;
+    metadata.write_all(b"\n")?;
+    metadata.as_file().sync_all()?;
+    metadata
+        .persist(directory.join("event.json"))
+        .map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -186,5 +215,54 @@ mod tests {
         .unwrap();
         assert_ne!(mark.event.id, disk.id);
         assert!(path.exists());
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    #[test]
+    fn failed_snapshot_preserves_mark_note_and_other_capture_results() {
+        let root = tempfile::tempdir().unwrap();
+        let bad = Arc::new(vidfish_media::Frame {
+            width: 2,
+            height: 2,
+            rgb: vec![],
+            number: 1,
+            received_at: std::time::Instant::now(),
+        });
+        let good = Arc::new(vidfish_media::Frame {
+            rgb: vec![64; 12],
+            ..(*bad).clone()
+        });
+        let saved = save(
+            root.path(),
+            "Mark + Grab All",
+            "critical note".into(),
+            5,
+            vec![
+                Input {
+                    camera: "bad".into(),
+                    label: "Bad".into(),
+                    frame: Some(bad),
+                },
+                Input {
+                    camera: "good".into(),
+                    label: "Good".into(),
+                    frame: Some(good),
+                },
+            ],
+            true,
+        )
+        .unwrap();
+        let disk: Event = serde_json::from_slice(
+            &std::fs::read(root.path().join(&saved.event.id).join("event.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(disk.note, "critical note");
+        assert!(disk.complete);
+        assert!(disk.captures[0].result.contains("failed"));
+        assert!(disk.captures[0].image.is_none());
+        assert!(disk.captures[1].image.is_some());
     }
 }

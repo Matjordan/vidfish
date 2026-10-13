@@ -50,6 +50,8 @@ pub struct Status {
     pub disk_available_bytes: Option<u64>,
     #[serde(default)]
     pub process_id: u32,
+    #[serde(default)]
+    pub started_unix_ms: u64,
 }
 #[derive(Clone, Default)]
 pub struct Snapshot {
@@ -353,6 +355,7 @@ fn supervise(
                 warning: None,
                 disk_available_bytes: None,
                 process_id: 0,
+                started_unix_ms: 0,
             };
             let launched = (|| -> Result<Child> {
                 std::fs::create_dir_all(directory(&path))?;
@@ -469,6 +472,7 @@ pub fn record_camera(
         warning: None,
         disk_available_bytes: None,
         process_id: std::process::id(),
+        started_unix_ms: 0,
     };
     if let Some(mut previous) = read_status(config_path, id)
         && previous.state.active()
@@ -540,6 +544,7 @@ pub fn record_camera(
         recording.wait_started(Duration::from_secs(15))?;
         status.output = recording.current_output();
         status.state = State::Recording;
+        status.started_unix_ms = now();
         record_event(config_path, &status, "recording_started")?;
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;

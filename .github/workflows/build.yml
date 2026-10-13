@@ -67,6 +67,7 @@ jobs:
           ./target/release/vidfish --media-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/media-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --desktop
           xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5
+          xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/operator-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
           python3 scripts/acquisition-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
       - name: Check Windows runtime and RTSP recording
         if: runner.os == 'Windows'
@@ -89,6 +90,8 @@ jobs:
             Write-Output "::error title=Windows desktop smoke failed::$message"
             throw 'Desktop smoke test failed'
           }
+          python scripts/operator-smoke.py --binary target/release/vidfish.exe --fixture target/debug/examples/camera-fixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Operator interaction smoke failed' }
       - name: Package Linux runtime
         if: runner.os == 'Linux'
         run: bash scripts/package-linux.sh
