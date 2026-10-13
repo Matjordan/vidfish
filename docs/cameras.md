@@ -148,8 +148,8 @@ with per-run worker logs and atomic status files. Camera metadata disappearance 
 reported in structured application logs. Stream stalls are detected from actual file
 progress, not preview health. Recording workers retain partial files on failure.
 
-Output files are new MKVs named with camera ID, UTC Unix milliseconds, and run UUID in
-the configured output directory. Existing scientific data is never overwritten or deleted.
-This epic supplies the hot-arrival policy bridge; segmented files, detailed boundary
-indexes, disk-low policy, and full session organization remain Epic 3 and later work.
+Managed recordings now use keyframe-aligned MKV segments in collision-free per-camera run
+directories. Durable segment indexes, disk warning/stop policy, and recording gaps are
+described in [continuous recording](recording.md). Existing scientific data is never
+overwritten or deleted. Full session organization remains later work.
 For a manual H.265 camera use `cameras add --alias NAME --rtsp URI --h265`.

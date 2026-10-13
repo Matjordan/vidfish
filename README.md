@@ -85,6 +85,10 @@ visibly. Changes take effect on the next manager start.
   "output_directory": "recordings",
   "auto_record": true,
   "segment_seconds": 600,
+  "stall_seconds": 30,
+  "disk_warning_bytes": 1073741824,
+  "disk_stop_bytes": 268435456,
+  "disk_policy": "Stop",
   "max_cameras": 16,
   "preview_slots": 4,
   "camera_interface": null
@@ -94,7 +98,8 @@ visibly. Changes take effect on the next manager start.
 Relative paths use the launch working directory. Auto-record changes persist immediately
 and affect future starts; turning it off leaves active recordings running. Stop all
 suppresses automatic restarts until Record all or an application restart. Recordings
-currently use one collision-free MKV per run; segmentation is the next epic.
+use keyframe-aligned MKV segments (600 seconds by default), durable boundary indexes,
+disk warning/stop policy, and gap history. See [continuous recording](docs/recording.md).
 The prototype refuses existing output files and never deletes scientific data.
 JSON structured logs go to stdout; `RUST_LOG=debug` increases detail. Settings have
 no credential fields. Raw GStreamer error/debug strings are excluded from errors
