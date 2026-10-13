@@ -1,10 +1,11 @@
 # Vidfish
 
 Rust desktop software for scientific camera acquisition on Windows and Linux.
-Epic #1 currently provides an egui desktop, persistent typed settings, structured
-logging, an independently testable Tokio manager, and a GStreamer RTSP recording/
-preview prototype. Automated multi-camera discovery, segmentation, reconnects,
-events, and session management remain later epics.
+The foundation provides an egui desktop, persistent typed settings, structured
+logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
+preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, OS-backed
+credentials, and independent camera polling/reconnection. Automatic recording,
+segmentation, media-health recovery, events, and session management remain later work.
 
 ## Development
 
@@ -28,13 +29,16 @@ cargo run --locked -p vidfish -- --record rtsp://CAMERA/PROFILE --output NEW_FIL
 cargo run --locked -p vidfish -- --inspect NEW_FILE.mkv
 cargo run --locked -p vidfish -- --check
 cargo run --locked -p vidfish -- --service
+cargo run --locked -p vidfish -- --discover --interface LOCAL_IPV4
+cargo run --locked -p vidfish -- cameras list
 ```
 
 Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
 runs in a separate process and survives preview window closure/restart. Ctrl+C
-finalizes the recording. The current prototype is manually configured; the manager
-service has no automatic discovery or recording policy integration yet. There is no
-UI-to-service IPC. See [media setup, tests, and limitations](docs/media.md).
+finalizes the recording. The desktop and service discover/poll cameras when an adapter
+is configured; preview and recording starts remain manual. There is no UI-to-service
+IPC or automatic recording policy integration yet. See [media setup](docs/media.md)
+and [camera discovery, credentials, and lifecycle](docs/cameras.md).
 
 For a simulated 1080p camera with ONVIF endpoints:
 
@@ -61,7 +65,8 @@ visibly. Changes take effect on the next manager start.
   "auto_record": true,
   "segment_seconds": 600,
   "max_cameras": 16,
-  "preview_slots": 4
+  "preview_slots": 4,
+  "camera_interface": null
 }
 ```
 
@@ -73,8 +78,6 @@ no credential fields. Raw GStreamer error/debug strings are excluded from errors
 because camera URIs can contain credentials.
 
 ## Branches, CI, and releases
-
-Camera discovery and manual ONVIF resolution are described in [docs/cameras.md](docs/cameras.md).
 
 [AGENTS.md](AGENTS.md) records the per-epic branches/PRs and commit rules. Each
 verified coherent change is committed on its epic branch. Planning PRs remain drafts.
@@ -105,6 +108,7 @@ needs Actions enabled; its token has write access only in the publication job.
 6. #17–19: operator preview controls and resource limits.
 7. #20–25: event capture, sessions, browsing, retention, and export.
 
+The operator reported successful four-stream operation after merging the foundation.
 Cloud virtual-display checks establish functionality, not target hardware performance.
 Epic #1/#8 remain incomplete until actual Toughpad CPU/GPU measurements and required
 Windows/Linux acceptance evidence are recorded. Do not claim zero-copy preview upload,
