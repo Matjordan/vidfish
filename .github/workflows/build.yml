@@ -1,0 +1,99 @@
+name: Build and package
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      windows:
+        description: Include Windows validation and packaging
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      VIDFISH_VERSION: ${{ inputs.version }}
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux media dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/setup-gstreamer-linux.sh
+      - name: Cache verified Windows SDK downloads
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vidfish-gstreamer
+          key: gstreamer-msvc-x86_64-1.26.10
+      - name: Install Windows media dependencies
+        if: runner.os == 'Windows'
+        run: ./scripts/setup-gstreamer.ps1
+      - name: Validate PowerShell helper syntax
+        if: runner.os == 'Windows'
+        run: |
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { throw ($errors -join "`n") }
+          }
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.0'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: python scripts/run-cargo-tests.py
+      - run: cargo build --locked --release -p vidfish
+      - run: cargo build --locked --all-features -p vidfish-media --example camera-fixture
+      - name: Check Linux runtime and desktop crash isolation
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          ./target/release/vidfish --check
+          ./target/release/vidfish --media-check
+          xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/media-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --desktop
+          xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5
+      - name: Check Windows runtime and RTSP recording
+        if: runner.os == 'Windows'
+        run: |
+          ./target/release/vidfish.exe --check
+          if ($LASTEXITCODE -ne 0) { throw 'Lifecycle check failed' }
+          ./target/release/vidfish.exe --media-check
+          if ($LASTEXITCODE -ne 0) { throw 'Media runtime check failed' }
+          python scripts/media-smoke.py --binary target/release/vidfish.exe --fixture target/debug/examples/camera-fixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'RTSP recording smoke test failed' }
+      - name: Check Windows desktop launch
+        if: runner.os == 'Windows'
+        run: |
+          $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 2>&1
+          $output | Write-Output
+          if ($LASTEXITCODE -ne 0) {
+            $message = ($output -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows desktop smoke failed::$message"
+            throw 'Desktop smoke test failed'
+          }
+      - name: Package Linux runtime
+        if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh
+      - name: Package Windows runtime
+        if: runner.os == 'Windows'
+        run: ./scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vidfish-${{ matrix.platform }}
+          path: vidfish-${{ inputs.version }}-${{ matrix.platform }}.*
+          if-no-files-found: error
