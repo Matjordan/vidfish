@@ -31,7 +31,14 @@ fn fixture() -> Fixture {
         .unwrap();
     let run = uuid::Uuid::new_v4().to_string();
     let directory = lease
-        .add_run(&cameras.cameras[0], &run, "H264", Some(320), Some(240))
+        .add_run(
+            &cameras.cameras[0],
+            &run,
+            "H264",
+            Some(320),
+            Some(240),
+            &settings,
+        )
         .unwrap();
     std::fs::create_dir(&directory).unwrap();
     let segment = directory.join("segment-00000000.mkv");
@@ -262,4 +269,41 @@ fn storage_warning_is_visible_without_starting_a_recording() {
     assert!(report.warning.is_some());
     assert!(report.bytes_per_second.is_none());
     assert_eq!(report.directory, f.session);
+}
+
+#[test]
+fn cli_creates_and_renames_sessions_with_global_config_and_default_retention_preserves_data() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.json");
+    let config = AppConfig {
+        output_directory: root.path().join("media"),
+        ..Default::default()
+    };
+    config.save(&path).unwrap();
+    let invoke = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_vidfish"))
+            .arg("--config")
+            .arg(&path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let first = invoke(&["sessions", "new", "--name", "bench-a"]);
+    let rename = invoke(&["sessions", "rename", "--name", "bench-b"]);
+    assert_eq!(first["id"], rename["id"]);
+    assert_eq!(first["directory"], rename["directory"]);
+    assert_eq!(rename["label"], "bench-b");
+    let list = invoke(&["sessions", "list"]);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    let browse = invoke(&["sessions", "browse"]);
+    assert_eq!(browse["sessions"].as_array().unwrap().len(), 1);
+    let retained = invoke(&["sessions", "retention"]);
+    assert!(retained["deleted"].as_array().unwrap().is_empty());
+    assert!(PathBuf::from(first["directory"].as_str().unwrap()).exists());
 }

@@ -10,6 +10,8 @@ use vidfish_core::cameras::{CameraStore, HardwareIdentity};
 pub enum Command {
     /// Manage persistent camera identities independently of preview/recording.
     Cameras(InventoryArgs),
+    /// Browse acquisition sessions and export scientific events.
+    Sessions(crate::sessions_cli::SessionArgs),
 }
 #[derive(Args)]
 pub struct InventoryArgs {
@@ -71,8 +73,14 @@ enum Action {
         target: SocketAddrV4,
     },
 }
-pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
-    let Command::Cameras(args) = command;
+pub fn run(
+    command: Command,
+    global_config: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let args = match command {
+        Command::Cameras(args) => args,
+        Command::Sessions(args) => return crate::sessions_cli::run(args, global_config),
+    };
     let path = match args.inventory {
         Some(path) => path,
         None => directories::ProjectDirs::from("org", "vidfish", "vidfish")

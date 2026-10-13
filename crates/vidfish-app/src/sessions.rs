@@ -216,6 +216,18 @@ pub fn list(config_path: &Path) -> Result<Vec<Session>> {
 /// a recorder implicitly to satisfy a session change.
 pub fn start_new(config_path: &Path, config: &AppConfig, label: &str) -> Result<Session> {
     let _registry = lock_registry(config_path)?;
+    if let Ok(files) = std::fs::read_dir(config_path.with_file_name("acquisition")) {
+        for file in files
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|e| e == "json"))
+        {
+            if let Some(id) = file.path().file_stem().and_then(|s| s.to_str())
+                && crate::acquisition::active(config_path, id)
+            {
+                return Err("Stop all recording workers before starting another session".into());
+            }
+        }
+    }
     let mut registry = registry_unlocked(config_path)?;
     let previous = registry
         .active
@@ -251,6 +263,7 @@ impl Lease {
         codec: &str,
         width: Option<u32>,
         height: Option<u32>,
+        settings: &AppConfig,
     ) -> Result<PathBuf> {
         uuid::Uuid::parse_str(run_id)?;
         uuid::Uuid::parse_str(&camera.id)?;
@@ -273,7 +286,7 @@ impl Lease {
             width,
             height,
             nominal_fps: None,
-            conditions: self.session.conditions.clone(),
+            conditions: settings.clone(),
             directory: directory.clone(),
             attempt_unix_ms: crate::operator_events::now(),
             video_started_unix_ms: None,
@@ -326,6 +339,26 @@ pub fn registry(config: &Path) -> Result<Registry> {
     registry_unlocked(config)
 }
 
+pub fn rename(config: &Path, label: &str) -> Result<Session> {
+    if label.trim().is_empty() || label.chars().count() > 128 || label.contains(['\n', '\r']) {
+        return Err("Session name must be nonempty, one line, at most 128 characters".into());
+    }
+    let _registry = lock_registry(config)?;
+    let registry = registry_unlocked(config)?;
+    let entry = registry
+        .active
+        .as_ref()
+        .and_then(|id| registry.sessions.iter().find(|s| &s.id == id))
+        .ok_or("No active session to rename")?;
+    let lease = lease_directory(&entry.directory)?;
+    let guard = file_lock(&entry.directory.join("manifest.lock"))?;
+    fs2::FileExt::lock_exclusive(&guard)?;
+    let mut session = read(&lease.session.directory)?;
+    session.label = label.trim().into();
+    write_json(&session.directory.join("manifest.json"), &session)?;
+    Ok(session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +373,9 @@ mod tests {
         let first = acquire(&path, &config).unwrap();
         let again = acquire(&path, &config).unwrap();
         assert_eq!(first.session.id, again.session.id);
+        let renamed = rename(&path, "Bench test ID").unwrap();
+        assert_eq!(renamed.id, first.session.id);
+        assert_eq!(renamed.directory, first.session.directory);
         let mut cameras = vidfish_core::cameras::CameraStore::default();
         cameras
             .add_manual("First", "rtsp://127.0.0.1/live")
@@ -355,6 +391,7 @@ mod tests {
                     "H264",
                     None,
                     None,
+                    &config,
                 )
                 .unwrap();
         }

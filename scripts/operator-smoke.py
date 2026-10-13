@@ -107,6 +107,22 @@ class Mouse:
             self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
         self.api.XFlush(self.display)
 
+    def scroll(self, amount, x, y):
+        self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
+        self.api.XFlush(self.display)
+        for _ in range(abs(amount)):
+            button = 5 if amount > 0 else 4
+            self.test.XTestFakeButtonEvent(self.display, button, 1, 0)
+            self.test.XTestFakeButtonEvent(self.display, button, 0, 0)
+        self.api.XFlush(self.display)
+        time.sleep(0.2)
+
+    def library_shortcut(self):
+        key = self.api.XKeysymToKeycode(self.display, 0xFFC6)  # F9
+        self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
+        self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
+        self.api.XFlush(self.display)
+
     def mark_shortcut(self):
         if os.name == "nt":
             raise RuntimeError("Windows checks are paused")
@@ -276,6 +292,37 @@ def main():
                 raise RuntimeError("Viewer actions changed an active recorder's state or run ID")
             after_bytes = {r["camera_id"]: r["bytes_written"] for r in after}
             until(lambda: len(values) == 4 and all(r["state"] == "Recording" and r["run_id"] == original_runs[r["camera_id"]][0] and r["bytes_written"] > after_bytes[r["camera_id"]] for r in values) if (values := statuses()) else False)
+            original_session = json.loads((root / "sessions.json").read_text())["active"]
+            click("Sessions / recordings")
+            until(lambda: state().get("library", {}).get("open") and not state()["library"]["loading"] and (state()["library"].get("events") or 0) >= 4)
+            def library_scroll(amount):
+                rect = state()["library"]["rectangle"]
+                mouse.scroll(amount, (rect[0] + rect[2]) / 2, rect[1] + 80)
+            def library_click(name):
+                for _ in range(20):
+                    value = state()
+                    rect = value["library"]["rectangle"]
+                    matches = [button for button in value["buttons"] if button[0] == name and rect[1] + 35 < (button[1][1] + button[1][3]) / 2 < rect[3] - 15]
+                    if matches:
+                        click(name)
+                        return
+                    library_scroll(3)
+                raise RuntimeError("Library control unavailable: " + name)
+            library_click("Start new session")  # disabled while recorders own the session
+            if json.loads((root / "sessions.json").read_text())["active"] != original_session:
+                raise RuntimeError("Session rollover interrupted active acquisition")
+            library_click("Library event " + grab["id"])
+            library_click("Export event")
+            until(lambda: not state()["library"]["busy"] and state()["library"]["message"].startswith("Export "))
+            export_files = list((root / "media" / "exports").glob("*/export.json"))
+            if not export_files:
+                raise RuntimeError("Native event export produced no manifest")
+            export = json.loads(export_files[-1].read_text())
+            if not all((Path(export["directory"]) / item["relative"]).exists() for item in export["items"] if item["status"] == "Copied"):
+                raise RuntimeError("Export manifest contains unresolved copied paths")
+            mouse.library_shortcut()
+            until(lambda: not state()["library"]["open"])
+            until(lambda: len(values) == 4 and all(r["state"] == "Recording" and r["run_id"] == original_runs[r["camera_id"]][0] and r["bytes_written"] > after_bytes[r["camera_id"]] for r in values) if (values := statuses()) else False)
             choices = until(lambda: (v if v["slots"] == before else None) if (v := json.loads((root / "views.json").read_text())) else None)
             click("Stop all")
             until(lambda: all(r["state"] in ("Stopped", "Failed") for r in statuses()))
@@ -312,11 +359,22 @@ def main():
             if single["slots"][0]["camera"] != identifiers[1] or single["peak_workers"] > 1:
                 raise RuntimeError("A hidden preference exceeded the configured decoder limit")
             until(lambda: json.loads((root / "views.json").read_text())["slots"][3] is None)
-            print(json.dumps({"requested_resolutions": ["1280x800", "800x600"], "actual_viewports": actual_resolutions, "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible without blocking Mark", "recording": "uninterrupted by swaps/fullscreen/capture"}))
+            click("Sessions / recordings")
+            until(lambda: state()["library"]["open"] and not state()["library"]["loading"])
+            library_scroll(-30)
+            library_click("New session name")
+            mouse.type_note("nextbench")
+            library_click("Start new session")
+            until(lambda: json.loads((root / "sessions.json").read_text())["active"] != original_session)
+            registry = json.loads((root / "sessions.json").read_text())
+            next_session = next(entry for entry in registry["sessions"] if entry["id"] == registry["active"])
+            if json.loads((Path(next_session["directory"]) / "manifest.json").read_text())["label"] != "nextbench":
+                raise RuntimeError("Native named session creation did not persist")
+            print(json.dumps({"requested_resolutions": ["1280x800", "800x600"], "actual_viewports": actual_resolutions, "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "sessions": "persistent, safe rollover and native export", "stalled_frames": "visible without blocking Mark", "recording": "uninterrupted by swaps/fullscreen/capture"}))
         finally:
             if sys.exc_info()[0] is not None:
                 current = json.loads(probe.read_text()) if probe.exists() else {}
-                summary = {key: current.get(key) for key in ("viewport", "scale", "page", "fullscreen", "camera_count", "slots", "active_workers", "peak_workers", "events")}
+                summary = {key: current.get(key) for key in ("viewport", "scale", "page", "fullscreen", "camera_count", "slots", "active_workers", "peak_workers", "events", "session_id", "library")}
                 if os.name == "nt":
                     summary["host_screen"] = [C.windll.user32.GetSystemMetrics(0), C.windll.user32.GetSystemMetrics(1)]
                 DIAGNOSTICS.append("UI: " + json.dumps(summary))

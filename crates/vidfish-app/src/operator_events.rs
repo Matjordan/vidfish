@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Capture {
     pub camera: String,
     pub label: String,
@@ -435,7 +435,16 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
         rows,
         "event_id,session_id,session_name,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
     )?;
-    for c in &event.captures {
+    let empty = Capture {
+        result: "No registered cameras".into(),
+        ..Default::default()
+    };
+    let captures = if event.captures.is_empty() {
+        std::slice::from_ref(&empty)
+    } else {
+        &event.captures
+    };
+    for c in captures {
         let r = &c.recording;
         let fields = [
             quote(&event.id),

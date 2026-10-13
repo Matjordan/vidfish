@@ -9,7 +9,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Filter {
     pub session: Option<String>,
     pub camera: Option<String>,
@@ -17,12 +17,14 @@ pub struct Filter {
     pub to: String,
     pub event: String,
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct EventRow {
     pub directory: PathBuf,
     pub event: Event,
+    pub recording_present: Vec<bool>,
+    pub snapshots_present: Vec<bool>,
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Segment {
     pub session_id: String,
     pub camera_id: String,
@@ -35,9 +37,30 @@ pub struct Segment {
     pub exists: bool,
     pub bytes: u64,
 }
-#[derive(Default)]
+#[derive(Clone, Serialize)]
+pub struct Summary {
+    pub id: String,
+    pub label: String,
+    pub directory: PathBuf,
+    pub created_unix_ms: u64,
+    pub closed_unix_ms: Option<u64>,
+}
+impl From<&Session> for Summary {
+    fn from(s: &Session) -> Self {
+        Self {
+            id: s.id.clone(),
+            label: s.label.clone(),
+            directory: s.directory.clone(),
+            created_unix_ms: s.created_unix_ms,
+            closed_unix_ms: s.closed_unix_ms,
+        }
+    }
+}
+#[derive(Default, Serialize)]
 pub struct Catalog {
-    pub sessions: Vec<Session>,
+    pub sessions: Vec<Summary>,
+    #[serde(skip)]
+    pub view_lease: Option<sessions::Lease>,
     pub events: Vec<EventRow>,
     pub segments: Vec<Segment>,
     pub cameras: Vec<(String, String)>,
@@ -149,28 +172,41 @@ fn event_rows(root: &Path, filter: &Filter, catalog: &mut Catalog) -> Result<()>
         for c in &mut event.captures {
             c.recording.resolve();
         }
-        catalog.events.push(EventRow { directory, event });
+        let recording_present = event
+            .captures
+            .iter()
+            .map(|c| c.recording.segment.as_ref().is_some_and(|p| p.is_file()))
+            .collect();
+        let snapshots_present = event
+            .captures
+            .iter()
+            .map(|c| c.image.as_ref().is_some_and(|p| p.is_file()))
+            .collect();
+        catalog.events.push(EventRow {
+            directory,
+            event,
+            recording_present,
+            snapshots_present,
+        });
     }
     Ok(())
 }
 pub fn load(config: &Path, filter: &Filter) -> Result<Catalog> {
     filter.validate()?;
     let mut catalog = Catalog::default();
-    for entry in sessions::registry(config)?.sessions {
-        match sessions::read(&entry.directory) {
-            Ok(session) => catalog.sessions.push(session),
-            Err(_) => catalog.warnings.push(format!(
-                "Session missing or unreadable: {}",
-                entry.directory.display()
-            )),
-        }
-    }
-    catalog
-        .sessions
-        .sort_by_key(|s| std::cmp::Reverse(s.created_unix_ms));
     let mut cameras = BTreeMap::new();
-    let sessions = catalog.sessions.clone();
-    for session in sessions {
+    for entry in sessions::registry(config)?.sessions {
+        let session = match sessions::read(&entry.directory) {
+            Ok(session) => session,
+            Err(_) => {
+                catalog.warnings.push(format!(
+                    "Session missing or unreadable: {}",
+                    entry.directory.display()
+                ));
+                continue;
+            }
+        };
+        catalog.sessions.push(Summary::from(&session));
         for run in &session.runs {
             cameras.insert(run.camera_id.clone(), run.alias.clone());
         }
@@ -282,6 +318,9 @@ pub fn load(config: &Path, filter: &Filter) -> Result<Catalog> {
             cameras.insert(c.id, c.alias);
         }
     }
+    catalog
+        .sessions
+        .sort_by_key(|s| std::cmp::Reverse(s.created_unix_ms));
     catalog.cameras = cameras.into_iter().collect();
     catalog
         .cameras
@@ -323,6 +362,7 @@ pub fn storage(config: &Path, settings: &vidfish_core::config::AppConfig) -> Res
             }
             if let Ok(bytes) = std::fs::read(file.path())
                 && let Ok(status) = serde_json::from_slice::<crate::acquisition::Status>(&bytes)
+                && status.session_directory.as_ref() == Some(&directory)
                 && status.state == crate::acquisition::State::Recording
                 && now.saturating_sub(status.heartbeat_unix_ms) < 3000
                 && status.started_unix_ms > 0
@@ -349,23 +389,56 @@ pub fn storage(config: &Path, settings: &vidfish_core::config::AppConfig) -> Res
     };
     Ok(report)
 }
-/// Start the OS's file handler; the UI keeps the estimated seek offset visible.
-/// Full integrated timeline playback is intentionally outside this epic.
-pub fn open_file(path: &Path) -> Result<()> {
+/// Prefer VLC for an estimated seek; use the OS handler with a manual seek
+/// instruction when VLC is unavailable. All arguments bypass shell parsing.
+pub fn open_file_at(path: &Path, offset_ns: Option<u64>) -> Result<String> {
     if !path.is_file() {
         return Err("Referenced file is missing".into());
     }
     let path = path.canonicalize()?;
+    let vlc_name = if cfg!(windows) { "vlc.exe" } else { "vlc" };
+    let mut vlc = None;
+    if let Some(search) = std::env::var_os("PATH") {
+        vlc = std::env::split_paths(&search)
+            .map(|d| d.join(vlc_name))
+            .find(|p| p.is_file());
+    }
+    #[cfg(windows)]
+    if vlc.is_none() {
+        for name in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(root) = std::env::var_os(name) {
+                let candidate = PathBuf::from(root).join("VideoLAN/VLC/vlc.exe");
+                if candidate.is_file() {
+                    vlc = Some(candidate);
+                    break;
+                }
+            }
+        }
+    }
+    if let (Some(player), Some(offset)) = (vlc, offset_ns) {
+        std::process::Command::new(player)
+            .arg(format!("--start-time={:.3}", offset as f64 / 1e9))
+            .arg(&path)
+            .spawn()?;
+        return Ok(format!(
+            "Opened {} in VLC at estimated {:.3}s",
+            path.display(),
+            offset as f64 / 1e9
+        ));
+    }
     #[cfg(windows)]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(not(windows))]
     let mut command = std::process::Command::new("xdg-open");
-    let status = command.arg(path).status()?;
+    let status = command.arg(&path).status()?;
     if !status.success() {
         return Err(
             "File handler failed; install a video player or open the displayed path manually"
                 .into(),
         );
     }
-    Ok(())
+    Ok(format!(
+        "Opened {}. Seek manually to the displayed estimated time.",
+        path.display()
+    ))
 }

@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 #[derive(Clone, Serialize, Deserialize)]
@@ -41,7 +41,8 @@ fn item(
         entry.status = reason.into();
     } else if let Some(source) = source {
         let copied = (|| -> Result<u64> {
-            let size = std::fs::metadata(source)?.len();
+            let mut input = std::fs::File::open(source)?;
+            let size = input.metadata()?.len();
             let parent = report
                 .directory
                 .join(&relative)
@@ -52,9 +53,27 @@ fn item(
             if fs2::available_space(&parent)?.saturating_sub(reserve) < size {
                 return Err("Insufficient export storage above reserved warning margin".into());
             }
-            let mut input = std::fs::File::open(source)?;
+
             let mut output = tempfile::NamedTempFile::new_in(&parent)?;
-            let copied = std::io::copy(&mut input, &mut output)?;
+            let mut remaining = size;
+            let mut copied = 0;
+            let mut buffer = vec![0u8; 1024 * 1024];
+            while remaining > 0 {
+                let limit = remaining.min(buffer.len() as u64) as usize;
+                let count = input.read(&mut buffer[..limit])?;
+                if count == 0 {
+                    break;
+                }
+                if fs2::available_space(&parent)?.saturating_sub(reserve) < count as u64 {
+                    return Err(
+                        "Export stopped at reserved free-space margin; source media preserved"
+                            .into(),
+                    );
+                }
+                output.write_all(&buffer[..count])?;
+                copied += count as u64;
+                remaining -= count as u64;
+            }
             output.as_file().sync_all()?;
             if copied != size {
                 return Err("Source size changed during export; retry when stable".into());
@@ -146,6 +165,7 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
             reserve,
         )?;
     }
+    let mut index_targets = std::collections::BTreeMap::new();
     for (i, capture) in event.captures.iter_mut().enumerate() {
         let image = capture.image.clone();
         let image_relative = PathBuf::from(format!("snapshots/camera-{i}.png"));
@@ -172,6 +192,14 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
         let journal = reference.journal.clone();
         let media_root = PathBuf::from(format!("recordings/camera-{i}"));
         if let Some(index) = &journal {
+            item(
+                &mut report,
+                Some(index),
+                format!("source/indices/camera-{i}.jsonl").into(),
+                None,
+                reserve,
+            )?;
+            index_targets.insert(media_root.join("segments.jsonl"), segment.clone());
             item(
                 &mut report,
                 Some(index),
@@ -271,6 +299,9 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
             }
         };
         let mut text = Vec::new();
+        rows.retain(|row| {
+            index_targets.get(&entry.relative).and_then(|p| p.as_ref()) == Some(&row.location)
+        });
         for row in &mut rows {
             row.location = entry.relative.parent().unwrap_or(Path::new(".")).join(
                 row.location
@@ -284,6 +315,7 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
         f.write_all(&text)?;
         f.as_file().sync_all()?;
         f.persist(&path).map_err(|e| e.error)?;
+        entry.bytes = std::fs::metadata(&path)?.len();
     }
     crate::operator_events::persist_event(&report.directory, &event)?;
     report.complete = event.complete && report.items.iter().all(|e| e.status == "Copied");

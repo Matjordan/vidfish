@@ -1,3 +1,4 @@
+mod library;
 mod operator;
 mod probe;
 use eframe::egui;
@@ -144,6 +145,7 @@ pub fn run(
                 fullscreen: None,
                 page: 0,
                 show_settings: false,
+                library: library::Library::default(),
                 note: String::new(),
                 event_job: None,
                 mark_jobs: Vec::new(),
@@ -240,6 +242,7 @@ struct Desktop {
     fullscreen: Option<usize>,
     page: usize,
     show_settings: bool,
+    library: library::Library,
     note: String,
     event_job:
         Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
@@ -280,7 +283,10 @@ impl eframe::App for Desktop {
             match saving.try_recv() {
                 Ok(result) => {
                     self.message = match result {
-                        Ok(()) => "Settings saved".into(),
+                        Ok(()) => {
+                            self.library.configuration_saved();
+                            "Settings saved".into()
+                        }
                         Err(error) => format!("Settings not saved: {error}"),
                     };
                     self.saving = None;

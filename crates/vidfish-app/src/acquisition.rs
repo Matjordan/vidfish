@@ -204,7 +204,7 @@ pub fn read_status(config: &Path, id: &str) -> Option<Status> {
     let status: Status = serde_json::from_slice(&bytes).ok()?;
     (status.camera_id == id && uuid::Uuid::parse_str(&status.run_id).is_ok()).then_some(status)
 }
-fn active(config: &Path, id: &str) -> bool {
+pub(crate) fn active(config: &Path, id: &str) -> bool {
     let mut path = lock_path(config, id).into_os_string();
     path.push(".lock");
     std::fs::OpenOptions::new()
@@ -560,6 +560,7 @@ pub fn record_camera(
             },
             profile.map(|p| p.width),
             profile.map(|p| p.height),
+            config,
         )?;
         let output_root = lease.session.directory.clone();
         session_lease = Some(lease);
