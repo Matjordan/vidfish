@@ -31,6 +31,13 @@ pub fn selected(
     target: SocketAddrV4,
     window: Duration,
 ) -> Result<Report> {
+    if interface
+        .is_some_and(|ip| ip.is_unspecified() || ip.is_multicast() || ip == Ipv4Addr::BROADCAST)
+    {
+        return Err(Error(
+            "Adapter override must be a local unicast IPv4 address; leave blank to search all active adapters",
+        ));
+    }
     let addresses = match interface {
         Some(ip) => vec![ip],
         None => adapters()?,

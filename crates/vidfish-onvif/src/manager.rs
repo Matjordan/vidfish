@@ -526,9 +526,11 @@ fn run(
                         continue;
                     };
                     if s.state == State::IdentityConflict
-                        || workers
-                            .get(&candidate.id)
-                            .is_none_or(|w| w.record.borrow().device_url != candidate.device_url)
+                        || workers.get(&candidate.id).is_none_or(|w| {
+                            let current = w.record.borrow();
+                            current.device_url != candidate.device_url
+                                || current.credential_key != candidate.credential_key
+                        })
                     {
                         continue;
                     }

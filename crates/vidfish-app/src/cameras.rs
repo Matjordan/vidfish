@@ -194,15 +194,8 @@ pub fn run(
                 .iter()
                 .find(|c| c.id == id)
                 .ok_or("unknown camera ID")?;
-            let address = camera
-                .device_url
-                .as_deref()
-                .ok_or("manual RTSP cameras do not have an ONVIF service")?;
-            let client = client_for(camera, &credentials_path)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&client.resolve(address)?)?
-            );
+            let (resolved, _) = vidfish_onvif::credentials::resolve(&credentials_path, camera)?;
+            println!("{}", serde_json::to_string_pretty(&resolved)?);
         }
         Action::Add { alias, rtsp, h265 } => {
             let id = store.add_manual(&alias, &rtsp)?;
