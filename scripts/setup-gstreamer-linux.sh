@@ -27,4 +27,4 @@ apt_command update
 apt_command install -y libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   libgstrtspserver-1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
-  libxkbcommon0 libxkbcommon-x11-0 libgl1 xvfb xauth
+  libxkbcommon0 libxkbcommon-x11-0 libgl1 libxtst6 xvfb xauth

@@ -5,7 +5,7 @@
 - Maintain one PR per epic (#1–#6). Reuse its existing branch and PR as implementation progresses.
 - Draft PRs may contain implementation plans; clearly distinguish plans from implemented acceptance criteria.
 - Do not close an epic until its child issues and required platform checks are complete.
-- Draft PR updates run Linux CI only. Marking a PR ready for review runs Windows and Linux; subsequent ready PR updates also run both. Manual CI runs and releases always validate both platforms.
+- Windows checks are paused at the user's request, including ready PRs and manual runs. Run Linux CI only; do not resume Windows testing without user direction. Releases still compile and package Windows, with only the package version/launch sanity check; Windows test suites and GUI smoke are skipped. The reusable workflow has a `windows_tests` switch for future restoration.
 - Each push to `main`, including merged PRs, runs the versioned release workflow.
 - For the current closed deployment, credentials use an app-managed local plaintext file and runtime login dialog. Do not require manual OS keyring setup. Keep passwords out of logs. If secure storage is added later, provision it during install/runtime.
 - Keep recording independent of preview, UI, and event operations. Support Windows and Linux.
@@ -25,6 +25,10 @@
 
 Epic #2 contains implemented discovery, identity/credential storage, and camera polling
 plus a hot-arrival recording-policy bridge and in-app camera previews on top of the merged foundation. Epic #3 adds segmented recording, disk policy, and durable recovery indexes.
-Epics #4–#6 contain planning documents only and branch
+Epic #4 adds the touch operator layout, persistent selections, fullscreen, resource
+bounds, and a selected-preview event bridge. The user deferred numerical Toughpad
+CPU/GPU measurements and reported that four streams looked fine; do not block on or
+invent those numbers.
+Epics #5–#6 contain planning documents only and branch
 from the initial `main`. Bring the updated `main` into each branch before
 implementation. Preserve existing work and commit any conflict resolutions.

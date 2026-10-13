@@ -121,14 +121,16 @@ on the coordinator worker, away from the UI thread.
 
 ## Open live feeds in the desktop
 
-Select a **Preview slot** and press **View feed** beside a camera. Up to four feeds can
-be decoded at once; selecting another camera replaces that slot. **Close feed** releases
+Select **Slot 1–4** in the right-hand roster and press **View feed** beside a camera. Up to four feeds can
+be decoded at once; selecting another camera replaces that slot. **Close** releases
 its preview without affecting an independent recording. Selecting a camera already shown
 in another slot switches the selected slot instead of adding a duplicate connection.
 Saved camera logins are applied to RTSP using GStreamer credential properties, without
 putting the password in a stream URL. The UI remains responsive while a preview opens,
 replaces its decoder, or fails. Cold camera startup can take several seconds; the slot
-shows its current connection state. Expand **Settings** to configure the camera adapter.
+shows its current connection state. Open **Settings** to configure the camera adapter.
+See [operator monitoring](monitoring.md) for paging, fullscreen, persistent selections,
+stale-frame handling, and the collapsible event area.
 
 ## Recording policy and independent processes
 

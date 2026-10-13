@@ -16,4 +16,4 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: 0.1.0-ci.${{ github.run_number }}
-      windows: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false }}
+      windows: false

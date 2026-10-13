@@ -6,9 +6,13 @@ on:
         required: true
         type: string
       windows:
-        description: Include Windows validation and packaging
+        description: Include Windows compilation and packaging
         type: boolean
         default: true
+      windows_tests:
+        description: Run Windows checks (paused at the user's request)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,7 +43,7 @@ jobs:
         if: runner.os == 'Windows'
         run: ./scripts/setup-gstreamer.ps1
       - name: Validate PowerShell helper syntax
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows_tests
         run: |
           Get-ChildItem scripts/*.ps1 | ForEach-Object {
             $errors = $null
@@ -53,11 +57,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: python scripts/run-cargo-tests.py
+      - if: runner.os != 'Windows' || inputs.windows_tests
+        run: cargo fmt --all --check
+      - if: runner.os != 'Windows' || inputs.windows_tests
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - if: runner.os != 'Windows' || inputs.windows_tests
+        run: python scripts/run-cargo-tests.py
       - run: cargo build --locked --release -p vidfish
-      - run: cargo build --locked --all-features -p vidfish-media --example camera-fixture
+      - if: runner.os != 'Windows' || inputs.windows_tests
+        run: cargo build --locked --all-features -p vidfish-media --example camera-fixture
       - name: Check Linux runtime and desktop crash isolation
         if: runner.os == 'Linux'
         env:
@@ -67,9 +75,10 @@ jobs:
           ./target/release/vidfish --media-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/media-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --desktop
           xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5
+          xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/operator-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
           python3 scripts/acquisition-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
       - name: Check Windows runtime and RTSP recording
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows_tests
         run: |
           ./target/release/vidfish.exe --check
           if ($LASTEXITCODE -ne 0) { throw 'Lifecycle check failed' }
@@ -80,7 +89,7 @@ jobs:
           python scripts/acquisition-smoke.py --binary target/release/vidfish.exe --fixture target/debug/examples/camera-fixture.exe
           if ($LASTEXITCODE -ne 0) { throw 'Managed recording owner-crash smoke test failed' }
       - name: Check Windows desktop launch
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows_tests
         run: |
           $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 2>&1
           $output | Write-Output
@@ -89,6 +98,8 @@ jobs:
             Write-Output "::error title=Windows desktop smoke failed::$message"
             throw 'Desktop smoke test failed'
           }
+          python scripts/operator-smoke.py --binary target/release/vidfish.exe --fixture target/debug/examples/camera-fixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Operator interaction smoke failed' }
       - name: Package Linux runtime
         if: runner.os == 'Linux'
         run: bash scripts/package-linux.sh

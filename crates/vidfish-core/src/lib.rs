@@ -2,3 +2,5 @@
 pub mod cameras;
 pub mod config;
 pub mod engine;
+
+pub mod views;

@@ -10,6 +10,7 @@ desktop = ["dep:eframe", "dep:wgpu"]
 wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 
 [dependencies]
+png = "0.18"
 fs2 = "0.4"
 vidfish-core = { path = "../vidfish-core" }
 vidfish-media = { path = "../vidfish-media" }
