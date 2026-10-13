@@ -101,6 +101,21 @@ class Mouse:
             self.api.XFlush(self.display)
 
     def type_note(self, text):
+        # Xvfb has no window manager to focus a restarted application. Focus the
+        # native window under the pointer before sending real keyboard events.
+        if os.name != "nt":
+            self.api.XDefaultRootWindow.argtypes = [C.c_void_p]
+            self.api.XDefaultRootWindow.restype = C.c_ulong
+            root = self.api.XDefaultRootWindow(self.display)
+            root_return, child = C.c_ulong(), C.c_ulong()
+            rx, ry, wx, wy, mask = C.c_int(), C.c_int(), C.c_int(), C.c_int(), C.c_uint()
+            self.api.XQueryPointer.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong), C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_uint)]
+            self.api.XQueryPointer(self.display, root, C.byref(root_return), C.byref(child), C.byref(rx), C.byref(ry), C.byref(wx), C.byref(wy), C.byref(mask))
+            self.api.XSetInputFocus.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]
+            if child.value:
+                self.api.XSetInputFocus(self.display, child.value, 1, 0)
+                self.api.XFlush(self.display)
+                time.sleep(0.1)
         for char in text:
             key = self.api.XKeysymToKeycode(self.display, ord(char))
             self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
@@ -364,6 +379,7 @@ def main():
             library_scroll(-30)
             library_click("New session name")
             mouse.type_note("nextbench")
+            time.sleep(0.7)
             library_click("Start new session")
             until(lambda: json.loads((root / "sessions.json").read_text())["active"] != original_session)
             registry = json.loads((root / "sessions.json").read_text())

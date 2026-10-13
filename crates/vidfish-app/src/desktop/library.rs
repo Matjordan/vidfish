@@ -190,7 +190,7 @@ impl Desktop {
     if let Some(seconds)=storage.seconds_to_warning{ui.label(format!("Estimated {:.1} hours to warning at {:.2} MiB/s (average since recording start)",seconds as f64/3600.0,storage.bytes_per_second.unwrap_or(0.0)/(1024.0*1024.0)));}else{ui.label("Recording rate / remaining time unavailable until recording makes progress");}
     if let Some(warning)=&storage.warning{ui.colored_label(egui::Color32::LIGHT_RED,warning);}
    }
-   ui.horizontal_wrapped(|ui|{ui.label("New session / test ID (blank generates a name)");let response=ui.add(egui::TextEdit::singleline(&mut self.library.name).char_limit(128).desired_width(220.0).margin(egui::vec2(4.0,14.0)));super::probe::button(ui,"New session name",&response);
+   ui.horizontal_wrapped(|ui|{ui.label("New session / test ID (blank generates a name)");let response=ui.add(egui::TextEdit::singleline(&mut self.library.name).id(egui::Id::new("session-name")).char_limit(128).desired_width(220.0).margin(egui::vec2(4.0,14.0)));super::probe::button(ui,"New session name",&response);if response.clicked(){response.request_focus();}
     ui.add_enabled_ui(!busy && !acquisition_busy,|ui|{if button(ui,"Start new session").clicked(){action=Some(Operation::New(self.library.name.clone()));}});
     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Rename active session").clicked(){action=Some(Operation::Rename(self.library.name.clone()));}});
    });ui.small("Stop all recordings and wait for captures first. New session never stops recordings implicitly.");
@@ -301,6 +301,6 @@ impl Library {
         self.storage_at = None;
     }
     pub(super) fn probe(&self) -> serde_json::Value {
-        serde_json::json!({"open":self.open,"rectangle":self.rectangle.map(|r|[r.min.x,r.min.y,r.max.x,r.max.y]),"loading":self.loading.is_some(),"busy":self.operation.is_some(),"events":self.catalog.as_ref().map(|c|c.events.len()),"segments":self.catalog.as_ref().map(|c|c.segments.len()),"message":self.message,"storage_free":self.storage.as_ref().and_then(|s|s.free_bytes)})
+        serde_json::json!({"open":self.open,"rectangle":self.rectangle.map(|r|[r.min.x,r.min.y,r.max.x,r.max.y]),"loading":self.loading.is_some(),"busy":self.operation.is_some(),"events":self.catalog.as_ref().map(|c|c.events.len()),"segments":self.catalog.as_ref().map(|c|c.segments.len()),"message":self.message,"name":self.name,"storage_free":self.storage.as_ref().and_then(|s|s.free_bytes)})
     }
 }
