@@ -9,8 +9,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
+
+DIAGNOSTICS = []
 
 def until(predicate, seconds=60):
     deadline = time.monotonic() + seconds
@@ -56,7 +59,19 @@ class Mouse:
             self.api.ClientToScreen(window, C.byref(origin))
             self.api.SetForegroundWindow.argtypes = [C.c_void_p]
             self.api.SetForegroundWindow(window)
-            self.api.SetCursorPos(int(x) + origin.x, int(y) + origin.y)
+            target_x, target_y = int(x) + origin.x, int(y) + origin.y
+            self.api.SetCursorPos(target_x, target_y)
+            actual = Point()
+            self.api.GetCursorPos(C.byref(actual))
+            if actual.x != target_x or actual.y != target_y:
+                self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+                packed = (int(x) & 0xFFFF) | ((int(y) & 0xFFFF) << 16)
+                self.api.PostMessageW(window, 0x200, 0, packed)
+                time.sleep(0.1)
+                self.api.PostMessageW(window, 0x201, 1, packed)
+                time.sleep(0.08)
+                self.api.PostMessageW(window, 0x202, 0, packed)
+                return
             time.sleep(0.1)
             self.api.mouse_event(2, 0, 0, 0, 0)
             time.sleep(0.08)
@@ -74,8 +89,11 @@ class Mouse:
 
     def escape(self):
         if os.name == "nt":
-            self.api.keybd_event(0x1B, 0, 0, 0)
-            self.api.keybd_event(0x1B, 0, 2, 0)
+            window = self.api.FindWindowW(None, "Vidfish")
+            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+            self.api.PostMessageW(window, 0x100, 0x1B, 0x00010001)
+            time.sleep(0.08)
+            self.api.PostMessageW(window, 0x101, 0x1B, 0xC0010001)
         else:
             key = self.api.XKeysymToKeycode(self.display, 0xFF1B)
             self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
@@ -199,7 +217,11 @@ def main():
             event = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Mark + Grab All")
             if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 4:
                 raise RuntimeError("Preview grab results did not report four selected and twelve unviewed cameras")
-            until(lambda: all(r["run_id"] == original_runs[r["camera_id"]][0] and r["bytes_written"] > original_runs[r["camera_id"]][1] for r in statuses()))
+            after = statuses()
+            if len(after) != 4 or any(r["state"] != "Recording" or r["run_id"] != original_runs[r["camera_id"]][0] for r in after):
+                raise RuntimeError("Viewer actions changed an active recorder's state or run ID")
+            after_bytes = {r["camera_id"]: r["bytes_written"] for r in after}
+            until(lambda: len(values) == 4 and all(r["state"] == "Recording" and r["run_id"] == original_runs[r["camera_id"]][0] and r["bytes_written"] > after_bytes[r["camera_id"]] for r in values) if (values := statuses()) else False)
             choices = until(lambda: (v if v["slots"] == before else None) if (v := json.loads((root / "views.json").read_text())) else None)
             click("Stop all")
             until(lambda: all(r["state"] in ("Stopped", "Failed") for r in statuses()))
@@ -237,7 +259,12 @@ def main():
             print(json.dumps({"resolutions": ["1280x800", "800x600"], "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible and excluded from grabs", "recording": "uninterrupted by swaps/fullscreen/capture"}))
         finally:
             if sys.exc_info()[0] is not None:
-                print("UI diagnostic:", probe.read_text() if probe.exists() else "probe missing", flush=True)
+                current = json.loads(probe.read_text()) if probe.exists() else {}
+                summary = {key: current.get(key) for key in ("viewport", "scale", "page", "fullscreen", "camera_count", "slots", "active_workers", "peak_workers", "events")}
+                if os.name == "nt":
+                    summary["host_screen"] = [C.windll.user32.GetSystemMetrics(0), C.windll.user32.GetSystemMetrics(1)]
+                DIAGNOSTICS.append("UI: " + json.dumps(summary))
+                print("UI diagnostic:", json.dumps(summary), flush=True)
                 print("App diagnostic:", "\n".join((root / "app.log").read_text(errors="replace").splitlines()[-20:]), flush=True)
             for app in apps:
                 if app.poll() is None:
@@ -277,6 +304,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        details = str(error) + "\n" + traceback.format_exc() + "\n" + "\n".join(DIAGNOSTICS)
+        message = details.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::error title=Operator UI smoke failed::{message}")
         raise
