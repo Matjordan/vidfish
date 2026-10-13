@@ -321,6 +321,7 @@ impl eframe::App for Desktop {
                 egui::CollapsingHeader::new("Settings")
                     .default_open(false)
                     .show(ui, |ui| {
+                        egui::ScrollArea::vertical().id_salt("recording-settings").max_height(220.0).show(ui, |ui| {
                         ui.label("Camera adapter IPv4 (blank disables discovery)");
                         if ui.text_edit_singleline(&mut self.interface).changed() {
                             if self.interface.trim().is_empty() {
@@ -375,6 +376,7 @@ impl eframe::App for Desktop {
                             self.saving = Some(receiver);
                             self.message = "Saving settings…".into();
                         }
+                        });
                     });
                 ui.label(&self.message);
                 ui.separator();
