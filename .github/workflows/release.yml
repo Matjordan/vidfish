@@ -11,6 +11,8 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: 0.1.${{ github.run_number }}
+      windows: true
+      windows_tests: false
 
   publish:
     needs: build

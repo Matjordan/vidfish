@@ -102,10 +102,12 @@ actual rendered viewports (a smaller Windows host may clamp the first window to
 1024×768). It exercises all 16
 camera choices, four-worker paging, 1080p/640×360 swaps, fullscreen/return, persisted
 choices, stale-frame exclusion, event-panel collapse, and a reduced one-worker limit.
-The same recorder run IDs continue growing across these actions. It runs on Linux
-under Xvfb and on Windows using native client mouse/keyboard messages targeted to
-the exact viewer process, so a covered/small virtual desktop cannot misdirect input. Existing acquisition
-checks cover 16 simultaneous recorder processes separately.
+The same recorder run IDs continue growing across these actions in the passing Linux
+Xvfb check. Windows operator input automation remains unverified; Windows checks
+are paused at the user's request. PR and manual CI run Linux only. Versioned releases
+still compile/package Windows and check the bundled launcher, but skip Windows
+test suites and GUI/runtime smoke. Existing acquisition checks cover 16 simultaneous
+recorder processes separately.
 
 The operator observed that the earlier four-stream build looked fine. Numerical
 Toughpad CPU/GPU measurements are deferred at the user's request. Native/cloud

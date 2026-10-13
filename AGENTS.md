@@ -5,7 +5,7 @@
 - Maintain one PR per epic (#1–#6). Reuse its existing branch and PR as implementation progresses.
 - Draft PRs may contain implementation plans; clearly distinguish plans from implemented acceptance criteria.
 - Do not close an epic until its child issues and required platform checks are complete.
-- Draft PR updates run Linux CI only. Marking a PR ready for review runs Windows and Linux; subsequent ready PR updates also run both. Manual CI runs and releases always validate both platforms.
+- Windows checks are paused at the user's request, including ready PRs and manual runs. Run Linux CI only; do not resume Windows testing without user direction. Releases still compile and package Windows, with only the package version/launch sanity check; Windows test suites and GUI smoke are skipped. The reusable workflow has a `windows_tests` switch for future restoration.
 - Each push to `main`, including merged PRs, runs the versioned release workflow.
 - For the current closed deployment, credentials use an app-managed local plaintext file and runtime login dialog. Do not require manual OS keyring setup. Keep passwords out of logs. If secure storage is added later, provision it during install/runtime.
 - Keep recording independent of preview, UI, and event operations. Support Windows and Linux.
