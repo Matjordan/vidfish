@@ -51,6 +51,8 @@ enum Action {
     },
     Add {
         #[arg(long)]
+        h265: bool,
+        #[arg(long)]
         alias: String,
         #[arg(long)]
         rtsp: String,
@@ -172,8 +174,9 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::to_string_pretty(&client.resolve(address)?)?
             );
         }
-        Action::Add { alias, rtsp } => {
+        Action::Add { alias, rtsp, h265 } => {
             let id = store.add_manual(&alias, &rtsp)?;
+            store.cameras.last_mut().unwrap().manual_h265 = h265;
             store.save(&path)?;
             println!("{id}");
         }

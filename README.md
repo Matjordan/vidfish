@@ -4,8 +4,8 @@ Rust desktop software for scientific camera acquisition on Windows and Linux.
 The foundation provides an egui desktop, persistent typed settings, structured
 logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
 preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, app-managed local
-credentials, and independent camera polling/reconnection. Automatic recording,
-segmentation, media-health recovery, events, and session management remain later work.
+credentials, and independent camera polling/reconnection. Arriving cameras can auto-record in independent processes with observable file progress.
+Segmentation, disk-space policies, events, and session management remain later work.
 
 ## Development
 
@@ -36,8 +36,10 @@ cargo run --locked -p vidfish -- cameras list
 Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
 runs in a separate process and survives preview window closure/restart. Ctrl+C
 finalizes the recording. The desktop and service discover/poll cameras when an adapter
-is configured; preview and recording starts remain manual. There is no UI-to-service
-IPC or automatic recording policy integration yet. See [media setup](docs/media.md)
+is configured. Use View feed in the camera list to open a preview. Auto-record is on
+by default for registered/arriving cameras; Record all, Stop all, and per-camera controls
+operate independent recorder processes. A desktop restart reattaches to active recordings.
+Use either the desktop or headless service as the camera manager for an inventory. See [media setup](docs/media.md)
 and [camera discovery, credentials, and lifecycle](docs/cameras.md).
 
 For a simulated 1080p camera with ONVIF endpoints:
@@ -70,8 +72,10 @@ visibly. Changes take effect on the next manager start.
 }
 ```
 
-Relative paths use the launch working directory. Auto-record/segment preferences
-are foundations for the later recording engine, not enabled prototype behavior.
+Relative paths use the launch working directory. Auto-record changes persist immediately
+and affect future starts; turning it off leaves active recordings running. Stop all
+suppresses automatic restarts until Record all or an application restart. Recordings
+currently use one collision-free MKV per run; segmentation is the next epic.
 The prototype refuses existing output files and never deletes scientific data.
 JSON structured logs go to stdout; `RUST_LOG=debug` increases detail. Settings have
 no credential fields. Raw GStreamer error/debug strings are excluded from errors

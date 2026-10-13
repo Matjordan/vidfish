@@ -9,7 +9,14 @@ pub fn source(
     inventory: &Path,
 ) -> Result<(Source, Codec), String> {
     let (uri, codec) = if let Some(uri) = &camera.manual_rtsp {
-        (uri.clone(), Codec::H264)
+        (
+            uri.clone(),
+            if camera.manual_h265 {
+                Codec::H265
+            } else {
+                Codec::H264
+            },
+        )
     } else if let Some(profile) = profile {
         (
             profile.rtsp_uri.clone(),

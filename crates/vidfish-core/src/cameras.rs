@@ -14,6 +14,8 @@ pub struct HardwareIdentity {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CameraRecord {
+    #[serde(default)]
+    pub manual_h265: bool,
     pub id: String,
     pub alias: String,
     pub endpoint_id: Option<String>,
@@ -240,6 +242,7 @@ impl CameraStore {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let camera = CameraRecord {
+            manual_h265: false,
             id: id.clone(),
             alias: format!("Camera {}", self.cameras.len() + 1),
             endpoint_id: Some(endpoint.into()),
@@ -258,6 +261,7 @@ impl CameraStore {
         let id = uuid::Uuid::new_v4().to_string();
         let mut next = self.clone();
         next.cameras.push(CameraRecord {
+            manual_h265: false,
             id: id.clone(),
             alias: alias.into(),
             endpoint_id: None,
@@ -274,6 +278,7 @@ impl CameraStore {
         let id = uuid::Uuid::new_v4().to_string();
         let mut next = self.clone();
         next.cameras.push(CameraRecord {
+            manual_h265: false,
             id: id.clone(),
             alias: alias.into(),
             endpoint_id: None,

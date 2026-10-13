@@ -30,6 +30,10 @@ pub fn run(
         path.with_file_name("cameras.json"),
         config.camera_interface,
     ))?;
+    let recordings =
+        vidfish::acquisition::Supervisor::start(path.clone(), config.clone(), cameras.snapshot())?;
+    let record_snapshot = recordings.snapshot();
+    let record_control = recordings.controller();
     let camera_snapshot = cameras.snapshot();
     let camera_control = cameras.controller();
     let required_previews = sources.len();
@@ -86,6 +90,9 @@ pub fn run(
                     .camera_interface
                     .map(|ip| ip.to_string())
                     .unwrap_or_default(),
+                record_snapshot,
+                record_control,
+                record_status: Default::default(),
                 camera_snapshot,
                 camera_status: Default::default(),
                 camera_control,
@@ -93,12 +100,18 @@ pub fn run(
                 login_camera: None,
                 login_username: zeroize::Zeroizing::new(String::new()),
                 login_password: zeroize::Zeroizing::new(String::new()),
+                adding_camera: false,
+                new_alias: String::new(),
+                new_address: String::new(),
+                new_onvif: true,
+                new_h265: false,
                 config,
                 path,
                 status,
                 message: String::new(),
                 runtime: handle,
                 saving: None,
+                auto_save_pending: false,
                 slots,
                 selected_slot: 0,
                 required_previews,
@@ -119,6 +132,7 @@ pub fn run(
             let _ = job.await;
         }
     });
+    recordings.join();
     cameras.join();
     runtime.block_on(engine.shutdown())?;
     result?;
@@ -152,6 +166,14 @@ impl Slot {
     }
 }
 struct Desktop {
+    adding_camera: bool,
+    new_alias: String,
+    new_address: String,
+    new_onvif: bool,
+    new_h265: bool,
+    record_snapshot: tokio::sync::watch::Receiver<vidfish::acquisition::Snapshot>,
+    record_status: vidfish::acquisition::Snapshot,
+    record_control: vidfish::acquisition::Controller,
     interface: String,
     camera_snapshot: tokio::sync::watch::Receiver<vidfish_onvif::manager::Snapshot>,
     camera_status: vidfish_onvif::manager::Snapshot,
@@ -166,6 +188,7 @@ struct Desktop {
     message: String,
     runtime: tokio::runtime::Handle,
     saving: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
+    auto_save_pending: bool,
     slots: Vec<Slot>,
     selected_slot: usize,
     required_previews: usize,
@@ -177,6 +200,9 @@ struct Desktop {
 }
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if self.record_snapshot.has_changed().unwrap_or(true) {
+            self.record_status = self.record_snapshot.borrow_and_update().clone();
+        }
         if self.camera_snapshot.has_changed().unwrap_or(true) {
             self.camera_status = self.camera_snapshot.borrow_and_update().clone();
         }
@@ -195,6 +221,20 @@ impl eframe::App for Desktop {
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             }
+        }
+        if self.auto_save_pending && self.saving.is_none() {
+            self.auto_save_pending = false;
+            let path = self.path.clone();
+            let enabled = self.config.auto_record;
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            self.runtime.spawn_blocking(move || {
+                let result = AppConfig::load(&path).and_then(|mut config| {
+                    config.auto_record = enabled;
+                    config.save(&path)
+                });
+                let _ = sender.send(result);
+            });
+            self.saving = Some(receiver);
         }
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if let Some(pending) = &mut slot.pending {
@@ -234,56 +274,221 @@ impl eframe::App for Desktop {
             }
         }
         let mut requested_preview = None;
-        egui::SidePanel::left("settings").default_width(240.0).show(ctx, |ui| {
-            ui.heading("Vidfish");
-            ui.label(format!("Manager: {:?}", *self.status.borrow()));
-            ui.label("Recording runs in a separate --record process. Closing this window does not stop it.");
-            ui.separator();
-            egui::CollapsingHeader::new("Settings").default_open(false).show(ui, |ui| {
-            ui.checkbox(&mut self.config.auto_record, "Automatically record arriving cameras");
-            ui.label("Automatic recording controls arrive in Epic 3.");
-            ui.label("Camera adapter IPv4 (blank disables discovery)");
-            if ui.text_edit_singleline(&mut self.interface).changed() {
-                if self.interface.trim().is_empty() { self.config.camera_interface = None; }
-                else if let Ok(ip) = self.interface.parse() { self.config.camera_interface = Some(ip); }
-            }
-            let interface_valid = self.interface.trim().is_empty() || self.interface.parse::<std::net::Ipv4Addr>().is_ok();
-            if !interface_valid { ui.colored_label(egui::Color32::RED, "Enter a valid local IPv4 address"); }
-            ui.horizontal(|ui| { ui.label("Segment seconds"); ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400)); });
-            let mut output = self.config.output_directory.to_string_lossy().into_owned();
-            ui.label("Output directory");
-            if ui.text_edit_singleline(&mut output).changed() { self.config.output_directory = output.into(); }
-            ui.label("Settings take effect on manager restart.");
-            if ui.add_enabled_ui(self.saving.is_none() && interface_valid, |ui| ui.add_sized([160.0, 48.0], egui::Button::new("Save settings"))).inner.clicked() {
-                let config = self.config.clone(); let path = self.path.clone();
-                let (sender, receiver) = tokio::sync::oneshot::channel();
-                self.runtime.spawn_blocking(move || { let _ = sender.send(config.save(&path)); });
-                self.saving = Some(receiver); self.message = "Saving settings…".into();
-            }
-            });
-            ui.label(&self.message);
-            ui.separator();
-            ui.heading("Cameras");
-            egui::ComboBox::from_label("Preview slot").selected_text(format!("{}", self.selected_slot + 1)).show_ui(ui, |ui| { for index in 0..self.slots.len() { ui.selectable_value(&mut self.selected_slot, index, format!("Slot {}", index + 1)); } });
-            ui.label("Availability is ONVIF health; it does not mean recording.");
-            for error in [&self.camera_status.discovery_error, &self.camera_status.inventory_error].into_iter().flatten() { ui.colored_label(egui::Color32::RED, error); }
-            egui::ScrollArea::vertical().max_height(ui.available_height().clamp(80.0, 260.0)).show(ui, |ui| {
-                for camera in &self.camera_status.cameras {
-                    ui.label(format!("{}: {:?}", camera.camera.alias, camera.state));
-                    if ui.add_enabled(self.slots[self.selected_slot].pending.is_none() && (camera.camera.manual_rtsp.is_some() || !camera.profiles.is_empty()), egui::Button::new("View feed").min_size(egui::vec2(160.0, 40.0))).clicked() { requested_preview = Some((camera.camera.clone(), camera.profiles.first().cloned())); }
-                    if let Some(error) = &camera.error { ui.colored_label(egui::Color32::RED, error); }
-                    if let Some(retry) = camera.retry_seconds { ui.label(format!("Retry interval: {retry}s")); }
-                    if let Some(profile) = camera.profiles.first() { ui.label(format!("{} {}×{}", profile.codec, profile.width, profile.height)); }
-                    let alias = self.aliases.entry(camera.camera.id.clone()).or_insert_with(|| camera.camera.alias.clone());
-                    ui.text_edit_singleline(alias);
-                    if ui.add_sized([160.0, 40.0], egui::Button::new("Rename camera")).clicked()
-                        && let Err(error) = self.camera_control.command(vidfish_onvif::manager::Command::Rename { id: camera.camera.id.clone(), alias: alias.clone() }) { self.message = error.to_string(); }
-                    if ui.add_sized([160.0, 40.0], egui::Button::new("Camera login")).clicked() { self.login_username.zeroize(); self.login_password.zeroize(); self.login_camera = Some(camera.camera.id.clone()); }
-                    if camera.camera.credential_key.is_some() { ui.label("Login saved locally"); }
-                    ui.separator();
+        egui::SidePanel::left("settings")
+            .default_width(240.0)
+            .show(ctx, |ui| {
+                ui.heading("Vidfish");
+                ui.label(format!("Manager: {:?}", *self.status.borrow()));
+                ui.label("Recordings continue when this window closes. Use Stop all to finish.");
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized([104.0, 40.0], egui::Button::new("Record all"))
+                        .clicked()
+                        && let Err(error) = self
+                            .record_control
+                            .command(vidfish::acquisition::Control::RecordAll)
+                    {
+                        self.message = error.into();
+                    }
+                    if ui
+                        .add_sized([104.0, 40.0], egui::Button::new("Stop all"))
+                        .clicked()
+                        && let Err(error) = self
+                            .record_control
+                            .command(vidfish::acquisition::Control::StopAll)
+                    {
+                        self.message = error.into();
+                    }
+                });
+                if ui
+                    .checkbox(&mut self.config.auto_record, "Auto-record arriving cameras")
+                    .changed()
+                {
+                    self.auto_save_pending = true;
+                    if let Err(error) =
+                        self.record_control
+                            .command(vidfish::acquisition::Control::AutoRecord(
+                                self.config.auto_record,
+                            ))
+                    {
+                        self.message = error.into();
+                    }
                 }
+                if let Some(error) = &self.record_status.error {
+                    ui.colored_label(egui::Color32::RED, error);
+                }
+                ui.separator();
+                egui::CollapsingHeader::new("Settings")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label("Camera adapter IPv4 (blank disables discovery)");
+                        if ui.text_edit_singleline(&mut self.interface).changed() {
+                            if self.interface.trim().is_empty() {
+                                self.config.camera_interface = None;
+                            } else if let Ok(ip) = self.interface.parse() {
+                                self.config.camera_interface = Some(ip);
+                            }
+                        }
+                        let interface_valid = self.interface.trim().is_empty()
+                            || self.interface.parse::<std::net::Ipv4Addr>().is_ok();
+                        if !interface_valid {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                "Enter a valid local IPv4 address",
+                            );
+                        }
+                        let mut output =
+                            self.config.output_directory.to_string_lossy().into_owned();
+                        ui.label("Output directory");
+                        if ui.text_edit_singleline(&mut output).changed() {
+                            self.config.output_directory = output.into();
+                        }
+                        ui.label("Settings take effect on manager restart.");
+                        if ui
+                            .add_enabled_ui(self.saving.is_none() && interface_valid, |ui| {
+                                ui.add_sized([160.0, 48.0], egui::Button::new("Save settings"))
+                            })
+                            .inner
+                            .clicked()
+                        {
+                            let config = self.config.clone();
+                            let path = self.path.clone();
+                            let (sender, receiver) = tokio::sync::oneshot::channel();
+                            self.runtime.spawn_blocking(move || {
+                                let _ = sender.send(config.save(&path));
+                            });
+                            self.saving = Some(receiver);
+                            self.message = "Saving settings…".into();
+                        }
+                    });
+                ui.label(&self.message);
+                ui.separator();
+                ui.heading("Cameras");
+                if ui
+                    .add_sized([160.0, 40.0], egui::Button::new("Add camera"))
+                    .clicked()
+                {
+                    self.adding_camera = true;
+                }
+                egui::ComboBox::from_label("Preview slot")
+                    .selected_text(format!("{}", self.selected_slot + 1))
+                    .show_ui(ui, |ui| {
+                        for index in 0..self.slots.len() {
+                            ui.selectable_value(
+                                &mut self.selected_slot,
+                                index,
+                                format!("Slot {}", index + 1),
+                            );
+                        }
+                    });
+                ui.label("Availability is ONVIF health; it does not mean recording.");
+                for error in [
+                    &self.camera_status.discovery_error,
+                    &self.camera_status.inventory_error,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    ui.colored_label(egui::Color32::RED, error);
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height().clamp(80.0, 260.0))
+                    .show(ui, |ui| {
+                        for camera in &self.camera_status.cameras {
+                            ui.label(format!("{}: {:?}", camera.camera.alias, camera.state));
+                            if let Some(record) = self
+                                .record_status
+                                .cameras
+                                .iter()
+                                .find(|record| record.camera_id == camera.camera.id)
+                            {
+                                ui.label(format!(
+                                    "Recording: {:?} — {} bytes",
+                                    record.state, record.bytes_written
+                                ));
+                                if let Some(error) = &record.error {
+                                    ui.colored_label(egui::Color32::RED, error);
+                                }
+                            } else {
+                                ui.label("Recording: stopped");
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.button("Record").clicked()
+                                    && let Err(error) = self.record_control.command(
+                                        vidfish::acquisition::Control::Record(
+                                            camera.camera.id.clone(),
+                                        ),
+                                    )
+                                {
+                                    self.message = error.into();
+                                }
+                                if ui.button("Stop recording").clicked()
+                                    && let Err(error) = self.record_control.command(
+                                        vidfish::acquisition::Control::Stop(
+                                            camera.camera.id.clone(),
+                                        ),
+                                    )
+                                {
+                                    self.message = error.into();
+                                }
+                            });
+                            if ui
+                                .add_enabled(
+                                    self.slots[self.selected_slot].pending.is_none()
+                                        && (camera.camera.manual_rtsp.is_some()
+                                            || !camera.profiles.is_empty()),
+                                    egui::Button::new("View feed")
+                                        .min_size(egui::vec2(160.0, 40.0)),
+                                )
+                                .clicked()
+                            {
+                                requested_preview =
+                                    Some((camera.camera.clone(), camera.profiles.first().cloned()));
+                            }
+                            if let Some(error) = &camera.error {
+                                ui.colored_label(egui::Color32::RED, error);
+                            }
+                            if let Some(retry) = camera.retry_seconds {
+                                ui.label(format!("Retry interval: {retry}s"));
+                            }
+                            if let Some(profile) = camera.profiles.first() {
+                                ui.label(format!(
+                                    "{} {}×{}",
+                                    profile.codec, profile.width, profile.height
+                                ));
+                            }
+                            let alias = self
+                                .aliases
+                                .entry(camera.camera.id.clone())
+                                .or_insert_with(|| camera.camera.alias.clone());
+                            ui.text_edit_singleline(alias);
+                            if ui
+                                .add_sized([160.0, 40.0], egui::Button::new("Rename camera"))
+                                .clicked()
+                                && let Err(error) = self.camera_control.command(
+                                    vidfish_onvif::manager::Command::Rename {
+                                        id: camera.camera.id.clone(),
+                                        alias: alias.clone(),
+                                    },
+                                )
+                            {
+                                self.message = error.to_string();
+                            }
+                            if ui
+                                .add_sized([160.0, 40.0], egui::Button::new("Camera login"))
+                                .clicked()
+                            {
+                                self.login_username.zeroize();
+                                self.login_password.zeroize();
+                                self.login_camera = Some(camera.camera.id.clone());
+                            }
+                            if camera.camera.credential_key.is_some() {
+                                ui.label("Login saved locally");
+                            }
+                            ui.separator();
+                        }
+                    });
             });
-        });
         if let Some((camera, profile)) = requested_preview {
             self.open_preview(camera, profile);
         }
@@ -336,6 +541,50 @@ impl eframe::App for Desktop {
         });
         if let Some(index) = close_slot {
             self.close_preview(index);
+        }
+        if self.adding_camera {
+            egui::Window::new("Add camera")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Alias (optional)");
+                    ui.add(egui::TextEdit::singleline(&mut self.new_alias).char_limit(256));
+                    ui.checkbox(&mut self.new_onvif, "ONVIF camera");
+                    ui.label(if self.new_onvif {
+                        "Camera IP or ONVIF device URL"
+                    } else {
+                        "RTSP stream URL"
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut self.new_address).char_limit(4096));
+                    if !self.new_onvif {
+                        ui.checkbox(&mut self.new_h265, "H.265 stream");
+                    }
+                    ui.label("Enter credentials separately with Camera login.");
+                    if ui
+                        .add_sized([160.0, 48.0], egui::Button::new("Add camera"))
+                        .clicked()
+                    {
+                        match self.camera_control.command(
+                            vidfish_onvif::manager::Command::AddCamera {
+                                alias: std::mem::take(&mut self.new_alias),
+                                address: std::mem::take(&mut self.new_address),
+                                onvif: self.new_onvif,
+                                h265: self.new_h265,
+                            },
+                        ) {
+                            Ok(()) => {
+                                self.adding_camera = false;
+                                self.message = "Adding camera…".into();
+                            }
+                            Err(error) => self.message = error.to_string(),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.adding_camera = false;
+                        self.new_address.clear();
+                        self.new_alias.clear();
+                    }
+                });
         }
         if let Some(id) = self.login_camera.clone() {
             egui::Window::new("Camera login")
@@ -444,7 +693,7 @@ impl Desktop {
             if sender.is_closed() {
                 return;
             }
-            let result = crate::camera_preview::source(&camera, profile.as_ref(), &inventory)
+            let result = vidfish::camera_preview::source(&camera, profile.as_ref(), &inventory)
                 .map(|(source, codec)| Some(Preview::start(source, codec)));
             if let Err(Ok(Some(preview))) = sender.send(result) {
                 preview.join();

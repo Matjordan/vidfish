@@ -63,6 +63,12 @@ impl Options {
     }
 }
 pub enum Command {
+    AddCamera {
+        alias: String,
+        address: String,
+        onvif: bool,
+        h265: bool,
+    },
     Rename {
         id: String,
         alias: String,
@@ -224,6 +230,59 @@ fn run(
         while let Ok(command) = commands.try_recv() {
             changed = true;
             match command {
+                Command::AddCamera {
+                    alias,
+                    address,
+                    onvif,
+                    h265,
+                } => {
+                    let alias = if alias.trim().is_empty() {
+                        format!("Camera {}", store.cameras.len() + 1)
+                    } else {
+                        alias
+                    };
+                    let mut updated = store.clone();
+                    let result = if onvif {
+                        let address = if address.contains("://") {
+                            address
+                        } else {
+                            format!("http://{address}")
+                        };
+                        match reqwest::Url::parse(&address) {
+                            Ok(mut url) => {
+                                if url.path() == "/" {
+                                    url.set_path("/onvif/device_service");
+                                }
+                                updated.add_onvif(&alias, url.as_str())
+                            }
+                            Err(_) => Err(std::io::Error::other("Invalid ONVIF address")),
+                        }
+                    } else {
+                        updated.add_manual(&alias, &address)
+                    };
+                    match result.and_then(|id| {
+                        if let Some(record) = updated.cameras.iter_mut().find(|c| c.id == id) {
+                            record.manual_h265 = h265;
+                        }
+                        updated.save(&options.inventory)?;
+                        Ok(id)
+                    }) {
+                        Ok(id) => {
+                            store = updated;
+                            inventory_error = None;
+                            let record = store.cameras.iter().find(|c| c.id == id).unwrap().clone();
+                            start_worker(
+                                record,
+                                &options,
+                                &stop,
+                                &events,
+                                &mut workers,
+                                &mut statuses,
+                            );
+                        }
+                        Err(error) => inventory_error = Some(format!("Camera not added: {error}")),
+                    }
+                }
                 Command::SaveCredentials { id, credentials } => {
                     let mut updated = store.clone();
                     let result = match updated.cameras.iter().position(|c| c.id == id) {
@@ -304,6 +363,7 @@ fn run(
                                 {
                                     s.state = State::IdentityConflict;
                                     s.error = discovery_error.clone();
+                                    s.profiles.clear();
                                     if let Some(w) = workers.get(&camera.id) {
                                         w.paused.store(true, Ordering::Release);
                                     }

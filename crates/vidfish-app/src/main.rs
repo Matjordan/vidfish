@@ -1,8 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
+use vidfish::acquisition;
 use vidfish_core::{config::AppConfig, engine::Engine};
-#[cfg(feature = "desktop")]
-mod camera_preview;
 mod cameras;
 
 #[cfg(feature = "desktop")]
@@ -10,9 +9,14 @@ mod desktop;
 
 #[derive(Parser)]
 #[command(version = option_env!("VIDFISH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "Vidfish scientific camera acquisition")]
-#[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect", "discover", "onvif"])))]
+#[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect", "discover", "onvif", "record_camera"])))]
 #[command(group(clap::ArgGroup::new("desktop_input").args(["demo", "preview"])))]
 struct Args {
+    /// Record a saved camera independently, using its saved login and recording policy.
+    #[arg(long)]
+    record_camera: Option<String>,
+    #[arg(long, requires = "record_camera", hide = true)]
+    record_run_id: Option<String>,
     #[command(subcommand)]
     command: Option<cameras::Command>,
     /// Probe ONVIF cameras on the selected IPv4 adapter and resolve their profiles.
@@ -81,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || args.onvif.is_some()
             || args.service
             || args.record.is_some()
+            || args.record_camera.is_some()
             || args.check
             || args.media_check
             || args.demo
@@ -151,7 +156,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("config.json"),
     };
     let config = AppConfig::load(&path)?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(if args.record_camera.is_some() { 1 } else { 2 })
+        .enable_all()
+        .build()?;
+    if let Some(id) = args.record_camera {
+        let run_id = args
+            .record_run_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = interrupted.clone();
+        runtime.spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                stopping.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
+        acquisition::record_camera(&path, &config, &id, &run_id, &interrupted)?;
+        return Ok(());
+    }
     if let Some(uri) = args.record {
         let output = args.output.ok_or("recording needs --output")?;
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
@@ -194,6 +216,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         };
+        let recordings = cameras
+            .as_ref()
+            .map(|cameras| {
+                acquisition::Supervisor::start(path.clone(), config.clone(), cameras.snapshot())
+            })
+            .transpose()?;
         let result = runtime.block_on(async {
             let engine = Engine::start(config)?;
             if args.service {
@@ -202,6 +230,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine.shutdown().await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         });
+        if let Some(cameras) = &cameras {
+            cameras.stop();
+        }
+        if let Some(recordings) = recordings {
+            recordings.finish_all()?;
+        }
         if let Some(cameras) = cameras {
             cameras.join();
         }

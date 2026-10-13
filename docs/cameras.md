@@ -115,8 +115,7 @@ bounded in-flight requests finish.
 
 `Available` means that ONVIF device/profile resolution succeeded. It does not prove RTSP
 media flow or recording progress. Manual RTSP-only cameras are `ManualConfigured`, with
-stream health established by the preview/recording operation. Actual recording state,
-auto-record policy execution, and media-progress monitoring belong to Epic 3. The camera
+stream health established by the preview/recording operation. Actual recording state and file progress are shown separately by the recording supervisor. The camera
 manager never starts, stops, or owns a preview or recording pipeline. Renames are saved
 on the coordinator worker, away from the UI thread.
 
@@ -130,3 +129,27 @@ Saved camera logins are applied to RTSP using GStreamer credential properties, w
 putting the password in a stream URL. The UI remains responsive while a preview opens,
 replaces its decoder, or fails. Cold camera startup can take several seconds; the slot
 shows its current connection state. Expand **Settings** to configure the camera adapter.
+
+## Recording policy and independent processes
+
+Auto-record starts each available registered/arriving camera by default. **Record all**,
+**Stop all**, and per-camera **Record**/**Stop recording** controls work independently of
+preview slots. Turning auto-record off persists immediately and leaves active recordings
+running. Stop all suppresses automatic restarts until Record all or an app restart.
+The headless `--service` follows the saved policy and finalizes recordings on Ctrl+C.
+`cameras watch` only monitors metadata and never starts recordings.
+
+Each recorder runs in its own process and holds an exclusive per-camera lock. Closing
+or crashing the desktop leaves it running; restarting the desktop reattaches to its
+status without starting a duplicate. Use Stop all before exiting when acquisition should
+end. A failed camera retries with backoff up to 60 seconds; peers continue. Recording
+state changes and failures are saved in `acquisition/events.jsonl` beside the configuration,
+with per-run worker logs and atomic status files. Camera metadata disappearance is also
+reported in structured application logs. Stream stalls are detected from actual file
+progress, not preview health. Recording workers retain partial files on failure.
+
+Output files are new MKVs named with camera ID, UTC Unix milliseconds, and run UUID in
+the configured output directory. Existing scientific data is never overwritten or deleted.
+This epic supplies the hot-arrival policy bridge; segmented files, detailed boundary
+indexes, disk-low policy, and full session organization remain Epic 3 and later work.
+For a manual H.265 camera use `cameras add --alias NAME --rtsp URI --h265`.
