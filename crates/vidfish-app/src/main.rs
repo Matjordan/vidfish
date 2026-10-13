@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 use vidfish_core::{config::AppConfig, engine::Engine};
+#[cfg(feature = "desktop")]
+mod camera_preview;
 mod cameras;
 
 #[cfg(feature = "desktop")]

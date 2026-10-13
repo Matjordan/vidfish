@@ -23,6 +23,11 @@ pub enum Codec {
 #[derive(Clone)]
 pub enum Source {
     Rtsp(String),
+    AuthenticatedRtsp {
+        uri: String,
+        username: zeroize::Zeroizing<String>,
+        password: zeroize::Zeroizing<String>,
+    },
     /// Test-only local source. Encoding happens only in this simulated source.
     TestPattern {
         width: i32,
@@ -104,7 +109,7 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
         .add(&parser)
         .map_err(|_| MediaError("cannot add parser".into()))?;
     match source {
-        Source::Rtsp(uri) => {
+        Source::Rtsp(uri) | Source::AuthenticatedRtsp { uri, .. } => {
             if !url::Url::parse(uri).is_ok_and(|parsed| {
                 matches!(parsed.scheme(), "rtsp" | "rtsps") && parsed.host_str().is_some()
             }) {
@@ -114,6 +119,13 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
             }
             let rtsp = element("rtspsrc", "camera")?;
             rtsp.set_property("location", uri);
+            if let Source::AuthenticatedRtsp {
+                username, password, ..
+            } = source
+            {
+                rtsp.set_property("user-id", username.as_str());
+                rtsp.set_property("user-pw", password.as_str());
+            }
             rtsp.set_property_from_str("protocols", "tcp");
             rtsp.set_property("latency", 200u32);
             rtsp.set_property("tcp-timeout", 5_000_000u64);

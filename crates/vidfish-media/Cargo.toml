@@ -16,6 +16,7 @@ gstreamer-rtsp-server = { version = "0.24", features = ["v1_20"], optional = tru
 tokio.workspace = true
 tracing.workspace = true
 url = "2"
+zeroize = "1"
 quick-xml = { version = "0.41", optional = true }
 
 [dev-dependencies]

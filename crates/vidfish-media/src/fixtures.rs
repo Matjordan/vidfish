@@ -22,6 +22,27 @@ impl RtspFixture {
         Self::start_codec(width, height, crate::Codec::H264)
     }
     pub fn start_codec(width: u32, height: u32, codec: crate::Codec) -> Result<Self> {
+        Self::start_inner(width, height, codec, None)
+    }
+    pub fn start_authenticated(
+        width: u32,
+        height: u32,
+        username: String,
+        password: String,
+    ) -> Result<Self> {
+        Self::start_inner(
+            width,
+            height,
+            crate::Codec::H264,
+            Some((username, password)),
+        )
+    }
+    fn start_inner(
+        width: u32,
+        height: u32,
+        codec: crate::Codec,
+        authentication: Option<(String, String)>,
+    ) -> Result<Self> {
         crate::initialize()?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -39,6 +60,13 @@ impl RtspFixture {
                 };
                 factory.set_launch(&format!("( videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
                 factory.set_shared(true);
+                if let Some((username, password)) = authentication {
+                    let auth = rtsp::RTSPAuth::new();
+                    let token = rtsp::RTSPToken::builder().field("media.factory.role", "viewer").build();
+                    auth.add_basic(&rtsp::RTSPAuth::make_basic(&username, &password), &token);
+                    factory.add_role_from_structure(&gst::Structure::builder("viewer").field("media.factory.access", true).field("media.factory.construct", true).build());
+                    server.set_auth(Some(&auth));
+                }
                 let mounts = server.mount_points().ok_or_else(|| MediaError("fixture mount points unavailable".into()))?;
                 mounts.add_factory("/camera", factory);
                 let source_id = server.attach(Some(&context)).map_err(|_| MediaError("cannot bind RTSP fixture".into()))?;

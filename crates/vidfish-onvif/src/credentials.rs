@@ -21,6 +21,10 @@ impl Drop for Credentials {
     }
 }
 impl Credentials {
+    /// Borrow credentials only while constructing an authenticated media source.
+    pub fn expose<T>(&self, operation: impl FnOnce(&str, &str) -> T) -> T {
+        operation(&self.username, &self.password)
+    }
     pub fn new(username: String, password: String) -> Result<Self> {
         let credentials = Self { username, password };
         if credentials.username.is_empty()

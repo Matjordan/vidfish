@@ -119,3 +119,14 @@ stream health established by the preview/recording operation. Actual recording s
 auto-record policy execution, and media-progress monitoring belong to Epic 3. The camera
 manager never starts, stops, or owns a preview or recording pipeline. Renames are saved
 on the coordinator worker, away from the UI thread.
+
+## Open live feeds in the desktop
+
+Select a **Preview slot** and press **View feed** beside a camera. Up to four feeds can
+be decoded at once; selecting another camera replaces that slot. **Close feed** releases
+its preview without affecting an independent recording. Selecting a camera already shown
+in another slot switches the selected slot instead of adding a duplicate connection.
+Saved camera logins are applied to RTSP using GStreamer credential properties, without
+putting the password in a stream URL. The UI remains responsive while a preview opens,
+replaces its decoder, or fails. Cold camera startup can take several seconds; the slot
+shows its current connection state. Expand **Settings** to configure the camera adapter.

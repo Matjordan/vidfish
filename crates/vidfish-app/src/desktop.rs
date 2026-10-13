@@ -32,20 +32,24 @@ pub fn run(
     ))?;
     let camera_snapshot = cameras.snapshot();
     let camera_control = cameras.controller();
-    let mut previews: Vec<_> = sources
+    let required_previews = sources.len();
+    let preview_limit = required_previews.max(config.preview_slots);
+    let mut slots: Vec<_> = sources
         .into_iter()
-        .map(|source| Preview::start(source, codec))
-        .collect();
-    let slots = previews
-        .iter()
-        .map(|preview| Slot {
-            frames: preview.frames.clone(),
-            status: preview.status.clone(),
-            texture: None,
-            number: 0,
-            displayed: 0,
+        .enumerate()
+        .map(|(index, source)| {
+            Slot::new(
+                Preview::start(source, codec),
+                format!("Camera {}", index + 1),
+            )
         })
         .collect();
+    while slots.len() < preview_limit {
+        slots.push(Slot::default());
+    }
+    let (retired, retiring) = std::sync::mpsc::sync_channel(4);
+    let preview_jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cleanup_jobs = preview_jobs.clone();
     let passed = Arc::new(AtomicBool::new(false));
     let validation = passed.clone();
     #[cfg(any(windows, feature = "wgpu-desktop"))]
@@ -96,15 +100,25 @@ pub fn run(
                 runtime: handle,
                 saving: None,
                 slots,
+                selected_slot: 0,
+                required_previews,
+                retired,
+                preview_jobs,
                 started: Instant::now(),
                 seconds,
                 validation,
             }))
         }),
     );
-    for preview in previews.drain(..) {
+    for preview in retiring.try_iter() {
         preview.join();
     }
+    let jobs = std::mem::take(&mut *cleanup_jobs.lock().unwrap());
+    runtime.block_on(async {
+        for job in jobs {
+            let _ = job.await;
+        }
+    });
     cameras.join();
     runtime.block_on(engine.shutdown())?;
     result?;
@@ -117,12 +131,25 @@ pub fn run(
     Ok(())
 }
 
+#[derive(Default)]
 struct Slot {
-    frames: tokio::sync::watch::Receiver<Option<Arc<vidfish_media::Frame>>>,
-    status: tokio::sync::watch::Receiver<String>,
+    preview: Option<Preview>,
+    pending: Option<tokio::sync::oneshot::Receiver<Result<Option<Preview>, String>>>,
+    camera_id: Option<String>,
+    label: String,
+    error: Option<String>,
     texture: Option<egui::TextureHandle>,
     number: u64,
     displayed: u64,
+}
+impl Slot {
+    fn new(preview: Preview, label: String) -> Self {
+        Self {
+            preview: Some(preview),
+            label,
+            ..Default::default()
+        }
+    }
 }
 struct Desktop {
     interface: String,
@@ -140,6 +167,10 @@ struct Desktop {
     runtime: tokio::runtime::Handle,
     saving: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     slots: Vec<Slot>,
+    selected_slot: usize,
+    required_previews: usize,
+    retired: std::sync::mpsc::SyncSender<Preview>,
+    preview_jobs: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     started: Instant,
     seconds: Option<u64>,
     validation: Arc<AtomicBool>,
@@ -166,7 +197,27 @@ impl eframe::App for Desktop {
             }
         }
         for (index, slot) in self.slots.iter_mut().enumerate() {
-            let frame = slot.frames.borrow_and_update().clone();
+            if let Some(pending) = &mut slot.pending {
+                match pending.try_recv() {
+                    Ok(Ok(preview)) => {
+                        slot.preview = preview;
+                        slot.pending = None;
+                    }
+                    Ok(Err(error)) => {
+                        slot.error = Some(error);
+                        slot.pending = None;
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        slot.error = Some("Preview worker stopped unexpectedly".into());
+                        slot.pending = None;
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                }
+            }
+            let frame = slot
+                .preview
+                .as_mut()
+                .and_then(|preview| preview.frames.borrow_and_update().clone());
             if let Some(frame) = frame.filter(|frame| frame.number != slot.number) {
                 let image = egui::ColorImage::from_rgb([frame.width, frame.height], &frame.rgb);
                 if let Some(texture) = &mut slot.texture {
@@ -182,12 +233,13 @@ impl eframe::App for Desktop {
                 slot.displayed += 1;
             }
         }
+        let mut requested_preview = None;
         egui::SidePanel::left("settings").default_width(240.0).show(ctx, |ui| {
             ui.heading("Vidfish");
             ui.label(format!("Manager: {:?}", *self.status.borrow()));
             ui.label("Recording runs in a separate --record process. Closing this window does not stop it.");
             ui.separator();
-            ui.heading("Settings");
+            egui::CollapsingHeader::new("Settings").default_open(false).show(ui, |ui| {
             ui.checkbox(&mut self.config.auto_record, "Automatically record arriving cameras");
             ui.label("Automatic recording controls arrive in Epic 3.");
             ui.label("Camera adapter IPv4 (blank disables discovery)");
@@ -208,14 +260,17 @@ impl eframe::App for Desktop {
                 self.runtime.spawn_blocking(move || { let _ = sender.send(config.save(&path)); });
                 self.saving = Some(receiver); self.message = "Saving settings…".into();
             }
+            });
             ui.label(&self.message);
             ui.separator();
             ui.heading("Cameras");
+            egui::ComboBox::from_label("Preview slot").selected_text(format!("{}", self.selected_slot + 1)).show_ui(ui, |ui| { for index in 0..self.slots.len() { ui.selectable_value(&mut self.selected_slot, index, format!("Slot {}", index + 1)); } });
             ui.label("Availability is ONVIF health; it does not mean recording.");
             for error in [&self.camera_status.discovery_error, &self.camera_status.inventory_error].into_iter().flatten() { ui.colored_label(egui::Color32::RED, error); }
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(ui.available_height().clamp(80.0, 260.0)).show(ui, |ui| {
                 for camera in &self.camera_status.cameras {
                     ui.label(format!("{}: {:?}", camera.camera.alias, camera.state));
+                    if ui.add_enabled(self.slots[self.selected_slot].pending.is_none() && (camera.camera.manual_rtsp.is_some() || !camera.profiles.is_empty()), egui::Button::new("View feed").min_size(egui::vec2(160.0, 40.0))).clicked() { requested_preview = Some((camera.camera.clone(), camera.profiles.first().cloned())); }
                     if let Some(error) = &camera.error { ui.colored_label(egui::Color32::RED, error); }
                     if let Some(retry) = camera.retry_seconds { ui.label(format!("Retry interval: {retry}s")); }
                     if let Some(profile) = camera.profiles.first() { ui.label(format!("{} {}×{}", profile.codec, profile.width, profile.height)); }
@@ -229,16 +284,40 @@ impl eframe::App for Desktop {
                 }
             });
         });
+        if let Some((camera, profile)) = requested_preview {
+            self.open_preview(camera, profile);
+        }
+        let mut close_slot = None;
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.slots.is_empty() {
-                ui.label("No preview configured. Use --preview RTSP_URI or --demo.");
+            if self
+                .slots
+                .iter()
+                .all(|slot| slot.preview.is_none() && slot.pending.is_none())
+            {
+                ui.label("Select a preview slot, then choose View feed beside a camera.");
             }
             let cell_width = (ui.available_width() / 2.0 - 12.0).max(1.0);
             let cell_height = (ui.available_height() / 2.0 - 36.0).max(1.0);
             egui::Grid::new("previews").num_columns(2).show(ui, |ui| {
                 for (index, slot) in self.slots.iter().enumerate() {
                     ui.vertical(|ui| {
-                        ui.label(format!("Camera {}: {}", index + 1, *slot.status.borrow()));
+                        let state = if slot.pending.is_some() {
+                            if slot.camera_id.is_some() {
+                                "Opening…".into()
+                            } else {
+                                "Closing…".into()
+                            }
+                        } else if let Some(error) = &slot.error {
+                            error.clone()
+                        } else if let Some(preview) = &slot.preview {
+                            preview.status.borrow().clone()
+                        } else {
+                            "Empty".into()
+                        };
+                        ui.label(format!("Slot {} — {}: {}", index + 1, slot.label, state));
+                        if slot.preview.is_some() && ui.button("Close feed").clicked() {
+                            close_slot = Some(index);
+                        }
                         if let Some(texture) = &slot.texture {
                             ui.add(
                                 egui::Image::new(texture)
@@ -255,6 +334,9 @@ impl eframe::App for Desktop {
                 }
             });
         });
+        if let Some(index) = close_slot {
+            self.close_preview(index);
+        }
         if let Some(id) = self.login_camera.clone() {
             egui::Window::new("Camera login")
                 .collapsible(false)
@@ -301,9 +383,18 @@ impl eframe::App for Desktop {
         if let Some(seconds) = self.seconds
             && self.started.elapsed() >= Duration::from_secs(seconds)
         {
-            let passed = self.slots.iter().all(|slot| slot.displayed > 0);
+            let passed = self
+                .slots
+                .iter()
+                .take(self.required_previews)
+                .all(|slot| slot.displayed > 0);
             self.validation.store(passed, Ordering::Release);
-            for (index, slot) in self.slots.iter().enumerate() {
+            for (index, slot) in self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.preview.is_some())
+            {
                 tracing::info!(
                     slot = index,
                     received_frames = slot.number,
@@ -316,5 +407,77 @@ impl eframe::App for Desktop {
             self.seconds = None;
         }
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+}
+
+impl Desktop {
+    fn open_preview(
+        &mut self,
+        camera: vidfish_core::cameras::CameraRecord,
+        profile: Option<vidfish_onvif::Profile>,
+    ) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.camera_id.as_deref() == Some(&camera.id))
+            && index != self.selected_slot
+        {
+            self.selected_slot = index;
+            self.message = format!("Camera already shown in slot {}", index + 1);
+            return;
+        }
+        let slot = &mut self.slots[self.selected_slot];
+        let old = slot.preview.take();
+        slot.texture = None;
+        slot.number = 0;
+        slot.displayed = 0;
+        slot.error = None;
+        slot.label = camera.alias.clone();
+        slot.camera_id = Some(camera.id.clone());
+        let inventory = self.path.with_file_name("cameras.json");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        slot.pending = Some(receiver);
+        let job = self.runtime.spawn_blocking(move || {
+            if let Some(old) = old {
+                old.join();
+            }
+            if sender.is_closed() {
+                return;
+            }
+            let result = crate::camera_preview::source(&camera, profile.as_ref(), &inventory)
+                .map(|(source, codec)| Some(Preview::start(source, codec)));
+            if let Err(Ok(Some(preview))) = sender.send(result) {
+                preview.join();
+            }
+        });
+        let mut jobs = self.preview_jobs.lock().unwrap();
+        jobs.retain(|job| !job.is_finished());
+        jobs.push(job);
+    }
+    fn close_preview(&mut self, index: usize) {
+        let slot = &mut self.slots[index];
+        if let Some(preview) = slot.preview.take() {
+            preview.request_stop();
+            *slot = Slot::default();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            slot.pending = Some(receiver);
+            let job = self.runtime.spawn_blocking(move || {
+                preview.join();
+                let _ = sender.send(Ok(None));
+            });
+            let mut jobs = self.preview_jobs.lock().unwrap();
+            jobs.retain(|job| !job.is_finished());
+            jobs.push(job);
+        }
+    }
+}
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        for slot in &mut self.slots {
+            if let Some(preview) = slot.preview.take() {
+                preview.request_stop();
+                let _ = self.retired.try_send(preview);
+            }
+        }
     }
 }
