@@ -19,7 +19,8 @@ and manifests belong to Epic 6.
 
 Recorders publish sampled GStreamer running time independently of the viewer.
 The marker extrapolates that sample to the operator action using UTC; samples
-older than three seconds or clock discontinuities are rejected as gaps.
+older than three seconds or an action time before the sample are rejected as
+gaps. Smaller UTC clock adjustments remain part of the timing uncertainty.
 The segment journal contains actual splitmux open/close running times, including
 keyframe-aligned boundaries. Lookup uses those boundaries, not the configured
 segment interval. An event exactly on a split belongs to the following segment;
