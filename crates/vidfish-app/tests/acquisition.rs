@@ -482,10 +482,19 @@ fn disk_stop_prevents_writes_and_warning_policy_allows_manual_recording() {
         })
     });
     assert!(
-        std::fs::read_dir(&config.output_directory)
+        !std::fs::read_dir(&config.output_directory)
             .unwrap()
-            .next()
-            .is_none(),
+            .filter_map(Result::ok)
+            .any(|session| session
+                .path()
+                .join("recordings")
+                .read_dir()
+                .is_ok_and(|runs| runs.filter_map(Result::ok).any(|run| run
+                    .path()
+                    .read_dir()
+                    .is_ok_and(|files| files
+                        .filter_map(Result::ok)
+                        .any(|file| file.path().extension().is_some_and(|ext| ext == "mkv")))))),
         "disk-stop policy wrote media"
     );
     let preview = vidfish_media::Preview::start(

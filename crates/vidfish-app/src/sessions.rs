@@ -61,12 +61,12 @@ fn file_lock(path: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(path)?)
 }
-fn registry_lock(config: &Path) -> Result<std::fs::File> {
+pub(crate) fn lock_registry(config: &Path) -> Result<std::fs::File> {
     let f = file_lock(&config.with_file_name("sessions.lock"))?;
     fs2::FileExt::lock_exclusive(&f)?;
     Ok(f)
 }
-fn read_registry(config: &Path) -> Result<Registry> {
+pub(crate) fn registry_unlocked(config: &Path) -> Result<Registry> {
     match std::fs::read(registry_path(config)) {
         Ok(bytes) => {
             if bytes.len() > 16 * 1024 * 1024 {
@@ -117,20 +117,27 @@ fn create(config: &AppConfig, label: &str) -> Result<Session> {
         .collect();
     let directory = root.join(format!("session-{created}-{slug}-{id}"));
     std::fs::create_dir(&directory)?;
+    let _lease = file_lock(&directory.join("session.lease"))?;
     for name in ["recordings", "events", "logs"] {
         std::fs::create_dir(directory.join(name))?;
     }
+    let mut conditions = config.clone();
+    conditions.output_directory = root;
     let session = Session {
         id,
         label: if label.trim().is_empty() {
-            format!("Acquisition {created}")
+            format!(
+                "Acquisition {} UTC",
+                time::OffsetDateTime::from_unix_timestamp((created / 1000) as i64)?
+                    .format(&time::format_description::well_known::Rfc3339)?
+            )
         } else {
             label.trim().into()
         },
         directory,
         created_unix_ms: created,
         closed_unix_ms: None,
-        conditions: config.clone(),
+        conditions,
         runs: Vec::new(),
         schema_version: 1,
     };
@@ -165,8 +172,8 @@ fn ensure(config_path: &Path, config: &AppConfig, registry: &mut Registry) -> Re
     Ok(session)
 }
 pub fn acquire(config_path: &Path, config: &AppConfig) -> Result<Lease> {
-    let _registry = registry_lock(config_path)?;
-    let mut registry = read_registry(config_path)?;
+    let _registry = lock_registry(config_path)?;
+    let mut registry = registry_unlocked(config_path)?;
     let session = ensure(config_path, config, &mut registry)?;
     let file = file_lock(&session.directory.join("session.lease"))?;
     fs2::FileExt::lock_shared(&file)?;
@@ -176,8 +183,8 @@ pub fn acquire(config_path: &Path, config: &AppConfig) -> Result<Lease> {
     })
 }
 pub fn current(config_path: &Path) -> Result<Option<Session>> {
-    let _registry = registry_lock(config_path)?;
-    let registry = read_registry(config_path)?;
+    let _registry = lock_registry(config_path)?;
+    let registry = registry_unlocked(config_path)?;
     registry
         .active
         .as_ref()
@@ -193,8 +200,8 @@ pub fn current(config_path: &Path) -> Result<Option<Session>> {
 }
 pub fn list(config_path: &Path) -> Result<Vec<Session>> {
     let entries = {
-        let _registry = registry_lock(config_path)?;
-        read_registry(config_path)?.sessions
+        let _registry = lock_registry(config_path)?;
+        registry_unlocked(config_path)?.sessions
     };
     let mut sessions = Vec::new();
     for entry in entries {
@@ -208,8 +215,8 @@ pub fn list(config_path: &Path) -> Result<Vec<Session>> {
 /// Switch only when all recording/capture/export leases are released. Never stop
 /// a recorder implicitly to satisfy a session change.
 pub fn start_new(config_path: &Path, config: &AppConfig, label: &str) -> Result<Session> {
-    let _registry = registry_lock(config_path)?;
-    let mut registry = read_registry(config_path)?;
+    let _registry = lock_registry(config_path)?;
+    let mut registry = registry_unlocked(config_path)?;
     let previous = registry
         .active
         .as_ref()
@@ -279,12 +286,16 @@ impl Lease {
         &self,
         status: &crate::acquisition::Status,
         format: Option<(Option<u32>, Option<u32>, Option<f64>)>,
+        conditions: Option<&AppConfig>,
     ) -> Result<()> {
         let guard = file_lock(&self.session.directory.join("manifest.lock"))?;
         fs2::FileExt::lock_exclusive(&guard)?;
         let mut session = read(&self.session.directory)?;
         if let Some(run) = session.runs.iter_mut().find(|r| r.id == status.run_id) {
             run.state = format!("{:?}", status.state);
+            if let Some(config) = conditions {
+                run.conditions = config.clone();
+            }
             if let Some((w, h, fps)) = format {
                 run.width = w.or(run.width);
                 run.height = h.or(run.height);
@@ -308,6 +319,11 @@ pub fn lease_directory(directory: &Path) -> Result<Lease> {
         session,
         _file: file,
     })
+}
+
+pub fn registry(config: &Path) -> Result<Registry> {
+    let _guard = lock_registry(config)?;
+    registry_unlocked(config)
 }
 
 #[cfg(test)]

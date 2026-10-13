@@ -584,7 +584,7 @@ pub fn record_camera(
         status.media_running_time_ns = recording.running_time_ns();
         status.media_observed_unix_ms = now();
         if let Some(lease) = &session_lease {
-            lease.update_run(&status, Some(recording.video_format()))?;
+            lease.update_run(&status, Some(recording.video_format()), Some(config))?;
         }
         record_event(config_path, &status, "recording_started")?;
         status.heartbeat_unix_ms = now();
@@ -641,7 +641,7 @@ pub fn record_camera(
     }
     write_status(config_path, &status)?;
     if let Some(lease) = &session_lease
-        && lease.update_run(&status, None).is_err()
+        && lease.update_run(&status, None, None).is_err()
     {
         status.warning = Some("Session manifest update failed; media and status retained".into());
         write_status(config_path, &status)?;

@@ -223,6 +223,10 @@ def main():
                 selected.update(s["camera"] for s in current["slots"])
             if selected != set(identifiers):
                 raise RuntimeError("Paging did not expose all sixteen camera identities")
+            def event_root():
+                registry = json.loads((root / "sessions.json").read_text())
+                session = next(entry for entry in registry["sessions"] if entry["id"] == registry["active"])
+                return Path(session["directory"]) / "events"
             before = [s["camera"] for s in state()["slots"]]
             click("Max")
             until(lambda: state().get("fullscreen") == 0)
@@ -235,7 +239,7 @@ def main():
             until(lambda: all("STALE" in s["state"] for s in state().get("slots", []) if s["camera"] not in identifiers[:4]) and any(s["camera"] not in identifiers[:4] for s in state().get("slots", [])))
             mouse.mark_shortcut()
             until(lambda: state().get("events", 0) >= 1)
-            stale_records = list((root / "operator-events").glob("*/event.json"))
+            stale_records = list((event_root()).glob("*/event.json"))
             if any(c["image"] for c in json.loads(stale_records[0].read_text())["captures"] if c["camera"] not in identifiers[:4]):
                 raise RuntimeError("Mark unexpectedly captured images")
             stalled_fixture.stdin.write("resume\n")
@@ -245,16 +249,16 @@ def main():
             click("Mark + Grab All")
             mouse.mark_shortcut()
             def complete_events(kind):
-                return [event for path in (root / "operator-events").glob("*/event.json") if (event := json.loads(path.read_text()))["kind"] == kind and event["complete"]]
+                return [event for path in (event_root()).glob("*/event.json") if (event := json.loads(path.read_text()))["kind"] == kind and event["complete"]]
             until(lambda: len(complete_events("Mark")) >= 2, seconds=5)
             until(lambda: bool(complete_events("Mark + Grab All")))
-            records = list((root / "operator-events").glob("*/event.json"))
+            records = list((event_root()).glob("*/event.json"))
             event = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Mark + Grab All")
             if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 16:
                 raise RuntimeError("All-camera grab did not capture all sixteen, including hidden cameras")
             click("Grab All")
             until(lambda: bool(complete_events("Grab All")))
-            records = list((root / "operator-events").glob("*/event.json"))
+            records = list((event_root()).glob("*/event.json"))
             grab = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Grab All")
             if not all(c["image"] and c["capture_unix_ms"] is not None for c in grab["captures"]):
                 raise RuntimeError("Separate Grab All did not capture every camera")
@@ -264,8 +268,8 @@ def main():
             click("Event note field")
             mouse.type_note("reviewed")
             click("Save note")
-            until(lambda: json.loads((root / "operator-events" / grab["id"] / "event.json").read_text())["note"] == "reviewed")
-            until(lambda: '"reviewed"' in (root / "operator-events" / grab["id"] / "event.csv").read_text())
+            until(lambda: json.loads((event_root() / grab["id"] / "event.json").read_text())["note"] == "reviewed")
+            until(lambda: '"reviewed"' in (event_root() / grab["id"] / "event.csv").read_text())
             click("Hide events")
             after = statuses()
             if len(after) != 4 or any(r["state"] != "Recording" or r["run_id"] != original_runs[r["camera_id"]][0] for r in after):

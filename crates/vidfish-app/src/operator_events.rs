@@ -433,12 +433,14 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
     let mut rows = Vec::new();
     writeln!(
         rows,
-        "event_id,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
+        "event_id,session_id,session_name,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
     )?;
     for c in &event.captures {
         let r = &c.recording;
         let fields = [
             quote(&event.id),
+            quote(event.session_id.as_deref().unwrap_or("")),
+            quote(event.session_name.as_deref().unwrap_or("")),
             quote(event.unix_ms),
             quote(event.elapsed_ns),
             quote(&event.elapsed_scope),
