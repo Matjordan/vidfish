@@ -46,6 +46,9 @@ struct Args {
     /// Select H.265 instead of the default H.264 stream profile.
     #[arg(long)]
     h265: bool,
+    /// Use the OpenGL renderer instead of Windows' default Direct3D-capable wgpu renderer.
+    #[arg(long, conflicts_with_all = ["service", "check", "media_check", "record", "inspect"])]
+    opengl: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -147,7 +150,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(vidfish_media::Source::Rtsp)
                 .collect()
         };
-        desktop::run(path, config, runtime, sources, codec, args.desktop_seconds)?;
+        desktop::run(
+            path,
+            config,
+            runtime,
+            sources,
+            codec,
+            args.desktop_seconds,
+            args.opengl,
+        )?;
     }
     #[cfg(not(feature = "desktop"))]
     return Err("desktop feature disabled; use --service or --check".into());

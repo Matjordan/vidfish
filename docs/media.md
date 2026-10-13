@@ -62,7 +62,7 @@ sudo apt-get install libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
 ./launch-vidfish.sh
 ```
 
-An X11/Wayland desktop and functioning OpenGL driver are required for the GUI.
+An X11/Wayland desktop and an OpenGL 2.0+/OpenGL ES 2.0+ driver are required for the default Linux GUI.
 Headless recording and inspection need no display. Developers additionally install
 `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`, `libgstrtspserver-1.0-dev`,
 and `pkg-config`. UI smoke tests use Xvfb with software rendering; that is not a
@@ -87,7 +87,10 @@ The ZIP carries GStreamer runtime DLLs, plugins, presets, scanner, and original
 notices in `gstreamer/`, plus Microsoft's signed `vc_redist.x64.exe`. Install the
 redistributable if it is absent, keep the package directory together, and run
 `launch-vidfish.cmd`. No Rust toolchain or Visual Studio is needed. The GPU driver
-must support OpenGL 3.3. Copying only `vidfish.exe` is not a supported deployment.
+supports the default Direct3D-capable wgpu renderer; a software adapter is selected
+when compatible hardware is unavailable. `--opengl` selects the alternative OpenGL
+2.0+/OpenGL ES 2.0+ renderer for compatible drivers. Copying only `vidfish.exe` is not
+a supported deployment.
 Redistributed GStreamer plugins retain their respective LGPL/GPL and other notices;
 source releases and corresponding build tooling are available from
 https://gstreamer.freedesktop.org/download/ and https://gitlab.freedesktop.org/gstreamer/cerbero.

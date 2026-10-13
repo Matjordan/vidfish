@@ -17,6 +17,7 @@ pub fn run(
     sources: Vec<Source>,
     codec: Codec,
     seconds: Option<u64>,
+    force_opengl: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let engine = {
         let _guard = runtime.enter();
@@ -40,15 +41,34 @@ pub fn run(
         .collect();
     let passed = Arc::new(AtomicBool::new(false));
     let validation = passed.clone();
+    #[cfg(any(windows, feature = "wgpu-desktop"))]
+    let renderer = if force_opengl {
+        eframe::Renderer::Glow
+    } else {
+        eframe::Renderer::Wgpu
+    };
+    #[cfg(not(any(windows, feature = "wgpu-desktop")))]
+    let renderer = {
+        let _ = force_opengl;
+        eframe::Renderer::Glow
+    };
     let result = eframe::run_native(
         "Vidfish",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            renderer,
+            ..Default::default()
+        },
         Box::new(move |cc| {
             if let Some(gl) = &cc.gl {
                 use eframe::glow::HasContext;
                 // OpenGL strings are driver-owned, queried with the current context.
                 let renderer = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
                 tracing::info!(%renderer, "desktop renderer initialized");
+            }
+            #[cfg(any(windows, feature = "wgpu-desktop"))]
+            if let Some(state) = &cc.wgpu_render_state {
+                let info = state.adapter.get_info();
+                tracing::info!(renderer = %info.name, backend = ?info.backend, device_type = ?info.device_type, "desktop renderer initialized");
             }
             Ok(Box::new(Desktop {
                 config,
