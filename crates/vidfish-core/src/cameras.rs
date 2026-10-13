@@ -193,6 +193,15 @@ impl CameraStore {
                 "hardware now reports a different ONVIF identity; confirm identity change before adding",
             ));
         }
+        if let Some(existing) = self
+            .cameras
+            .iter_mut()
+            .find(|c| c.endpoint_id.is_none() && c.device_url.as_deref() == Some(address))
+        {
+            existing.endpoint_id = Some(endpoint.into());
+            existing.hardware = hardware;
+            return Ok(Observation::Known(existing.id.clone()));
+        }
         if self.cameras.len() >= 16 {
             return Err(invalid(
                 "camera inventory is full (16); remove an unused camera before adding",
@@ -224,6 +233,22 @@ impl CameraStore {
             hardware: None,
             device_url: None,
             manual_rtsp: Some(uri.into()),
+            credential_key: None,
+        });
+        next.validate()?;
+        *self = next;
+        Ok(id)
+    }
+    pub fn add_onvif(&mut self, alias: &str, device_url: &str) -> io::Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut next = self.clone();
+        next.cameras.push(CameraRecord {
+            id: id.clone(),
+            alias: alias.into(),
+            endpoint_id: None,
+            hardware: None,
+            device_url: Some(device_url.into()),
+            manual_rtsp: None,
             credential_key: None,
         });
         next.validate()?;

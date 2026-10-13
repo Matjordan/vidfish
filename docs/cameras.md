@@ -23,9 +23,9 @@ vidfish --preview rtsp://192.168.1.20/live
 vidfish --record rtsp://192.168.1.20/live --output new-recording.mkv
 ```
 
-This first implementation supports unauthenticated ONVIF Media1 services. Authenticated
-ONVIF, persistent manual cameras/aliases, continuous polling, and automatic reconnection
-are subsequent parts of epic #2. Media2-only H.265 devices may require manual RTSP fallback.
+The client supports ONVIF Media1, WS-Security UsernameToken PasswordDigest, and HTTP
+Digest authentication. Continuous polling and automatic reconnection are subsequent
+parts of epic #2. Media2-only H.265 devices may require manual RTSP fallback.
 Camera URLs used by ONVIF must exclude embedded credentials. Request errors omit URLs,
 server bodies, and credentials. HTTPS certificate validation remains enabled; redirects
 and environment HTTP proxies are disabled for local camera requests. Each HTTP request
@@ -59,3 +59,26 @@ a changed UUID, and duplicate UUIDs at multiple addresses are reported for opera
 resolution. Unknown hardware cannot automatically authorize an address change. Inventory
 writes are atomic; invalid files and failed validation preserve existing data. Up to 16
 cameras can be stored. Removal changes inventory only; it does not stop a recording.
+
+## Camera credentials
+
+```sh
+vidfish cameras add-onvif --alias "Bench right" --device http://192.168.1.21/onvif/device_service
+vidfish cameras set-credentials CAMERA_ID --username-env CAMERA_USER --password-env CAMERA_PASSWORD
+vidfish cameras resolve CAMERA_ID
+vidfish cameras forget-credentials CAMERA_ID
+```
+
+Set the named environment variables using your OS's protected credential workflow;
+never put secret values in command arguments or check them into files. Inventory stores
+only a reference to the local camera ID. Windows credentials use Windows Credential
+Manager; Linux uses the user's kernel keyring. Linux keyring entries persist across
+process restarts but expire after the configured user-keyring lifetime and are lost
+across reboot; re-enter credentials when needed. Restricted containers may deny keyring
+access. Errors report this explicitly; there is no plaintext-file fallback.
+
+Authentication sends a fresh nonce and timestamp with a password digest; a challenged
+HTTP request retries once with Digest authorization. Camera clocks must agree with UTC.
+The client refuses media service URLs on another host before sending credentials.
+Passwords are cleared from owned secret buffers on drop. Device/network/vendor smoke
+testing is still required; fixtures cannot establish compatibility with every camera.

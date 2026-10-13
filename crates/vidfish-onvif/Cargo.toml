@@ -10,6 +10,19 @@ roxmltree = "0.21"
 socket2 = "0.6"
 uuid = { version = "1", features = ["v4"] }
 serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+sha1 = "0.10"
+time = { version = "0.3", features = ["formatting"] }
+digest_auth = "0.3"
+zeroize = "1"
+keyring = { version = "3.6", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["linux-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 
 [dev-dependencies]
 vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }

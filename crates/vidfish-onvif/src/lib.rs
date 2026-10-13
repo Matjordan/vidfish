@@ -1,5 +1,8 @@
 //! Bounded ONVIF network operations. Run these blocking calls off the UI thread.
+use base64::Engine;
 use reqwest::{Url, blocking::Client};
+use sha1::{Digest, Sha1};
+pub mod credentials;
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
@@ -146,10 +149,12 @@ pub struct Camera {
 
 pub struct OnvifClient {
     http: Client,
+    credentials: Option<credentials::Credentials>,
 }
 impl OnvifClient {
     pub fn new() -> Result<Self> {
         Ok(Self {
+            credentials: None,
             http: Client::builder()
                 .timeout(Duration::from_secs(5))
                 .connect_timeout(Duration::from_secs(3))
@@ -159,27 +164,74 @@ impl OnvifClient {
                 .map_err(|_| Error("cannot initialize ONVIF HTTP client"))?,
         })
     }
+    pub fn with_credentials(credentials: credentials::Credentials) -> Result<Self> {
+        let mut client = Self::new()?;
+        client.credentials = Some(credentials);
+        Ok(client)
+    }
     fn soap(&self, address: &str, namespace: &str, operation: &str, inner: &str) -> Result<String> {
         validate_url(address, &["http", "https"])?;
+        let security = self
+            .credentials
+            .as_ref()
+            .map(security_header)
+            .transpose()?
+            .unwrap_or_default();
         let body = format!(
-            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:t="{namespace}" xmlns:tt="http://www.onvif.org/ver10/schema"><s:Body><t:{operation}>{inner}</t:{operation}></s:Body></s:Envelope>"#
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:t="{namespace}" xmlns:tt="http://www.onvif.org/ver10/schema"><s:Header>{security}</s:Header><s:Body><t:{operation}>{inner}</t:{operation}></s:Body></s:Envelope>"#
         );
-        let response = self
+        let request = self
             .http
             .post(address)
             .header(
                 "Content-Type",
                 format!("application/soap+xml; charset=utf-8; action=\"{namespace}/{operation}\""),
             )
-            .body(body)
+            .body(body.clone());
+        let mut response = request
+            .try_clone()
+            .ok_or(Error("cannot construct ONVIF request"))?
             .send()
             .map_err(|_| {
                 Error("ONVIF request failed; check camera address, network, and TLS certificate")
             })?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(Error(
-                "camera requires authentication; authenticated ONVIF is not implemented yet; use manual RTSP fallback",
-            ));
+            let credentials = self.credentials.as_ref().ok_or(Error("camera requires authentication; save credentials for this camera or use manual RTSP fallback"))?;
+            let challenge = response.headers().get_all(reqwest::header::WWW_AUTHENTICATE).iter().filter_map(|h| h.to_str().ok()).find(|h| h.starts_with("Digest ")).ok_or(Error("camera requires unsupported HTTP authentication; HTTP Digest or WS-Security is required"))?;
+            if challenge.len() > 8192 || !challenge.is_ascii() {
+                return Err(Error(
+                    "invalid or oversized camera authentication challenge",
+                ));
+            }
+            let mut prompt = digest_auth::parse(challenge)
+                .map_err(|_| Error("invalid camera HTTP Digest challenge"))?;
+            let url = Url::parse(address).map_err(|_| Error("invalid camera URL"))?;
+            let mut resource = url.path().to_owned();
+            if let Some(query) = url.query() {
+                resource.push('?');
+                resource.push_str(query);
+            }
+            let context = digest_auth::AuthContext::new_post(
+                credentials.username.as_str(),
+                credentials.password.as_str(),
+                resource.as_str(),
+                Some(body.as_bytes()),
+            );
+            let answer = prompt
+                .respond(&context)
+                .map_err(|_| Error("unsupported camera HTTP Digest challenge"))?
+                .to_string();
+            response = request
+                .header(reqwest::header::AUTHORIZATION, answer)
+                .send()
+                .map_err(|_| {
+                    Error("authenticated ONVIF request failed; check network and credentials")
+                })?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(Error(
+                    "camera rejected credentials; check username, password, and camera clock",
+                ));
+            }
         }
         if !response.status().is_success() {
             return Err(Error(
@@ -224,6 +276,17 @@ impl OnvifClient {
                 "camera has no ONVIF media service; use manual RTSP fallback",
             ))?;
         validate_url(media, &["http", "https"])?;
+        if Url::parse(media)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            != Url::parse(address)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_owned))
+        {
+            return Err(Error(
+                "ONVIF media service points to another host; verify camera configuration before using credentials",
+            ));
+        }
         let profiles = self.soap(media, MEDIA, "GetProfiles", "")?;
         let profiles = document(&profiles)?;
         let mut resolved = Vec::new();
@@ -346,5 +409,129 @@ mod tests {
             let err = validate_url(uri, &["http", "https", "rtsp"]).unwrap_err();
             assert!(!format!("{err:?} {err}").contains("secret"));
         }
+    }
+}
+
+fn security_header(credentials: &credentials::Credentials) -> Result<String> {
+    let created = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| Error("cannot generate camera authentication timestamp"))?;
+    let nonce = *uuid::Uuid::new_v4().as_bytes();
+    let mut hash = Sha1::new();
+    hash.update(nonce);
+    hash.update(created.as_bytes());
+    hash.update(credentials.password.as_bytes());
+    let digest = base64::engine::general_purpose::STANDARD.encode(hash.finalize());
+    let nonce = base64::engine::general_purpose::STANDARD.encode(nonce);
+    Ok(format!(
+        r#"<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>{}</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{digest}</wsse:Password><wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{nonce}</wsse:Nonce><wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>"#,
+        escape(&credentials.username)
+    ))
+}
+
+#[cfg(test)]
+mod authentication_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+    };
+    fn read_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let length: usize = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                    .unwrap()
+                    .1
+                    .trim()
+                    .parse()
+                    .unwrap();
+                if bytes.len() >= end + 4 + length {
+                    return String::from_utf8(bytes).unwrap();
+                }
+            }
+            assert!(bytes.len() < 65536);
+        }
+    }
+    #[test]
+    fn ws_security_and_digest_retry_work_without_sending_plaintext_password() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!(
+            "http://{}/onvif?profile=main",
+            listener.local_addr().unwrap()
+        );
+        let worker = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let first_request = read_request(&mut first);
+            assert!(!first_request.contains("fixture-password"));
+            let xml = first_request.split_once("\r\n\r\n").unwrap().1;
+            let doc = document(xml).unwrap();
+            assert_eq!(text(doc.root(), "Username"), Some("fixture-user"));
+            let nonce = base64::engine::general_purpose::STANDARD
+                .decode(text(doc.root(), "Nonce").unwrap())
+                .unwrap();
+            let created = text(doc.root(), "Created").unwrap();
+            let mut sha = Sha1::new();
+            sha.update(&nonce);
+            sha.update(created.as_bytes());
+            sha.update(b"fixture-password");
+            assert_eq!(
+                text(doc.root(), "Password").unwrap(),
+                base64::engine::general_purpose::STANDARD.encode(sha.finalize())
+            );
+            first.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"camera\", nonce=\"nonce123\", algorithm=MD5, qop=\"auth\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let authenticated = read_request(&mut second);
+            assert!(!authenticated.contains("fixture-password"));
+            let header = authenticated
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                .unwrap();
+            assert!(header.contains("Digest "));
+            assert!(header.contains("username=\"fixture-user\""));
+            assert!(header.contains("uri=\"/onvif?profile=main\""));
+            assert!(header.contains("response=\""));
+            let xml = "<Envelope><Body><GetDeviceInformationResponse><SerialNumber>auth-fixture</SerialNumber></GetDeviceInformationResponse></Body></Envelope>";
+            write!(
+                second,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",
+                xml.len()
+            )
+            .unwrap();
+        });
+        let client = OnvifClient::with_credentials(
+            credentials::Credentials::new("fixture-user".into(), "fixture-password".into())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            client
+                .soap(&address, DEVICE, "GetDeviceInformation", "")
+                .unwrap()
+                .contains("auth-fixture")
+        );
+        worker.join().unwrap();
+    }
+    #[test]
+    fn unauthenticated_fault_and_network_errors_are_actionable_and_redacted() {
+        let client = OnvifClient::new().unwrap();
+        let error = client
+            .resolve("http://username:do-not-log@localhost/onvif")
+            .err()
+            .unwrap();
+        assert!(!format!("{error:?} {error}").contains("do-not-log"));
+        assert!(error.to_string().contains("credentials"));
     }
 }

@@ -22,6 +22,25 @@ pub struct InventoryArgs {
 #[derive(Subcommand)]
 enum Action {
     List,
+    AddOnvif {
+        #[arg(long)]
+        alias: String,
+        #[arg(long)]
+        device: String,
+    },
+    SetCredentials {
+        id: String,
+        #[arg(long)]
+        username_env: String,
+        #[arg(long)]
+        password_env: String,
+    },
+    ForgetCredentials {
+        id: String,
+    },
+    Resolve {
+        id: String,
+    },
     Add {
         #[arg(long)]
         alias: String,
@@ -54,6 +73,55 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
     let mut store = CameraStore::load(&path)?;
     match args.action {
         Action::List => println!("{}", serde_json::to_string_pretty(&store)?),
+        Action::AddOnvif { alias, device } => {
+            let id = store.add_onvif(&alias, &device)?;
+            store.save(&path)?;
+            println!("{id}");
+        }
+        Action::SetCredentials {
+            id,
+            username_env,
+            password_env,
+        } => {
+            let camera = store
+                .cameras
+                .iter_mut()
+                .find(|c| c.id == id)
+                .ok_or("unknown camera ID")?;
+            let credentials = vidfish_onvif::credentials::Credentials::from_environment(
+                &username_env,
+                &password_env,
+            )?;
+            vidfish_onvif::credentials::save(&id, &credentials)?;
+            camera.credential_key = Some(id);
+            store.save(&path)?;
+        }
+        Action::ForgetCredentials { id } => {
+            let camera = store
+                .cameras
+                .iter_mut()
+                .find(|c| c.id == id)
+                .ok_or("unknown camera ID")?;
+            vidfish_onvif::credentials::remove(&id)?;
+            camera.credential_key = None;
+            store.save(&path)?;
+        }
+        Action::Resolve { id } => {
+            let camera = store
+                .cameras
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or("unknown camera ID")?;
+            let address = camera
+                .device_url
+                .as_deref()
+                .ok_or("manual RTSP cameras do not have an ONVIF service")?;
+            let client = client_for(camera)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.resolve(address)?)?
+            );
+        }
         Action::Add { alias, rtsp } => {
             let id = store.add_manual(&alias, &rtsp)?;
             store.save(&path)?;
@@ -69,12 +137,14 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .position(|c| c.id == id)
                 .ok_or("unknown camera ID")?;
+            if store.cameras[index].credential_key.is_some() {
+                vidfish_onvif::credentials::remove(&id)?;
+            }
             store.cameras.remove(index);
             store.save(&path)?;
         }
         Action::Scan { interface, target } => {
             let found = vidfish_onvif::discover(interface, target, Duration::from_secs(2))?;
-            let client = vidfish_onvif::OnvifClient::new()?;
             // Duplicate UUIDs at different addresses are quarantined before any mutation.
             let mut addresses =
                 std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
@@ -90,7 +160,16 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                     results.push(serde_json::json!({"endpoint_id": device.endpoint_id, "error": "duplicate endpoint identity at multiple addresses; confirm camera identity"}));
                     continue;
                 }
-                let result = match client.resolve(&device.device_url) {
+                let client = store
+                    .cameras
+                    .iter()
+                    .find(|c| {
+                        c.endpoint_id.as_deref() == Some(&device.endpoint_id)
+                            || c.device_url.as_deref() == Some(&device.device_url)
+                    })
+                    .map(client_for)
+                    .unwrap_or_else(vidfish_onvif::OnvifClient::new);
+                let result = match client.and_then(|client| client.resolve(&device.device_url)) {
                     Ok(camera) => {
                         let hardware = (!camera.manufacturer.is_empty()
                             && !camera.serial_number.is_empty())
@@ -118,4 +197,15 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn client_for(
+    camera: &vidfish_core::cameras::CameraRecord,
+) -> Result<vidfish_onvif::OnvifClient, vidfish_onvif::Error> {
+    match &camera.credential_key {
+        Some(key) => {
+            vidfish_onvif::OnvifClient::with_credentials(vidfish_onvif::credentials::load(key)?)
+        }
+        None => vidfish_onvif::OnvifClient::new(),
+    }
 }
