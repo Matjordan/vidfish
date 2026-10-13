@@ -97,11 +97,14 @@ history is a later epic. Collapsing this area never hides the recording header.
   decoder and desktop renderer separately. Rendering on a GPU does not establish
   hardware video decoding. Current RGB upload is not a zero-copy path.
 
-The shared native mouse-input smoke exercises 1280×800 and 800×600 windows, all 16
+The shared native input smoke requests 1280×800 and 800×600 windows and reports the
+actual rendered viewports (a smaller Windows host may clamp the first window to
+1024×768). It exercises all 16
 camera choices, four-worker paging, 1080p/640×360 swaps, fullscreen/return, persisted
 choices, stale-frame exclusion, event-panel collapse, and a reduced one-worker limit.
 The same recorder run IDs continue growing across these actions. It runs on Linux
-under Xvfb and on Windows using native mouse/keyboard input. Existing acquisition
+under Xvfb and on Windows using native client mouse/keyboard messages targeted to
+the exact viewer process, so a covered/small virtual desktop cannot misdirect input. Existing acquisition
 checks cover 16 simultaneous recorder processes separately.
 
 The operator observed that the earlier four-stream build looked fine. Numerical

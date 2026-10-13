@@ -27,6 +27,7 @@ def until(predicate, seconds=60):
 
 class Mouse:
     def __init__(self):
+        self.pid = None
         if os.name == "nt":
             self.api = C.windll.user32
             self.api.SetProcessDPIAware()
@@ -47,11 +48,31 @@ class Mouse:
             self.api.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
             self.api.XKeysymToKeycode.restype = C.c_uint
 
+    def window(self):
+        found = []
+        callback_type = C.WINFUNCTYPE(C.c_int, C.c_void_p, C.c_ssize_t)
+        self.api.GetWindowThreadProcessId.argtypes = [C.c_void_p, C.POINTER(C.c_uint)]
+        self.api.GetWindowTextW.argtypes = [C.c_void_p, C.c_wchar_p, C.c_int]
+        def visit(handle, _):
+            pid = C.c_uint()
+            self.api.GetWindowThreadProcessId(handle, C.byref(pid))
+            title = C.create_unicode_buffer(256)
+            self.api.GetWindowTextW(handle, title, 256)
+            if pid.value == self.pid and title.value == "Vidfish":
+                found.append(handle)
+            return True
+        callback = callback_type(visit)
+        self.api.EnumWindows.argtypes = [callback_type, C.c_ssize_t]
+        self.api.EnumWindows(callback, 0)
+        if not found:
+            raise RuntimeError("Native window for the exact viewer process is unavailable")
+        return found[0]
+
     def click(self, x, y):
         if os.name == "nt":
             class Point(C.Structure):
                 _fields_ = [("x", C.c_long), ("y", C.c_long)]
-            window = self.api.FindWindowW(None, "Vidfish")
+            window = self.window()
             if not window:
                 raise RuntimeError("Native Vidfish window unavailable")
             origin = Point()
@@ -59,23 +80,15 @@ class Mouse:
             self.api.ClientToScreen(window, C.byref(origin))
             self.api.SetForegroundWindow.argtypes = [C.c_void_p]
             self.api.SetForegroundWindow(window)
-            target_x, target_y = int(x) + origin.x, int(y) + origin.y
-            self.api.SetCursorPos(target_x, target_y)
-            actual = Point()
-            self.api.GetCursorPos(C.byref(actual))
-            if actual.x != target_x or actual.y != target_y:
-                self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
-                packed = (int(x) & 0xFFFF) | ((int(y) & 0xFFFF) << 16)
-                self.api.PostMessageW(window, 0x200, 0, packed)
-                time.sleep(0.1)
-                self.api.PostMessageW(window, 0x201, 1, packed)
-                time.sleep(0.08)
-                self.api.PostMessageW(window, 0x202, 0, packed)
-                return
+            # Hosted runners may have a smaller/covered desktop than the client
+            # framebuffer. Send native client messages rather than global cursor input.
+            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+            packed = (int(x) & 0xFFFF) | ((int(y) & 0xFFFF) << 16)
+            self.api.PostMessageW(window, 0x200, 0, packed)
             time.sleep(0.1)
-            self.api.mouse_event(2, 0, 0, 0, 0)
+            self.api.PostMessageW(window, 0x201, 1, packed)
             time.sleep(0.08)
-            self.api.mouse_event(4, 0, 0, 0, 0)
+            self.api.PostMessageW(window, 0x202, 0, packed)
         else:
             # xvfb-run has no window manager: client coordinates start at the root origin.
             self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
@@ -89,7 +102,7 @@ class Mouse:
 
     def escape(self):
         if os.name == "nt":
-            window = self.api.FindWindowW(None, "Vidfish")
+            window = self.window()
             self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
             self.api.PostMessageW(window, 0x100, 0x1B, 0x00010001)
             time.sleep(0.08)
@@ -141,6 +154,7 @@ def main():
                 env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=size)
                 app = subprocess.Popen([binary, "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
                 apps.append(app)
+                mouse.pid = app.pid
                 return app
 
             def state():
@@ -157,6 +171,7 @@ def main():
                 return value if value.get("camera_count") == 16 and all(s["frame"] > 0 and not s["pending"] for s in value["slots"]) else None
 
             def click(name, index=0):
+                time.sleep(0.6)
                 value = until(lambda: (v if any(b[0] == name for b in v.get("buttons", [])) else None) if (v := state()) else None)
                 buttons = [b for b in value["buttons"] if b[0] == name]
                 rect = buttons[index][1]
@@ -178,6 +193,7 @@ def main():
             until(lambda: state().get("camera_count") == 16)
             click("Show this group")
             first = until(ready)
+            actual_resolutions = [first["viewport"]]
             original = until(lambda: (s if len(s) == 4 and all(r["state"] == "Recording" and r["bytes_written"] > 0 for r in s) else None) if (s := statuses()) else None)
             original_runs = {r["camera_id"]: (r["run_id"], r["bytes_written"]) for r in original}
             if any(s.get("size") != expected_sizes[s["camera"]] for s in first["slots"]):
@@ -231,6 +247,7 @@ def main():
             config.write_text(json.dumps(settings))
             app = start("800x600")
             restored = until(ready)
+            actual_resolutions.append(restored["viewport"])
             if [s["camera"] for s in restored["slots"]] != choices["slots"] or abs(restored["viewport"][0] - 800) > 10:
                 raise RuntimeError("Compact restart did not restore the selected views")
             click("Show events")
@@ -256,7 +273,7 @@ def main():
             if single["slots"][0]["camera"] != identifiers[1] or single["peak_workers"] > 1:
                 raise RuntimeError("A hidden preference exceeded the configured decoder limit")
             until(lambda: json.loads((root / "views.json").read_text())["slots"][3] is None)
-            print(json.dumps({"resolutions": ["1280x800", "800x600"], "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible and excluded from grabs", "recording": "uninterrupted by swaps/fullscreen/capture"}))
+            print(json.dumps({"requested_resolutions": ["1280x800", "800x600"], "actual_viewports": actual_resolutions, "selectable_cameras": len(selected), "peak_preview_workers": restored["peak_workers"], "fullscreen": "returned", "view_choices": "restored", "stalled_frames": "visible and excluded from grabs", "recording": "uninterrupted by swaps/fullscreen/capture"}))
         finally:
             if sys.exc_info()[0] is not None:
                 current = json.loads(probe.read_text()) if probe.exists() else {}
