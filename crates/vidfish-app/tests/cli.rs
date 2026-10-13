@@ -79,7 +79,10 @@ fn onvif_and_discovery_cli_resolve_fixture_without_creating_settings() {
         } else {
             &json
         };
-        assert_eq!(camera["serial_number"], "fixture-001");
+        assert_eq!(
+            camera["serial_number"], "fixture-001",
+            "ONVIF/discovery response: {json}"
+        );
         assert_eq!(camera["profiles"][0]["codec"], "H264");
     }
 }
