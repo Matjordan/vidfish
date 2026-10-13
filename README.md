@@ -5,7 +5,10 @@ The foundation provides an egui desktop, persistent typed settings, structured
 logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
 preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, app-managed local
 credentials, and independent camera polling/reconnection. Arriving cameras can auto-record in independent processes with observable file progress.
-Segmentation, disk-space policies, events, and session management remain later work.
+Epic #3 adds keyframe MKV segmentation, disk policy, and durable recording gaps. Epic #4
+adds the touch operator layout, persistent preview choices, fullscreen, recording alerts,
+and a selected-preview event bridge. See [operator monitoring](docs/monitoring.md).
+Scientific event correlation and session management remain later work.
 
 ## Target operator UI
 
@@ -138,6 +141,7 @@ needs Actions enabled; its token has write access only in the publication job.
 
 The operator reported successful four-stream operation after merging the foundation.
 Cloud virtual-display checks establish functionality, not target hardware performance.
-Epic #1/#8 remain incomplete until actual Toughpad CPU/GPU measurements and required
-Windows/Linux acceptance evidence are recorded. Do not claim zero-copy preview upload,
-frame-perfect synchronization, or sustained 16-camera acquisition from this spike.
+Numerical Toughpad CPU/GPU measurements are deferred at the user's request; the operator
+observed that the earlier four-stream build looked fine. Native Windows/Linux checks
+validate functionality. Do not claim zero-copy preview upload, frame-perfect
+synchronization, or sustained physical 16-camera throughput without measurements.

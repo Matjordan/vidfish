@@ -25,6 +25,10 @@
 
 Epic #2 contains implemented discovery, identity/credential storage, and camera polling
 plus a hot-arrival recording-policy bridge and in-app camera previews on top of the merged foundation. Epic #3 adds segmented recording, disk policy, and durable recovery indexes.
-Epics #4–#6 contain planning documents only and branch
+Epic #4 adds the touch operator layout, persistent selections, fullscreen, resource
+bounds, and a selected-preview event bridge. The user deferred numerical Toughpad
+CPU/GPU measurements and reported that four streams looked fine; do not block on or
+invent those numbers.
+Epics #5–#6 contain planning documents only and branch
 from the initial `main`. Bring the updated `main` into each branch before
 implementation. Preserve existing work and commit any conflict resolutions.
