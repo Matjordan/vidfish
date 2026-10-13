@@ -1,0 +1,29 @@
+[package]
+name = "vidfish-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+fixtures = ["dep:gstreamer-rtsp-server", "dep:quick-xml"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+gstreamer = { version = "0.24", features = ["v1_20"] }
+gstreamer-app = { version = "0.24", features = ["v1_20"] }
+gstreamer-video = { version = "0.24", features = ["v1_20"] }
+gstreamer-pbutils = { version = "0.24", features = ["v1_20"] }
+gstreamer-rtsp-server = { version = "0.24", features = ["v1_20"], optional = true }
+tokio.workspace = true
+tracing.workspace = true
+url = "2"
+zeroize = "1"
+quick-xml = { version = "0.41", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[example]]
+name = "camera-fixture"
+required-features = ["fixtures"]
