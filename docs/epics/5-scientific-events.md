@@ -1,9 +1,16 @@
-# Epic #5: Scientific event marking and frame grabs
+# Epic 5: Scientific event marking and frame grabs
 
-Depends on epic #3 segment metadata and epic #2 camera identities. Implementation has not started.
+Implemented on the merged Epic 4 foundation in PR #30.
 
-- [ ] #20: Event IDs, wall-clock UTC plus monotonic time, actual segment lookup/offsets, boundary resolution, and gaps.
-- [ ] #21: All-camera snapshots using ONVIF where supported and temporary RTSP fallback, including hidden feeds.
-- [ ] #22: Separate Mark, Grab All, and Mark+Grab actions, editable notes, durable JSON/CSV, and touch/keyboard controls.
+- #20: stable IDs, UTC action time, monotonic acquisition clock epoch (viewer fallback),
+  actual split-journal lookup, approximate media offsets, pending-close reconciliation,
+  missing-file/gap states and rename-independent references.
+- #21: fresh ONVIF HTTP snapshots or bounded temporary RTSP extraction, including
+  hidden feeds; per-camera timestamps, delays, methods and failures; serial capture
+  independent of acquisition; 16-camera recording/capture integration validation.
+- #22: independent touch actions and F6/F7/F8 shortcuts, editable notes, synced atomic
+  JSON and derived CSV, incremental crash-safe results and restart recovery.
 
-Validation: split-boundary events; 16-camera hidden-feed grabs; explicit per-camera timestamps/delays/errors; crash/restart persistence; camera renames preserve references; snapshot operations never interrupt recording. Do not promise frame-perfect synchronization.
+See [operator and post-processing instructions](../events.md) for clock uncertainty,
+resource bounds, acquisition-clock epoch changes and session-management boundaries.
+Windows checks remain paused at the user's request. Linux validation is required.

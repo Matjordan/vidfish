@@ -45,7 +45,7 @@ The session display label is a view preference, not a scientific session ID.
 The clock uses the earliest active recorder's actual video-start timestamp. With no
 known active start timestamp, it explicitly shows viewer uptime. Reopening the viewer
 reattaches to existing recorder status/start times. Full session organization and
-scientific timestamps remain the later session/event workflows.
+scientific event timestamps and recording references are documented in events.md; named session organization remains Epic 6.
 
 A frame older than five seconds is conspicuously **STALE**, including its age.
 The last image remains visible for context. Error/stalled feeds do not block controls
@@ -53,30 +53,14 @@ or peer feeds. **Focus feed**, or reselecting the group, retries the preview aft
 connectivity returns. Recording has its own stall deadline and bounded recovery
 policy; preview health never clears a recording failure.
 
-## Operator action bridge
+## Scientific event controls
 
-**Mark + Grab All**, **Mark**, and **Grab All** accept an optional note and run in
-one background worker. In this monitoring epic, grabs use the freshest selected
-preview frames without opening extra RTSP connections. All registered cameras get
-an explicit result; unviewed, unavailable, or stale previews are not silently
-presented as captured. This scope is stated beside the controls. Camera-wide snapshot
-RPCs, recording offsets, synchronized timestamps, and scientific event correlation
-belong to Epic 5.
-
-`operator-events/<event UUID>/event.json` beside `config.json` preserves the action,
-UTC Unix milliseconds observed by its worker, viewer elapsed time, note, and each
-camera's capture result. Successful images are lossless PNGs. The mark/note are
-persisted before image work; metadata is replaced atomically after each result. A
-failed image does not discard other results or the mark. Partial images remain for
-recovery. `complete: false` means the worker did not finish all requested results;
-`complete: true` can still contain explicit per-camera failures. Failed action saves
-leave the typed note in the UI. No existing event directory/image is overwritten.
-These preview frames are asynchronous, not frame-perfect or synchronized snapshots.
-
-**Show events / Hide events** preserves video space on small screens. The log keeps
-at most 200 current-viewer action summaries and thumbnails from only the latest action.
-Durable event files remain on disk after restart; loading/browsing full scientific
-history is a later epic. Collapsing this area never hides the recording header.
+Mark + Grab All, Mark and Grab All now use the Epic 5 scientific event service.
+Fresh captures include all registered cameras, even hidden feeds. Recording file
+references use actual split boundaries with explicit clock uncertainty and gap
+states. Notes are editable, JSON/CSV are durable, and recent history restores on
+restart. See [events.md](events.md) for shortcuts, capture deadlines and recovery.
+Collapsing this area never hides the recording header.
 
 ## Resource and platform validation
 
@@ -87,7 +71,7 @@ history is a later epic. Collapsing this area never hides the recording header.
   only the latest frame. Application frame packing accepts 1–4096 × 1–2160 pixels
   (at most 26,542,080 RGB bytes per frame), rejects invalid strides, and handles
   different incoming sizes; UI textures resize to the delivered dimensions.
-- One event worker can pin at most four selected RGB frames in the desktop; images
+- One event worker captures sequentially with one temporary decoder/frame; images
   are encoded sequentially. Thumbnails are at most 128×128 pixels and only four from
   the latest event are retained. Summary history is bounded to 200 items. These are
   application queue/retention bounds, not a fixed total RSS promise for codec/driver
@@ -101,7 +85,8 @@ The shared native input smoke requests 1280×800 and 800×600 windows and report
 actual rendered viewports (a smaller Windows host may clamp the first window to
 1024×768). It exercises all 16
 camera choices, four-worker paging, 1080p/640×360 swaps, fullscreen/return, persisted
-choices, stale-frame exclusion, event-panel collapse, and a reduced one-worker limit.
+choices, nonblocking Mark during stalls, all-camera captures, note edits, restored
+history, event-panel collapse, and a reduced one-worker limit.
 The same recorder run IDs continue growing across these actions in the passing Linux
 Xvfb check. Windows operator input automation remains unverified; Windows checks
 are paused at the user's request. PR and manual CI run Linux only. Versioned releases
