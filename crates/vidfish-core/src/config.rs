@@ -14,6 +14,8 @@ pub enum DiskPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     pub schema_version: u32,
+    pub session_name: String,
+    pub retention_days: Option<u32>,
     pub output_directory: PathBuf,
     pub auto_record: bool,
     pub segment_seconds: u64,
@@ -30,6 +32,8 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            session_name: String::new(),
+            retention_days: None,
             output_directory: "recordings".into(),
             auto_record: true,
             segment_seconds: 600,
@@ -46,6 +50,16 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn validate(&self) -> io::Result<()> {
+        if self.session_name.chars().count() > 128
+            || self.session_name.contains(['\n', '\r'])
+            || self
+                .retention_days
+                .is_some_and(|days| days == 0 || days > 36500)
+        {
+            return Err(io::Error::other(
+                "Session name must be <=128 characters; retention must be disabled or 1–36500 days",
+            ));
+        }
         if self.schema_version != 1
             || self.output_directory.as_os_str().is_empty()
             || !(1..=86400).contains(&self.segment_seconds)

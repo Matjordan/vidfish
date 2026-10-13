@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use vidfish::acquisition;
 use vidfish_core::{config::AppConfig, engine::Engine};
 mod cameras;
+mod sessions_cli;
 
 #[cfg(feature = "desktop")]
 mod desktop;
@@ -94,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             return Err("camera commands cannot be combined with another application mode".into());
         }
-        return cameras::run(command);
+        return cameras::run(command, args.config);
     }
     if args.discover || args.onvif.is_some() {
         let client = vidfish_onvif::OnvifClient::new()?;

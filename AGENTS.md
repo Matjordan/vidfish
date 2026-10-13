@@ -31,6 +31,6 @@ CPU/GPU measurements and reported that four streams looked fine; do not block on
 invent those numbers.
 Epic #5 implements scientific markers, actual-boundary recording references,
 bounded all-camera captures, editable notes and durable JSON/CSV recovery.
-Epic #6 still contains planning documents only and branches from the initial
-`main`. Bring updated `main` into its branch before implementation. Preserve
-existing work and commit any conflict resolutions.
+Epic #6 implements durable acquisition sessions, filtered media/event browsing,
+portable event bundles, storage estimates and opt-in audited retention. Windows
+checks remain paused as specified above.

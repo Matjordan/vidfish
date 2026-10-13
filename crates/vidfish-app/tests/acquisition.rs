@@ -421,13 +421,15 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
     let events = std::fs::read_to_string(events_path).unwrap();
     assert!(events.matches("recording_started").count() >= 2);
-    for entry in std::fs::read_dir(directory.path().join("media")).unwrap() {
-        let index = entry.unwrap().path().join("segments.jsonl");
-        for line in std::fs::read_to_string(index).unwrap().lines() {
-            let event: vidfish_media::segmented::FragmentEvent =
-                serde_json::from_str(line).unwrap();
-            if event.event == "closed" {
-                vidfish_media::inspect_recording(&event.location).unwrap();
+    for session in std::fs::read_dir(directory.path().join("media")).unwrap() {
+        for entry in std::fs::read_dir(session.unwrap().path().join("recordings")).unwrap() {
+            let index = entry.unwrap().path().join("segments.jsonl");
+            for line in std::fs::read_to_string(index).unwrap().lines() {
+                let event: vidfish_media::segmented::FragmentEvent =
+                    serde_json::from_str(line).unwrap();
+                if event.event == "closed" {
+                    vidfish_media::inspect_recording(&event.location).unwrap();
+                }
             }
         }
     }
@@ -482,10 +484,19 @@ fn disk_stop_prevents_writes_and_warning_policy_allows_manual_recording() {
         })
     });
     assert!(
-        std::fs::read_dir(&config.output_directory)
+        !std::fs::read_dir(&config.output_directory)
             .unwrap()
-            .next()
-            .is_none(),
+            .filter_map(Result::ok)
+            .any(|session| session
+                .path()
+                .join("recordings")
+                .read_dir()
+                .is_ok_and(|runs| runs.filter_map(Result::ok).any(|run| run
+                    .path()
+                    .read_dir()
+                    .is_ok_and(|files| files
+                        .filter_map(Result::ok)
+                        .any(|file| file.path().extension().is_some_and(|ext| ext == "mkv")))))),
         "disk-stop policy wrote media"
     );
     let preview = vidfish_media::Preview::start(

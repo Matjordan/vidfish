@@ -5,7 +5,7 @@ case "$VIDFISH_VERSION" in *[!0-9A-Za-z.+-]*) echo 'Invalid version' >&2; exit 1
 root="dist/linux/vidfish-${VIDFISH_VERSION}"
 mkdir -p "$root/docs"
 cp target/release/vidfish README.md "$root/"
-cp docs/media.md docs/cameras.md docs/recording.md docs/monitoring.md docs/events.md "$root/docs/"
+cp docs/media.md docs/cameras.md docs/recording.md docs/monitoring.md docs/events.md docs/sessions.md "$root/docs/"
 cp scripts/launch-vidfish.sh "$root/"
 chmod +x "$root/launch-vidfish.sh"
 test "$("$root/vidfish" --version)" = "vidfish $VIDFISH_VERSION"

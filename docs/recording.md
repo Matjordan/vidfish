@@ -32,14 +32,14 @@ encoders may ignore keyframe requests, so the segment duration can exceed the se
 Each new run exclusively reserves a directory:
 
 ```
-recordings/camera-<local UUID>-<UTC Unix milliseconds>-<run UUID>/
+session-<timestamp>-<name>-<session UUID>/recordings/camera-<local UUID>-<run UUID>/
   segment-00000000.mkv
   segment-00000001.mkv
   segments.jsonl
 ```
 
-Existing run directories cannot be reused. No scientific media is automatically
-removed, overwritten, or repaired. `segments.jsonl` is flushed on every open/close
+Existing run directories cannot be reused. Media is not overwritten or repaired. Session retention is disabled by default;
+explicit opt-in deletion is described in [sessions](sessions.md). `segments.jsonl` is flushed on every open/close
 notification. Each record contains `event` (`opened`/`closed`), `location`,
 `running_time_ns`, and `observed_unix_ms`. Pair records by location to obtain actual
 start/end running times and duration. Times are GStreamer media running time;
