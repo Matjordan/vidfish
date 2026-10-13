@@ -239,9 +239,16 @@ fn supervise(
                 statuses.insert(camera.camera.id.clone(), status);
             }
         }
+        let mut ended = Vec::new();
         for (id, entry) in &mut running {
             match entry.child.try_wait() {
                 Ok(Some(exit)) => {
+                    ended.push(id.clone());
+                    if let Some(final_status) = read_status(&path, id)
+                        && final_status.run_id == entry.status.run_id
+                    {
+                        statuses.insert(id.clone(), final_status);
+                    }
                     let status = statuses
                         .entry(id.clone())
                         .or_insert_with(|| entry.status.clone());
@@ -281,7 +288,9 @@ fn supervise(
                 Err(_) => error = Some("Cannot inspect recording child process".into()),
             }
         }
-        running.retain(|_, entry| !entry.child.try_wait().is_ok_and(|exit| exit.is_some()));
+        for id in ended {
+            running.remove(&id);
+        }
         while let Ok(command) = commands.try_recv() {
             match command {
                 Control::AutoRecord(enabled) => auto_record = enabled,
@@ -596,7 +605,8 @@ pub fn record_camera(
             status.error = Some(error.to_string());
         }
     }
-    record_event(
+    write_status(config_path, &status)?;
+    if record_event(
         config_path,
         &status,
         if result.is_ok() {
@@ -604,8 +614,13 @@ pub fn record_camera(
         } else {
             "gap_started"
         },
-    )?;
-    write_status(config_path, &status)?;
+    )
+    .is_err()
+    {
+        status.warning=Some("Recording ended but terminal event history could not be saved; inspect retained media and worker log".into());
+        let _ = write_status(config_path, &status);
+        return Err("Cannot save terminal recording event history".into());
+    }
     result
 }
 

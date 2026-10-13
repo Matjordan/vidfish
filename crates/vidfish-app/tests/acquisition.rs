@@ -14,6 +14,33 @@ use vidfish_onvif::manager::{Manager, Options};
 fn wait(supervisor: &Supervisor, predicate: impl Fn(&vidfish::acquisition::Snapshot) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while !predicate(&supervisor.snapshot().borrow()) {
+        if Instant::now() >= deadline {
+            for status in &supervisor.snapshot().borrow().cameras {
+                if let Some(output) = &status.output
+                    && let Some(root) = output
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .and_then(|p| p.parent())
+                {
+                    let path = root
+                        .join("acquisition")
+                        .join(format!("{}-{}.log", status.camera_id, status.run_id));
+                    if let Ok(log) = std::fs::read_to_string(path) {
+                        eprintln!(
+                            "Recorder diagnostic: {}",
+                            log.lines()
+                                .rev()
+                                .take(12)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        );
+                    }
+                }
+            }
+        }
         assert!(
             Instant::now() < deadline,
             "recording state timeout: {}",
@@ -113,7 +140,24 @@ fn camera_arrival_auto_records_and_stop_all_finalizes_without_restarting() {
         .unwrap();
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(supervisor.snapshot().borrow().cameras[0].run_id, run_id);
+    for _ in 0..3 {
+        supervisor.controller().command(Control::RecordAll).unwrap();
+        wait(supervisor, |s| {
+            s.cameras[0].state == State::Recording && s.cameras[0].bytes_written > 0
+        });
+        supervisor.controller().command(Control::StopAll).unwrap();
+        wait(supervisor, |s| {
+            s.stop_all_ack && s.cameras[0].state == State::Stopped
+        });
+        vidfish_media::inspect_recording(sup_output(supervisor).as_path()).unwrap();
+    }
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
+}
+fn sup_output(supervisor: &Supervisor) -> PathBuf {
+    supervisor.snapshot().borrow().cameras[0]
+        .output
+        .clone()
+        .unwrap()
 }
 #[test]
 fn sixteen_recorders_survive_supervisor_restart() {
