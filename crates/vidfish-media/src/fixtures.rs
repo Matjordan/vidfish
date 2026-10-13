@@ -14,10 +14,15 @@ use std::sync::{
 pub struct RtspFixture {
     pub uri: String,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RtspFixture {
+    /// Simulate a silent transport stall while leaving the RTSP session alive.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+    }
     pub fn start(width: u32, height: u32) -> Result<Self> {
         Self::start_codec(width, height, crate::Codec::H264)
     }
@@ -46,6 +51,8 @@ impl RtspFixture {
         crate::initialize()?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let paused = Arc::new(AtomicBool::new(false));
+        let pausing = paused.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
         let worker = std::thread::spawn(move || {
             let context = gst::glib::MainContext::new();
@@ -58,8 +65,17 @@ impl RtspFixture {
                     crate::Codec::H264 => ("x264enc", "rtph264pay", ""),
                     crate::Codec::H265 => ("x265enc", "rtph265pay", "option-string=pools=1:frame-threads=1"),
                 };
-                factory.set_launch(&format!("( videotestsrc is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
+                factory.set_launch(&format!("( videotestsrc name=fixture-source is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
                 factory.set_shared(true);
+                factory.connect_media_configure(move |_, media| {
+                    let Ok(bin) = media.element().downcast::<gst::Bin>() else { return };
+                    let Some(source) = bin.by_name("fixture-source") else { return };
+                    let Some(pad) = source.static_pad("src") else { return };
+                    let pausing = pausing.clone();
+                    pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                        if pausing.load(Ordering::Acquire) {gst::PadProbeReturn::Drop} else {gst::PadProbeReturn::Ok}
+                    });
+                });
                 if let Some((username, password)) = authentication {
                     let auth = rtsp::RTSPAuth::new();
                     let token = rtsp::RTSPToken::builder().field("media.factory.role", "viewer").build();
@@ -90,6 +106,7 @@ impl RtspFixture {
             Ok(Ok(uri)) => Ok(Self {
                 uri,
                 stop,
+                paused,
                 worker: Some(worker),
             }),
             _ => {

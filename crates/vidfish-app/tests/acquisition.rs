@@ -116,7 +116,7 @@ fn camera_arrival_auto_records_and_stop_all_finalizes_without_restarting() {
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
 }
 #[test]
-fn recording_survives_supervisor_restart_and_failed_peer() {
+fn sixteen_recorders_survive_supervisor_restart() {
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("config.json");
     let config = AppConfig {
@@ -127,14 +127,11 @@ fn recording_survives_supervisor_restart_and_failed_peer() {
     let rtsp = RtspFixture::start(320, 240).unwrap();
     let mut store = CameraStore::default();
     let healthy = store.add_manual("Healthy", &rtsp.uri).unwrap();
-    for number in 2..=15 {
+    for number in 2..=16 {
         store
             .add_manual(&format!("Healthy {number}"), &rtsp.uri)
             .unwrap();
     }
-    store
-        .add_manual("Refused", "rtsp://127.0.0.1:1/live")
-        .unwrap();
     store.save(&directory.path().join("cameras.json")).unwrap();
     let manager =
         Manager::start(Options::new(directory.path().join("cameras.json"), None)).unwrap();
@@ -155,10 +152,7 @@ fn recording_survives_supervisor_restart_and_failed_peer() {
             .iter()
             .filter(|c| c.state == State::Recording && c.bytes_written > 0)
             .count()
-            == 15
-            && s.cameras
-                .iter()
-                .any(|c| c.camera_id != healthy && c.state == State::Failed)
+            == 16
     });
     let run_id = supervisor
         .snapshot()
@@ -208,4 +202,218 @@ fn manual_h265_camera_selects_h265_without_onvif() {
         camera_preview::source(&store.cameras[0], None, std::path::Path::new("unused.json"))
             .unwrap();
     assert_eq!(codec, vidfish_media::Codec::H265);
+}
+
+#[test]
+fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.json");
+    let config = AppConfig {
+        output_directory: directory.path().join("media"),
+        segment_seconds: 2,
+        stall_seconds: 3,
+        ..Default::default()
+    };
+    config.save(&config_path).unwrap();
+    let troubled = RtspFixture::start(320, 240).unwrap();
+    let healthy = RtspFixture::start(320, 240).unwrap();
+    let mut store = CameraStore::default();
+    let bad_id = store.add_manual("Stalling", &troubled.uri).unwrap();
+    let good_id = store.add_manual("Healthy", &healthy.uri).unwrap();
+    store.save(&directory.path().join("cameras.json")).unwrap();
+    let manager =
+        Manager::start(Options::new(directory.path().join("cameras.json"), None)).unwrap();
+    let supervisor = Supervisor::start_with_executable(
+        config_path,
+        config,
+        manager.snapshot(),
+        env!("CARGO_BIN_EXE_vidfish").into(),
+    )
+    .unwrap();
+    let mut cleanup = Cleanup {
+        manager: Some(manager),
+        supervisor: Some(supervisor),
+    };
+    let supervisor = cleanup.supervisor.as_ref().unwrap();
+    wait(supervisor, |s| {
+        s.cameras.len() == 2
+            && s.cameras
+                .iter()
+                .all(|c| c.state == State::Recording && c.bytes_written > 0)
+    });
+    let statuses = supervisor.snapshot().borrow().cameras.clone();
+    let bad_run = statuses
+        .iter()
+        .find(|c| c.camera_id == bad_id)
+        .unwrap()
+        .run_id
+        .clone();
+    let good = statuses
+        .iter()
+        .find(|c| c.camera_id == good_id)
+        .unwrap()
+        .clone();
+    let preview = vidfish_media::Preview::start(
+        vidfish_media::Source::Rtsp(healthy.uri.clone()),
+        vidfish_media::Codec::H264,
+    );
+    troubled.set_paused(true);
+    // Durable failure history survives a fast retry transition.
+    let events_path = directory
+        .path()
+        .join("acquisition")
+        .join(format!("{bad_id}.events.jsonl"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_to_string(&events_path)
+        .unwrap_or_default()
+        .contains("gap_started")
+    {
+        assert!(Instant::now() < deadline, "silent stall was not detected");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        preview.frames.borrow().is_some(),
+        "healthy preview did not survive peer failure"
+    );
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id == good_id
+                && c.run_id == good.run_id
+                && c.bytes_written > good.bytes_written
+        })
+    });
+    troubled.set_paused(false);
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id == bad_id
+                && c.run_id != bad_run
+                && c.state == State::Recording
+                && c.bytes_written > 0
+        })
+    });
+    preview.request_stop();
+    preview.join();
+    let switched = vidfish_media::Preview::start(
+        vidfish_media::Source::Rtsp(troubled.uri.clone()),
+        vidfish_media::Codec::H264,
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while switched.frames.borrow().is_none() {
+        assert!(Instant::now() < deadline, "switched preview failed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    switched.request_stop();
+    switched.join();
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id == good_id
+                && c.run_id == good.run_id
+                && c.bytes_written > good.bytes_written
+        })
+    });
+    cleanup.supervisor.take().unwrap().finish_all().unwrap();
+    let events = std::fs::read_to_string(events_path).unwrap();
+    assert!(events.matches("recording_started").count() >= 2);
+    for entry in std::fs::read_dir(directory.path().join("media")).unwrap() {
+        let index = entry.unwrap().path().join("segments.jsonl");
+        for line in std::fs::read_to_string(index).unwrap().lines() {
+            let event: vidfish_media::segmented::FragmentEvent =
+                serde_json::from_str(line).unwrap();
+            if event.event == "closed" {
+                vidfish_media::inspect_recording(&event.location).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn disk_stop_prevents_writes_and_warning_policy_allows_manual_recording() {
+    use vidfish_core::config::DiskPolicy;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.json");
+    let mut config = AppConfig {
+        output_directory: directory.path().join("media"),
+        auto_record: false,
+        disk_warning_bytes: u64::MAX,
+        disk_stop_bytes: u64::MAX,
+        ..Default::default()
+    };
+    config.save(&path).unwrap();
+    let rtsp = RtspFixture::start(320, 240).unwrap();
+    let mut store = CameraStore::default();
+    let id = store.add_manual("Disk policy", &rtsp.uri).unwrap();
+    store.save(&directory.path().join("cameras.json")).unwrap();
+    let manager =
+        Manager::start(Options::new(directory.path().join("cameras.json"), None)).unwrap();
+    let supervisor = Supervisor::start_with_executable(
+        path.clone(),
+        config.clone(),
+        manager.snapshot(),
+        env!("CARGO_BIN_EXE_vidfish").into(),
+    )
+    .unwrap();
+    let mut cleanup = Cleanup {
+        manager: Some(manager),
+        supervisor: Some(supervisor),
+    };
+    let supervisor = cleanup.supervisor.as_ref().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        supervisor.snapshot().borrow().cameras.is_empty(),
+        "disabled policy auto-started"
+    );
+    supervisor
+        .controller()
+        .command(Control::Record(id.clone()))
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|s| {
+            s.state == State::Failed
+                && s.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("Disk capacity"))
+        })
+    });
+    assert!(
+        std::fs::read_dir(&config.output_directory)
+            .unwrap()
+            .next()
+            .is_none(),
+        "disk-stop policy wrote media"
+    );
+    let preview = vidfish_media::Preview::start(
+        vidfish_media::Source::Rtsp(rtsp.uri.clone()),
+        vidfish_media::Codec::H264,
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while preview.frames.borrow().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "healthy preview unavailable during recording failure"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        supervisor
+            .snapshot()
+            .borrow()
+            .cameras
+            .iter()
+            .any(|s| s.state == State::Failed),
+        "preview incorrectly masked recording failure"
+    );
+    preview.request_stop();
+    preview.join();
+    config.disk_policy = DiskPolicy::Warn;
+    config.save(&path).unwrap();
+    supervisor
+        .controller()
+        .command(Control::Record(id))
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras
+            .iter()
+            .any(|s| s.state == State::Recording && s.bytes_written > 0 && s.warning.is_some())
+    });
+    cleanup.supervisor.take().unwrap().finish_all().unwrap();
 }

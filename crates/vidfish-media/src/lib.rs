@@ -587,3 +587,37 @@ pub fn inspect_recording(path: &Path) -> Result<RecordingInfo> {
             .unwrap_or_default(),
     })
 }
+
+#[cfg(all(test, unix))]
+mod write_failure_tests {
+    use super::*;
+    #[test]
+    fn full_device_reports_media_error_without_disrupting_peer() {
+        initialize().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let source = Source::TestPattern {
+            width: 320,
+            height: 240,
+        };
+        let peer = Recording::start(&source, Codec::H264, &root.path().join("peer.mkv")).unwrap();
+        peer.wait_started(Duration::from_secs(15)).unwrap();
+        // /dev/full returns ENOSPC on actual writes without filling the runner disk.
+        let pipeline = gst::Pipeline::new();
+        let parser = encoded_source(&pipeline, &source, Codec::H264).unwrap();
+        let mux = element("matroskamux", "mux").unwrap();
+        let sink = element("filesink", "full-device").unwrap();
+        sink.set_property("location", "/dev/full");
+        pipeline.add_many([&mux, &sink]).unwrap();
+        gst::Element::link_many([&parser, &mux, &sink]).unwrap();
+        let _ = pipeline.set_state(gst::State::Playing);
+        let bus = pipeline.bus().unwrap();
+        let error = bus
+            .timed_pop_filtered(gst::ClockTime::from_seconds(10), &[gst::MessageType::Error])
+            .expect("full disk did not surface an error");
+        assert!(bus_error(&error).to_string().contains("full-device"));
+        pipeline.set_state(gst::State::Null).unwrap();
+        peer.poll_error(Duration::from_millis(500)).unwrap();
+        peer.finish().unwrap();
+        inspect_recording(&root.path().join("peer.mkv")).unwrap();
+    }
+}
