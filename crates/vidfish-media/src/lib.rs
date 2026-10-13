@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod segmented;
+pub use segmented::SegmentedRecording;
+
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 
@@ -71,6 +74,7 @@ pub fn check_plugins_for(codec: Codec) -> Result<Vec<&'static str>> {
             Codec::H265 => "avdec_h265",
         },
         "matroskamux",
+        "splitmuxsink",
         "filesink",
         "decodebin",
         "videoconvert",
@@ -179,6 +183,10 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
                 },
                 "fixture-encoder",
             )?;
+            encoder.set_property_from_str("key-int-max", "30");
+            if codec == Codec::H265 {
+                encoder.set_property("option-string", "pools=1:frame-threads=1");
+            }
             encoder.set_property_from_str("tune", "zerolatency");
             encoder.set_property_from_str("speed-preset", "ultrafast");
             pipeline

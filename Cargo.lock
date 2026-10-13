@@ -4047,6 +4047,8 @@ dependencies = [
  "gstreamer-rtsp-server",
  "gstreamer-video",
  "quick-xml",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

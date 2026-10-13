@@ -8,6 +8,8 @@ rust-version.workspace = true
 fixtures = ["dep:gstreamer-rtsp-server", "dep:quick-xml"]
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
 gstreamer = { version = "0.24", features = ["v1_20"] }
 gstreamer-app = { version = "0.24", features = ["v1_20"] }
 gstreamer-video = { version = "0.24", features = ["v1_20"] }
