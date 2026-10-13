@@ -105,7 +105,13 @@ impl Desktop {
         egui::TopBottomPanel::top("operator-header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(egui::RichText::new("Vidfish").color(egui::Color32::LIGHT_BLUE));
-                ui.label(format!("Session: {}", self.views.session_label));
+                ui.label(format!(
+                    "Session: {}",
+                    self.active_session
+                        .as_ref()
+                        .map(|s| s.label.as_str())
+                        .unwrap_or(&self.views.session_label)
+                ));
                 let first = self
                     .record_status
                     .cameras
@@ -624,9 +630,10 @@ impl Desktop {
         }
         if let Some(job) = &mut self.history_job {
             match job.try_recv() {
-                Ok(Ok(events)) => {
+                Ok(Ok(history)) => {
+                    self.active_session = history.session;
                     if !actions_completed && self.event_job.is_none() && self.mark_jobs.is_empty() {
-                        self.events = events.into();
+                        self.events = history.events.into();
                     }
                     self.history_job = None;
                 }
@@ -645,10 +652,10 @@ impl Desktop {
             && self.mark_jobs.is_empty()
             && self.history_last.elapsed() > std::time::Duration::from_secs(5)
         {
-            let root = self.path.with_file_name("operator-events");
+            let root = self.path.clone();
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
-                let _ = sender.send(vidfish::operator_events::load(&root));
+                let _ = sender.send(vidfish::operator_events::session_history(&root));
             });
             self.history_job = Some(receiver);
             self.history_last = std::time::Instant::now();
@@ -751,13 +758,13 @@ impl Desktop {
                     ),
                 })
                 .collect();
-            let root = self.path.with_file_name("operator-events");
+            let root = self.path.clone();
             let note = self.note.clone();
             let elapsed_ns = self.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             let inventory = self.path.with_file_name("cameras.json");
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
-                let _ = sender.send(vidfish::operator_events::save_request(
+                let _ = sender.send(vidfish::operator_events::save_session(
                     &root,
                     vidfish::operator_events::Request {
                         kind: kind.into(),
@@ -789,12 +796,12 @@ impl Desktop {
                 cancel = ui.button("Cancel").clicked();
             });
             if save {
-                let root = self.path.with_file_name("operator-events");
+                let root = self.path.clone();
                 let id = id.clone();
                 let note = note.clone();
                 let (sender, receiver) = tokio::sync::oneshot::channel();
                 self.runtime.spawn_blocking(move || {
-                    let _ = sender.send(vidfish::operator_events::edit_note(&root, &id, note));
+                    let _ = sender.send(vidfish::operator_events::session_note(&root, &id, note));
                 });
                 self.event_job = Some(receiver);
             }

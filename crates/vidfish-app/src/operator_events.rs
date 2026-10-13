@@ -33,6 +33,10 @@ pub struct Event {
     pub elapsed_ns: u64,
     #[serde(default)]
     pub elapsed_scope: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
 }
 pub struct Saved {
     pub event: Event,
@@ -135,6 +139,16 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
             elapsed_seconds: elapsed_ns / 1_000_000_000,
             elapsed_ns,
             elapsed_scope,
+            session_id: root
+                .parent()
+                .filter(|p| p.join("manifest.json").exists())
+                .and_then(|p| crate::sessions::read(p).ok())
+                .map(|s| s.id),
+            session_name: root
+                .parent()
+                .filter(|p| p.join("manifest.json").exists())
+                .and_then(|p| crate::sessions::read(p).ok())
+                .map(|s| s.label),
             kind,
             note,
             captures: inputs
@@ -249,7 +263,10 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
     result.map_err(|_|"Operator event could not be saved; check output permissions and disk space. Partial files retained.".into())
 }
 
-fn persist_event(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn persist_event(
+    directory: &Path,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut metadata = tempfile::NamedTempFile::new_in(directory)?;
     serde_json::to_writer_pretty(&mut metadata, event)?;
     metadata.write_all(b"\n")?;
@@ -644,5 +661,38 @@ mod concurrency_tests {
         worker.join().unwrap();
         assert!(result.unwrap().is_ok());
         assert_eq!(load(root.path()).unwrap().len(), 2);
+    }
+}
+
+/// Hold a session lease for the complete event operation, including slow captures.
+pub fn save_session(config: &Path, request: Request) -> Result<Saved, String> {
+    let settings = vidfish_core::config::AppConfig::load(config).map_err(|e| e.to_string())?;
+    let lease = crate::sessions::acquire(config, &settings).map_err(|e| e.to_string())?;
+    save_request(&lease.session.directory.join("events"), request)
+}
+pub struct History {
+    pub session: Option<crate::sessions::Session>,
+    pub events: Vec<Event>,
+}
+pub fn session_history(config: &Path) -> Result<History, String> {
+    let session = crate::sessions::current(config).map_err(|e| e.to_string())?;
+    let root = session
+        .as_ref()
+        .map(|s| s.directory.join("events"))
+        .unwrap_or_else(|| config.with_file_name("operator-events"));
+    Ok(History {
+        session,
+        events: load(&root)?,
+    })
+}
+pub fn session_note(config: &Path, id: &str, note: String) -> Result<Saved, String> {
+    let session = crate::sessions::current(config).map_err(|e| e.to_string())?;
+    match session {
+        Some(s) => {
+            let _lease =
+                crate::sessions::lease_directory(&s.directory).map_err(|e| e.to_string())?;
+            edit_note(&s.directory.join("events"), id, note)
+        }
+        None => edit_note(&config.with_file_name("operator-events"), id, note),
     }
 }

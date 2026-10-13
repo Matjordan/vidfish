@@ -56,6 +56,10 @@ pub struct Status {
     pub media_running_time_ns: Option<u64>,
     #[serde(default)]
     pub media_observed_unix_ms: u64,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_directory: Option<PathBuf>,
 }
 #[derive(Clone, Default)]
 pub struct Snapshot {
@@ -371,6 +375,8 @@ fn supervise(
                 started_unix_ms: 0,
                 media_running_time_ns: None,
                 media_observed_unix_ms: 0,
+                session_id: None,
+                session_directory: None,
             };
             let launched = (|| -> Result<Child> {
                 std::fs::create_dir_all(directory(&path))?;
@@ -490,6 +496,8 @@ pub fn record_camera(
         started_unix_ms: 0,
         media_running_time_ns: None,
         media_observed_unix_ms: 0,
+        session_id: None,
+        session_directory: None,
     };
     if let Some(mut previous) = read_status(config_path, id)
         && previous.state.active()
@@ -500,6 +508,7 @@ pub fn record_camera(
     }
     write_status(config_path, &status)?;
     record_event(config_path, &status, "attempt")?;
+    let mut session_lease = None;
     let result = (|| -> Result<()> {
         let inventory = config_path.with_file_name("cameras.json");
         let store = CameraStore::load(&inventory)?;
@@ -538,12 +547,22 @@ pub fn record_camera(
             &inventory,
         )
         .map_err(std::io::Error::other)?;
-        let output_root = if config.output_directory.is_absolute() {
-            config.output_directory.clone()
-        } else {
-            std::env::current_dir()?.join(&config.output_directory)
-        };
-        std::fs::create_dir_all(&output_root)?;
+        let lease = crate::sessions::acquire(config_path, config)?;
+        status.session_id = Some(lease.session.id.clone());
+        status.session_directory = Some(lease.session.directory.clone());
+        let profile = resolved.as_ref().and_then(|c| c.profiles.first());
+        let run_directory = lease.add_run(
+            camera,
+            run_id,
+            match codec {
+                vidfish_media::Codec::H264 => "H264",
+                vidfish_media::Codec::H265 => "H265",
+            },
+            profile.map(|p| p.width),
+            profile.map(|p| p.height),
+        )?;
+        let output_root = lease.session.directory.clone();
+        session_lease = Some(lease);
         let available = fs2::available_space(&output_root)?;
         update_disk(&mut status, config, available);
         if config.disk_policy == DiskPolicy::Stop && available <= config.disk_stop_bytes {
@@ -551,7 +570,7 @@ pub fn record_camera(
                 "Disk capacity below configured stop threshold; no recording started".into(),
             );
         }
-        let run_directory = output_root.join(format!("camera-{id}-{}-{run_id}", now()));
+        record_event(config_path, &status, "session_joined")?;
         let mut recording = vidfish_media::SegmentedRecording::start(
             &source,
             codec,
@@ -564,6 +583,9 @@ pub fn record_camera(
         status.started_unix_ms = now();
         status.media_running_time_ns = recording.running_time_ns();
         status.media_observed_unix_ms = now();
+        if let Some(lease) = &session_lease {
+            lease.update_run(&status, Some(recording.video_format()))?;
+        }
         record_event(config_path, &status, "recording_started")?;
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;
@@ -618,6 +640,12 @@ pub fn record_camera(
         }
     }
     write_status(config_path, &status)?;
+    if let Some(lease) = &session_lease
+        && lease.update_run(&status, None).is_err()
+    {
+        status.warning = Some("Session manifest update failed; media and status retained".into());
+        write_status(config_path, &status)?;
+    }
     if record_event(
         config_path,
         &status,
@@ -652,5 +680,17 @@ fn record_event(config: &Path, status: &Status, event: &str) -> Result<()> {
     )?;
     file.write_all(b"\n")?;
     file.sync_data()?;
+    if let Some(root) = &status.session_directory {
+        let mut log = std::fs::OpenOptions::new().create(true).append(true).open(
+            root.join("logs")
+                .join(format!("{}-{}.jsonl", status.camera_id, status.run_id)),
+        )?;
+        serde_json::to_writer(
+            &mut log,
+            &serde_json::json!({"unix_ms":now(),"event":event,"status":status}),
+        )?;
+        log.write_all(b"\n")?;
+        log.sync_data()?;
+    }
     Ok(())
 }

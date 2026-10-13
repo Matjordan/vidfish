@@ -175,6 +175,32 @@ impl SegmentedRecording {
         }
         Ok(())
     }
+    pub fn video_format(&self) -> (Option<u32>, Option<u32>, Option<f64>) {
+        let caps = self
+            .pipeline
+            .by_name("parser")
+            .and_then(|p| p.static_pad("src"))
+            .and_then(|p| p.current_caps());
+        let Some(s) = caps.as_ref().and_then(|c| c.structure(0)) else {
+            return (None, None, None);
+        };
+        let width = s
+            .get::<i32>("width")
+            .ok()
+            .filter(|n| *n > 0)
+            .map(|n| n as u32);
+        let height = s
+            .get::<i32>("height")
+            .ok()
+            .filter(|n| *n > 0)
+            .map(|n| n as u32);
+        let fps = s
+            .get::<gst::Fraction>("framerate")
+            .ok()
+            .filter(|f| f.numer() > 0)
+            .map(|f| f.numer() as f64 / f.denom() as f64);
+        (width, height, fps)
+    }
     /// Clock running time shares the splitmux fragment timestamp domain.
     pub fn running_time_ns(&self) -> Option<u64> {
         self.pipeline.current_running_time().map(|t| t.nseconds())

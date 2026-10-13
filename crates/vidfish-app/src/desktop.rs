@@ -148,6 +148,7 @@ pub fn run(
                 event_job: None,
                 mark_jobs: Vec::new(),
                 history_job: None,
+                active_session: None,
                 history_last: Instant::now() - Duration::from_secs(10),
                 edit_note: None,
                 events: std::collections::VecDeque::new(),
@@ -243,9 +244,9 @@ struct Desktop {
     event_job:
         Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
     mark_jobs: Vec<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
-    history_job: Option<
-        tokio::sync::oneshot::Receiver<Result<Vec<vidfish::operator_events::Event>, String>>,
-    >,
+    history_job:
+        Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::History, String>>>,
+    active_session: Option<vidfish::sessions::Session>,
     history_last: Instant,
     edit_note: Option<(String, String)>,
     events: std::collections::VecDeque<vidfish::operator_events::Event>,

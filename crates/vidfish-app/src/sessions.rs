@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use vidfish_core::{cameras::CameraRecord, config::AppConfig};
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -26,6 +26,8 @@ pub struct Run {
     pub codec: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub nominal_fps: Option<f64>,
+    pub conditions: AppConfig,
     pub directory: PathBuf,
     pub attempt_unix_ms: u64,
     pub video_started_unix_ms: Option<u64>,
@@ -263,6 +265,8 @@ impl Lease {
             codec: codec.into(),
             width,
             height,
+            nominal_fps: None,
+            conditions: self.session.conditions.clone(),
             directory: directory.clone(),
             attempt_unix_ms: crate::operator_events::now(),
             video_started_unix_ms: None,
@@ -271,12 +275,21 @@ impl Lease {
         write_json(&session.directory.join("manifest.json"), &session)?;
         Ok(directory)
     }
-    pub fn update_run(&self, status: &crate::acquisition::Status) -> Result<()> {
+    pub fn update_run(
+        &self,
+        status: &crate::acquisition::Status,
+        format: Option<(Option<u32>, Option<u32>, Option<f64>)>,
+    ) -> Result<()> {
         let guard = file_lock(&self.session.directory.join("manifest.lock"))?;
         fs2::FileExt::lock_exclusive(&guard)?;
         let mut session = read(&self.session.directory)?;
         if let Some(run) = session.runs.iter_mut().find(|r| r.id == status.run_id) {
             run.state = format!("{:?}", status.state);
+            if let Some((w, h, fps)) = format {
+                run.width = w.or(run.width);
+                run.height = h.or(run.height);
+                run.nominal_fps = fps;
+            }
             run.video_started_unix_ms =
                 (status.started_unix_ms > 0).then_some(status.started_unix_ms);
         }
@@ -284,6 +297,19 @@ impl Lease {
         Ok(())
     }
 }
+pub fn lease_directory(directory: &Path) -> Result<Lease> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(directory.join("session.lease"))?;
+    fs2::FileExt::lock_shared(&file)?;
+    let session = read(directory)?;
+    Ok(Lease {
+        session,
+        _file: file,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
