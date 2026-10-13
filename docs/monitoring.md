@@ -71,7 +71,7 @@ Collapsing this area never hides the recording header.
   only the latest frame. Application frame packing accepts 1–4096 × 1–2160 pixels
   (at most 26,542,080 RGB bytes per frame), rejects invalid strides, and handles
   different incoming sizes; UI textures resize to the delivered dimensions.
-- One event worker captures sequentially with one temporary decoder/frame; images
+- One capture worker captures sequentially with one temporary decoder/frame; images
   are encoded sequentially. Thumbnails are at most 128×128 pixels and only four from
   the latest event are retained. Summary history is bounded to 200 items. These are
   application queue/retention bounds, not a fixed total RSS promise for codec/driver

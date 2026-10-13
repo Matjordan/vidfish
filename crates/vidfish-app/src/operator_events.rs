@@ -101,12 +101,14 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
         return Err("Operator action exceeds limits".into());
     }
     let result = (|| -> Result<Saved, Box<dyn std::error::Error>> {
-        let _lock = lock(root)?;
+        let reserve = lock(root)?;
         let id = uuid::Uuid::new_v4().to_string();
         let directory = root.join(&id);
         std::fs::create_dir(&directory)?;
         #[cfg(unix)]
         std::fs::File::open(root)?.sync_all()?;
+        let _event_lock = lock(&directory)?;
+        drop(reserve);
         // Reuse an active acquisition clock across viewer restarts. Explicitly
         // identify its run epoch; with no acquisition, use viewer monotonic time.
         let clock = inputs
@@ -391,7 +393,7 @@ pub fn now() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-fn lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+fn open_lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(root)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -399,6 +401,10 @@ fn lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .open(root.join("events.lock"))?;
+    Ok(file)
+}
+fn lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    let file = open_lock(root)?;
     fs2::FileExt::lock_exclusive(&file)?;
     Ok(file)
 }
@@ -460,17 +466,28 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
 /// Incomplete captures stay visibly incomplete; restart never repeats camera requests.
 pub fn load(root: &Path) -> Result<Vec<Event>, String> {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-        let _lock = lock(root)?;
+        let reserve = lock(root)?;
         let mut paths: Vec<_> = std::fs::read_dir(root)?
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .collect();
+        drop(reserve);
         paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
         let mut events = Vec::new();
         for path in paths.into_iter().take(200) {
             let file = path.path().join("event.json");
             if !file.exists() {
                 continue;
+            }
+            let _event_lock = open_lock(&path.path())?;
+            match fs2::FileExt::try_lock_exclusive(&_event_lock) {
+                Ok(()) => {}
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
             }
             if std::fs::metadata(&file)?.len() > 2 * 1024 * 1024 {
                 return Err("Event metadata too large".into());
@@ -500,8 +517,8 @@ pub fn edit_note(root: &Path, id: &str, note: String) -> Result<Saved, String> {
         if note.len() > 16384 {
             return Err("Note exceeds limit".into());
         }
-        let _lock = lock(root)?;
         let directory = root.join(id);
+        let _lock = lock(&directory)?;
         let mut event: Event =
             serde_json::from_slice(&std::fs::read(directory.join("event.json"))?)?;
         event.note = note;
@@ -596,5 +613,36 @@ mod clock_tests {
         assert_eq!(after.event.elapsed_ns, 103_000_000_000);
         assert_eq!(before.event.elapsed_scope, after.event.elapsed_scope);
         assert!(after.event.elapsed_scope.contains("ongoing-run"));
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    #[test]
+    fn busy_capture_event_does_not_block_durable_mark_or_lose_capture_results() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = save(root.path(), "Grab All", String::new(), 1, Vec::new(), false).unwrap();
+        let guard = lock(&root.path().join(&saved.event.id)).unwrap();
+        // Model an in-flight capture holding its event lock. A second event must
+        // persist without waiting; history must skip the busy event, not rewrite it.
+        let path = root.path().to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(save(
+                &path,
+                "Mark",
+                "during capture".into(),
+                2,
+                Vec::new(),
+                false,
+            ));
+        });
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        assert_eq!(load(root.path()).unwrap().len(), 1); // busy event is skipped
+        drop(guard);
+        worker.join().unwrap();
+        assert!(result.unwrap().is_ok());
+        assert_eq!(load(root.path()).unwrap().len(), 2);
     }
 }

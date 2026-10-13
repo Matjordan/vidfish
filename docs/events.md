@@ -44,12 +44,13 @@ are bounded to 4096×2160 and limited allocations. If snapshots are unsupported 
 fail, a temporary RTSP pipeline decodes one fresh frame and closes before the next
 camera. Existing recorder pipelines are never stopped, replaced or reconfigured.
 
-One event job captures cameras sequentially, so at most one temporary snapshot
+One capture job processes cameras sequentially, so at most one temporary snapshot
 decoder is added to the maximum four persistent previews. RTSP extraction has an
 eight-second deadline per camera. A batch stops starting cameras after 45 seconds;
 an in-flight request may finish afterward. Failed/skipped cameras stay in the event
 with their reason and delay. Capturing all cameras can take several seconds, and
-one unresponsive camera can delay later cameras; the viewer remains responsive.
+one unresponsive camera can delay later cameras; the viewer remains responsive. Mark remains available during capture, with at most
+eight pending mark jobs, so a slow grab does not prevent event timestamps.
 
 Each successful capture stores local frame receipt UTC time, delay from the action,
 method and PNG path. Camera exposure time is unavailable. Captures are asynchronous:
@@ -64,7 +65,8 @@ contains `event.json`, `event.csv`, and collision-free `snapshot-N.png` files.
 JSON is the canonical record. CSV has one quoted row per camera, with event ID,
 UTC time, elapsed clock/scope, note, run, segment, offset, recording state, image,
 capture time/delay and result. Both files are written through synced temporary
-files and atomic replacement. If a crash leaves CSV missing or stale, history
+files and atomic replacement. Per-event locks prevent reconciliation or note edits
+from overwriting in-flight results; different events can be marked independently. If a crash leaves CSV missing or stale, history
 refresh regenerates it from JSON. Original media is never deleted.
 
 All camera entries and the mark/note are saved before image work. Results persist

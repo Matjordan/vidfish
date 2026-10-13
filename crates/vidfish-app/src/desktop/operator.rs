@@ -547,9 +547,40 @@ impl Desktop {
         self.show_settings = open;
     }
     fn event_panel(&mut self, ctx: &egui::Context) {
+        let mut finished = Vec::new();
+        self.mark_jobs.retain_mut(|job| match job.try_recv() {
+            Ok(result) => {
+                finished.push(result);
+                false
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                finished.push(Err("Mark worker stopped".into()));
+                false
+            }
+            Err(_) => true,
+        });
+        let mut actions_completed = !finished.is_empty();
+        for result in finished {
+            match result {
+                Ok(saved) => {
+                    if self.note == saved.event.note {
+                        self.note.clear();
+                    }
+                    self.events.push_front(saved.event);
+                    self.events
+                        .make_contiguous()
+                        .sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
+                    self.events.truncate(200);
+                    self.message = "Mark saved".into();
+                }
+                Err(error) => self.message = error,
+            }
+        }
+
         if let Some(job) = &mut self.event_job {
             match job.try_recv() {
                 Ok(Ok(saved)) => {
+                    actions_completed = true;
                     if !saved.thumbnails.is_empty() {
                         self.thumbnails = saved
                             .thumbnails
@@ -573,6 +604,9 @@ impl Desktop {
                     }
                     self.edit_note = None;
                     self.events.push_front(saved.event);
+                    self.events
+                        .make_contiguous()
+                        .sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
                     self.events.truncate(200);
                     self.event_job = None;
                     self.message = "Operator action saved".into();
@@ -591,7 +625,7 @@ impl Desktop {
         if let Some(job) = &mut self.history_job {
             match job.try_recv() {
                 Ok(Ok(events)) => {
-                    if self.event_job.is_none() {
+                    if !actions_completed && self.event_job.is_none() && self.mark_jobs.is_empty() {
                         self.events = events.into();
                     }
                     self.history_job = None;
@@ -608,6 +642,7 @@ impl Desktop {
         }
         if self.history_job.is_none()
             && self.event_job.is_none()
+            && self.mark_jobs.is_empty()
             && self.history_last.elapsed() > std::time::Duration::from_secs(5)
         {
             let root = self.path.with_file_name("operator-events");
@@ -619,15 +654,15 @@ impl Desktop {
             self.history_last = std::time::Instant::now();
         }
         let mut action = None;
-        if self.event_job.is_none() {
+        {
             ctx.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::F6) {
+                if self.mark_jobs.len() < 8 && i.consume_key(egui::Modifiers::NONE, egui::Key::F6) {
                     action = Some(("Mark", false));
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::F7) {
+                if self.event_job.is_none() && i.consume_key(egui::Modifiers::NONE, egui::Key::F7) {
                     action = Some(("Grab All", true));
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::F8) {
+                if self.event_job.is_none() && i.consume_key(egui::Modifiers::NONE, egui::Key::F8) {
                     action = Some(("Mark + Grab All", true));
                 }
             });
@@ -638,13 +673,12 @@ impl Desktop {
                     if touch(ui, "Mark + Grab All").clicked() {
                         action = Some(("Mark + Grab All", true));
                     }
-                    if touch(ui, "Mark").clicked() {
-                        action = Some(("Mark", false));
-                    }
+
                     if touch(ui, "Grab All").clicked() {
                         action = Some(("Grab All", true));
                     }
                 });
+                ui.add_enabled_ui(self.mark_jobs.len()<8,|ui|{if touch(ui,"Mark").clicked(){action=Some(("Mark",false));}});
                 ui.add(
                     egui::TextEdit::singleline(&mut self.note)
                         .hint_text("Optional note")
@@ -736,7 +770,11 @@ impl Desktop {
                     },
                 ));
             });
-            self.event_job = Some(receiver);
+            if grab {
+                self.event_job = Some(receiver);
+            } else {
+                self.mark_jobs.push(receiver);
+            }
         }
         if let Some((id, note)) = &mut self.edit_note {
             let mut save = false;

@@ -243,13 +243,17 @@ def main():
             click("Show this group")
             until(ready)
             click("Mark + Grab All")
-            until(lambda: state().get("events", 0) >= 2)
+            mouse.mark_shortcut()
+            def complete_events(kind):
+                return [event for path in (root / "operator-events").glob("*/event.json") if (event := json.loads(path.read_text()))["kind"] == kind and event["complete"]]
+            until(lambda: len(complete_events("Mark")) >= 2, seconds=5)
+            until(lambda: bool(complete_events("Mark + Grab All")))
             records = list((root / "operator-events").glob("*/event.json"))
             event = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Mark + Grab All")
             if len(event["captures"]) != 16 or sum(bool(c["image"]) for c in event["captures"]) != 16:
                 raise RuntimeError("All-camera grab did not capture all sixteen, including hidden cameras")
             click("Grab All")
-            until(lambda: state().get("events", 0) >= 3)
+            until(lambda: bool(complete_events("Grab All")))
             records = list((root / "operator-events").glob("*/event.json"))
             grab = next(json.loads(p.read_text()) for p in records if json.loads(p.read_text())["kind"] == "Grab All")
             if not all(c["image"] and c["capture_unix_ms"] is not None for c in grab["captures"]):
@@ -261,8 +265,7 @@ def main():
             mouse.type_note("reviewed")
             click("Save note")
             until(lambda: json.loads((root / "operator-events" / grab["id"] / "event.json").read_text())["note"] == "reviewed")
-            if '"reviewed"' not in (root / "operator-events" / grab["id"] / "event.csv").read_text():
-                raise RuntimeError("Edited note was not exported to CSV")
+            until(lambda: '"reviewed"' in (root / "operator-events" / grab["id"] / "event.csv").read_text())
             click("Hide events")
             after = statuses()
             if len(after) != 4 or any(r["state"] != "Recording" or r["run_id"] != original_runs[r["camera_id"]][0] for r in after):

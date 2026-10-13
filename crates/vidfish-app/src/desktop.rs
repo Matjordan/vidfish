@@ -146,6 +146,7 @@ pub fn run(
                 show_settings: false,
                 note: String::new(),
                 event_job: None,
+                mark_jobs: Vec::new(),
                 history_job: None,
                 history_last: Instant::now() - Duration::from_secs(10),
                 edit_note: None,
@@ -241,6 +242,7 @@ struct Desktop {
     note: String,
     event_job:
         Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
+    mark_jobs: Vec<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
     history_job: Option<
         tokio::sync::oneshot::Receiver<Result<Vec<vidfish::operator_events::Event>, String>>,
     >,
