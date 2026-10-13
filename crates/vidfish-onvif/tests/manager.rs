@@ -202,3 +202,25 @@ fn runtime_login_creates_storage_and_survives_manager_restart() {
     assert!(vidfish_onvif::credentials::load(&saved, &id).is_ok());
     restarted.join();
 }
+
+#[test]
+fn manual_camera_can_be_added_during_a_run_with_codec_and_alias_persisted() {
+    let directory = tempfile::tempdir().unwrap();
+    let inventory = directory.path().join("cameras.json");
+    let manager = Manager::start(Options::new(inventory.clone(), None)).unwrap();
+    manager
+        .command(Command::AddCamera {
+            alias: "H265 bench".into(),
+            address: "rtsp://127.0.0.1/live".into(),
+            onvif: false,
+            h265: true,
+        })
+        .unwrap();
+    wait(&manager.snapshot(), |s| {
+        s.cameras.len() == 1 && s.cameras[0].state == State::ManualConfigured
+    });
+    let store = CameraStore::load(&inventory).unwrap();
+    assert_eq!(store.cameras[0].alias, "H265 bench");
+    assert!(store.cameras[0].manual_h265);
+    manager.join();
+}
