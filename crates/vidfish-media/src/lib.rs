@@ -332,6 +332,7 @@ pub struct Frame {
     pub height: usize,
     pub rgb: Vec<u8>,
     pub number: u64,
+    pub received_at: Instant,
 }
 
 pub struct Preview {
@@ -463,6 +464,7 @@ fn preview_worker(
                     height,
                     rgb,
                     number,
+                    received_at: Instant::now(),
                 })));
                 Ok(gst::FlowSuccess::Ok)
             })
