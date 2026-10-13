@@ -1,3 +1,4 @@
+mod operator;
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -20,6 +21,7 @@ pub fn run(
     seconds: Option<u64>,
     force_opengl: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let views = vidfish_core::views::Views::load(&path.with_file_name("views.json"))?;
     let engine = {
         let _guard = runtime.enter();
         Engine::start(config.clone())?
@@ -71,6 +73,9 @@ pub fn run(
         "Vidfish",
         eframe::NativeOptions {
             renderer,
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1280.0, 800.0])
+                .with_min_inner_size([800.0, 600.0]),
             ..Default::default()
         },
         Box::new(move |cc| {
@@ -85,6 +90,12 @@ pub fn run(
                 let info = state.adapter.get_info();
                 tracing::info!(renderer = %info.name, backend = ?info.backend, device_type = ?info.device_type, "desktop renderer initialized");
             }
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.spacing.interact_size.y = 40.0;
+            style.spacing.button_padding = egui::vec2(10.0, 8.0);
+            style.visuals.panel_fill = egui::Color32::from_rgb(11, 20, 32);
+            cc.egui_ctx.set_style(style);
             Ok(Box::new(Desktop {
                 interface: config
                     .camera_interface
@@ -113,7 +124,17 @@ pub fn run(
                 saving: None,
                 auto_save_pending: false,
                 slots,
-                selected_slot: 0,
+                selected_slot: views.selected_slot.min(preview_limit - 1),
+                views,
+                views_dirty: false,
+                views_saving: None,
+                fullscreen: None,
+                page: 0,
+                show_settings: false,
+                note: String::new(),
+                event_job: None,
+                events: std::collections::VecDeque::new(),
+                thumbnails: Vec::new(),
                 required_previews,
                 retired,
                 preview_jobs,
@@ -155,6 +176,7 @@ struct Slot {
     texture: Option<egui::TextureHandle>,
     number: u64,
     displayed: u64,
+    last_frame: Option<Instant>,
 }
 impl Slot {
     fn new(preview: Preview, label: String) -> Self {
@@ -191,6 +213,17 @@ struct Desktop {
     auto_save_pending: bool,
     slots: Vec<Slot>,
     selected_slot: usize,
+    views: vidfish_core::views::Views,
+    views_dirty: bool,
+    views_saving: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
+    fullscreen: Option<usize>,
+    page: usize,
+    show_settings: bool,
+    note: String,
+    event_job:
+        Option<tokio::sync::oneshot::Receiver<Result<vidfish::operator_events::Saved, String>>>,
+    events: std::collections::VecDeque<vidfish::operator_events::Event>,
+    thumbnails: Vec<(String, egui::TextureHandle)>,
     required_previews: usize,
     retired: std::sync::mpsc::SyncSender<Preview>,
     preview_jobs: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
@@ -236,6 +269,43 @@ impl eframe::App for Desktop {
             });
             self.saving = Some(receiver);
         }
+        self.poll_view_save();
+        if self.required_previews == 0 {
+            let restore: Vec<_> = self
+                .views
+                .slots
+                .iter()
+                .take(self.slots.len())
+                .enumerate()
+                .filter_map(|(index, id)| {
+                    let id = id.as_ref()?;
+                    let slot = &self.slots[index];
+                    if slot.preview.is_some() || slot.pending.is_some() || slot.error.is_some() {
+                        return None;
+                    }
+                    let camera = self
+                        .camera_status
+                        .cameras
+                        .iter()
+                        .find(|c| &c.camera.id == id)?;
+                    (camera.camera.manual_rtsp.is_some() || !camera.profiles.is_empty()).then(
+                        || {
+                            (
+                                index,
+                                camera.camera.clone(),
+                                camera.profiles.first().cloned(),
+                            )
+                        },
+                    )
+                })
+                .collect();
+            let selected = self.selected_slot;
+            for (index, camera, profile) in restore {
+                self.selected_slot = index;
+                self.open_preview(camera, profile);
+            }
+            self.selected_slot = selected;
+        }
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if let Some(pending) = &mut slot.pending {
                 match pending.try_recv() {
@@ -269,302 +339,22 @@ impl eframe::App for Desktop {
                         egui::TextureOptions::LINEAR,
                     ));
                 }
+                slot.last_frame = Some(frame.received_at);
                 slot.number = frame.number;
                 slot.displayed += 1;
             }
         }
-        let mut requested_preview = None;
-        egui::SidePanel::left("settings")
-            .default_width(240.0)
-            .show(ctx, |ui| {
-                ui.heading("Vidfish");
-                ui.label(format!("Manager: {:?}", *self.status.borrow()));
-                ui.label("Recordings continue when this window closes. Use Stop all to finish.");
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_sized([104.0, 40.0], egui::Button::new("Record all"))
-                        .clicked()
-                        && let Err(error) = self
-                            .record_control
-                            .command(vidfish::acquisition::Control::RecordAll)
-                    {
-                        self.message = error.into();
-                    }
-                    if ui
-                        .add_sized([104.0, 40.0], egui::Button::new("Stop all"))
-                        .clicked()
-                        && let Err(error) = self
-                            .record_control
-                            .command(vidfish::acquisition::Control::StopAll)
-                    {
-                        self.message = error.into();
-                    }
-                });
-                if ui
-                    .checkbox(&mut self.config.auto_record, "Auto-record arriving cameras")
-                    .changed()
-                {
-                    self.auto_save_pending = true;
-                    if let Err(error) =
-                        self.record_control
-                            .command(vidfish::acquisition::Control::AutoRecord(
-                                self.config.auto_record,
-                            ))
-                    {
-                        self.message = error.into();
-                    }
-                }
-                if let Some(error) = &self.record_status.error {
-                    ui.colored_label(egui::Color32::RED, error);
-                }
-                ui.separator();
-                egui::CollapsingHeader::new("Settings")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical().id_salt("recording-settings").max_height(220.0).show(ui, |ui| {
-                        ui.label("Camera adapter IPv4 (blank disables discovery)");
-                        if ui.text_edit_singleline(&mut self.interface).changed() {
-                            if self.interface.trim().is_empty() {
-                                self.config.camera_interface = None;
-                            } else if let Ok(ip) = self.interface.parse() {
-                                self.config.camera_interface = Some(ip);
-                            }
-                        }
-                        let interface_valid = self.interface.trim().is_empty()
-                            || self.interface.parse::<std::net::Ipv4Addr>().is_ok();
-                        if !interface_valid {
-                            ui.colored_label(
-                                egui::Color32::RED,
-                                "Enter a valid local IPv4 address",
-                            );
-                        }
-                        let mut output =
-                            self.config.output_directory.to_string_lossy().into_owned();
-                        ui.label("Output directory");
-                        if ui.text_edit_singleline(&mut output).changed() {
-                            self.config.output_directory = output.into();
-                        }
-                        ui.label("Segment interval (seconds)");
-                        ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400));
-                        ui.label("File stall deadline (seconds)");
-                        ui.add(egui::DragValue::new(&mut self.config.stall_seconds).range(1..=3600));
-                        ui.label("Disk warning / stop thresholds (MiB)");
-                        let mut warning = self.config.disk_warning_bytes / (1024 * 1024);
-                        let mut stop = self.config.disk_stop_bytes / (1024 * 1024);
-                        ui.add(egui::DragValue::new(&mut warning).range(0..=1048576));
-                        ui.add(egui::DragValue::new(&mut stop).range(0..=warning));
-                        self.config.disk_warning_bytes = warning * 1024 * 1024;
-                        self.config.disk_stop_bytes = stop * 1024 * 1024;
-                        let mut stop_on_low = self.config.disk_policy == vidfish_core::config::DiskPolicy::Stop;
-                        if ui.checkbox(&mut stop_on_low, "Stop recording at disk stop threshold").changed() {
-                            self.config.disk_policy = if stop_on_low { vidfish_core::config::DiskPolicy::Stop } else { vidfish_core::config::DiskPolicy::Warn };
-                        }
-                        ui.label("Saved recording settings apply to new recorder runs. Restart discovery for adapter changes.");
-                        if ui
-                            .add_enabled_ui(self.saving.is_none() && interface_valid, |ui| {
-                                ui.add_sized([160.0, 48.0], egui::Button::new("Save settings"))
-                            })
-                            .inner
-                            .clicked()
-                        {
-                            let config = self.config.clone();
-                            let path = self.path.clone();
-                            let (sender, receiver) = tokio::sync::oneshot::channel();
-                            self.runtime.spawn_blocking(move || {
-                                let _ = sender.send(config.save(&path));
-                            });
-                            self.saving = Some(receiver);
-                            self.message = "Saving settings…".into();
-                        }
-                        });
-                    });
-                ui.label(&self.message);
-                ui.separator();
-                ui.heading("Cameras");
-                if ui
-                    .add_sized([160.0, 40.0], egui::Button::new("Add camera"))
-                    .clicked()
-                {
-                    self.adding_camera = true;
-                }
-                egui::ComboBox::from_label("Preview slot")
-                    .selected_text(format!("{}", self.selected_slot + 1))
-                    .show_ui(ui, |ui| {
-                        for index in 0..self.slots.len() {
-                            ui.selectable_value(
-                                &mut self.selected_slot,
-                                index,
-                                format!("Slot {}", index + 1),
-                            );
-                        }
-                    });
-                ui.label("Availability is ONVIF health; it does not mean recording.");
-                for error in [
-                    &self.camera_status.discovery_error,
-                    &self.camera_status.inventory_error,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    ui.colored_label(egui::Color32::RED, error);
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height().clamp(80.0, 260.0))
-                    .show(ui, |ui| {
-                        for camera in &self.camera_status.cameras {
-                            ui.label(format!("{}: {:?}", camera.camera.alias, camera.state));
-                            if let Some(record) = self
-                                .record_status
-                                .cameras
-                                .iter()
-                                .find(|record| record.camera_id == camera.camera.id)
-                            {
-                                ui.label(format!(
-                                    "Recording: {:?} — {} bytes",
-                                    record.state, record.bytes_written
-                                ));
-                                if let Some(warning) = &record.warning {
-                                    ui.colored_label(egui::Color32::YELLOW, warning);
-                                }
-                                if let Some(available) = record.disk_available_bytes {
-                                    ui.label(format!("Disk free: {} MiB", available / (1024 * 1024)));
-                                }
-                                if let Some(error) = &record.error {
-                                    ui.colored_label(egui::Color32::RED, error);
-                                }
-                            } else {
-                                ui.label("Recording: stopped");
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.button("Record").clicked()
-                                    && let Err(error) = self.record_control.command(
-                                        vidfish::acquisition::Control::Record(
-                                            camera.camera.id.clone(),
-                                        ),
-                                    )
-                                {
-                                    self.message = error.into();
-                                }
-                                if ui.button("Stop recording").clicked()
-                                    && let Err(error) = self.record_control.command(
-                                        vidfish::acquisition::Control::Stop(
-                                            camera.camera.id.clone(),
-                                        ),
-                                    )
-                                {
-                                    self.message = error.into();
-                                }
-                            });
-                            if ui
-                                .add_enabled(
-                                    self.slots[self.selected_slot].pending.is_none()
-                                        && (camera.camera.manual_rtsp.is_some()
-                                            || !camera.profiles.is_empty()),
-                                    egui::Button::new("View feed")
-                                        .min_size(egui::vec2(160.0, 40.0)),
-                                )
-                                .clicked()
-                            {
-                                requested_preview =
-                                    Some((camera.camera.clone(), camera.profiles.first().cloned()));
-                            }
-                            if let Some(error) = &camera.error {
-                                ui.colored_label(egui::Color32::RED, error);
-                            }
-                            if let Some(retry) = camera.retry_seconds {
-                                ui.label(format!("Retry interval: {retry}s"));
-                            }
-                            if let Some(profile) = camera.profiles.first() {
-                                ui.label(format!(
-                                    "{} {}×{}",
-                                    profile.codec, profile.width, profile.height
-                                ));
-                            }
-                            let alias = self
-                                .aliases
-                                .entry(camera.camera.id.clone())
-                                .or_insert_with(|| camera.camera.alias.clone());
-                            ui.text_edit_singleline(alias);
-                            if ui
-                                .add_sized([160.0, 40.0], egui::Button::new("Rename camera"))
-                                .clicked()
-                                && let Err(error) = self.camera_control.command(
-                                    vidfish_onvif::manager::Command::Rename {
-                                        id: camera.camera.id.clone(),
-                                        alias: alias.clone(),
-                                    },
-                                )
-                            {
-                                self.message = error.to_string();
-                            }
-                            if ui
-                                .add_sized([160.0, 40.0], egui::Button::new("Camera login"))
-                                .clicked()
-                            {
-                                self.login_username.zeroize();
-                                self.login_password.zeroize();
-                                self.login_camera = Some(camera.camera.id.clone());
-                            }
-                            if camera.camera.credential_key.is_some() {
-                                ui.label("Login saved locally");
-                            }
-                            ui.separator();
-                        }
-                    });
-            });
-        if let Some((camera, profile)) = requested_preview {
-            self.open_preview(camera, profile);
-        }
-        let mut close_slot = None;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self
-                .slots
+        for slot in &mut self.slots {
+            if let Some(camera) = self
+                .camera_status
+                .cameras
                 .iter()
-                .all(|slot| slot.preview.is_none() && slot.pending.is_none())
+                .find(|c| Some(&c.camera.id) == slot.camera_id.as_ref())
             {
-                ui.label("Select a preview slot, then choose View feed beside a camera.");
+                slot.label = camera.camera.alias.clone();
             }
-            let cell_width = (ui.available_width() / 2.0 - 12.0).max(1.0);
-            let cell_height = (ui.available_height() / 2.0 - 36.0).max(1.0);
-            egui::Grid::new("previews").num_columns(2).show(ui, |ui| {
-                for (index, slot) in self.slots.iter().enumerate() {
-                    ui.vertical(|ui| {
-                        let state = if slot.pending.is_some() {
-                            if slot.camera_id.is_some() {
-                                "Opening…".into()
-                            } else {
-                                "Closing…".into()
-                            }
-                        } else if let Some(error) = &slot.error {
-                            error.clone()
-                        } else if let Some(preview) = &slot.preview {
-                            preview.status.borrow().clone()
-                        } else {
-                            "Empty".into()
-                        };
-                        ui.label(format!("Slot {} — {}: {}", index + 1, slot.label, state));
-                        if slot.preview.is_some() && ui.button("Close feed").clicked() {
-                            close_slot = Some(index);
-                        }
-                        if let Some(texture) = &slot.texture {
-                            ui.add(
-                                egui::Image::new(texture)
-                                    .fit_to_exact_size(egui::vec2(cell_width, cell_height))
-                                    .maintain_aspect_ratio(true),
-                            );
-                        } else {
-                            ui.allocate_space(egui::vec2(cell_width, cell_height));
-                        }
-                    });
-                    if index % 2 == 1 {
-                        ui.end_row();
-                    }
-                }
-            });
-        });
-        if let Some(index) = close_slot {
-            self.close_preview(index);
         }
+        self.draw_operator(ctx);
         if self.adding_camera {
             egui::Window::new("Add camera")
                 .collapsible(false)
@@ -698,8 +488,18 @@ impl Desktop {
             self.message = format!("Camera already shown in slot {}", index + 1);
             return;
         }
+        if self.slots[self.selected_slot].pending.is_some() {
+            return;
+        }
+        let selected = self
+            .views
+            .select(self.selected_slot, camera.id.clone())
+            .unwrap();
+        self.selected_slot = selected;
+        self.views_dirty = true;
         let slot = &mut self.slots[self.selected_slot];
         let old = slot.preview.take();
+        slot.last_frame = None;
         slot.texture = None;
         slot.number = 0;
         slot.displayed = 0;
@@ -727,12 +527,17 @@ impl Desktop {
         jobs.push(job);
     }
     fn close_preview(&mut self, index: usize) {
-        let slot = &mut self.slots[index];
-        if let Some(preview) = slot.preview.take() {
+        if self.slots[index].pending.is_some() {
+            return;
+        }
+        self.views.slots[index] = None;
+        self.views_dirty = true;
+        let preview = self.slots[index].preview.take();
+        self.slots[index] = Slot::default();
+        if let Some(preview) = preview {
             preview.request_stop();
-            *slot = Slot::default();
             let (sender, receiver) = tokio::sync::oneshot::channel();
-            slot.pending = Some(receiver);
+            self.slots[index].pending = Some(receiver);
             let job = self.runtime.spawn_blocking(move || {
                 preview.join();
                 let _ = sender.send(Ok(None));

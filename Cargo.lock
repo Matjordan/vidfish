@@ -4021,6 +4021,7 @@ dependencies = [
  "directories",
  "eframe",
  "fs2",
+ "png",
  "serde",
  "serde_json",
  "tempfile",
