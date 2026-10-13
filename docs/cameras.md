@@ -40,3 +40,22 @@ vidfish --discover --interface 127.0.0.1 --discovery-target 127.0.0.1:FIXTURE_PO
 
 The fixture port changes at startup. Production multicast must also be smoke tested on
 the actual camera adapter; a loopback fixture cannot prove switch/firewall behavior.
+
+## Persistent inventory
+
+```sh
+vidfish cameras scan --interface 192.168.1.10
+vidfish cameras list
+vidfish cameras add --alias "Bench left" --rtsp rtsp://192.168.1.20/live
+vidfish cameras rename CAMERA_ID "Vehicle left"
+vidfish cameras remove CAMERA_ID
+```
+
+Use `vidfish cameras --inventory PATH ...` for a separate inventory. The default is
+`cameras.json` beside the platform settings file. Aliases belong to generated local IDs,
+not IP addresses. An ONVIF endpoint with matching manufacturer/serial can move to a new
+address without changing its alias. Reused UUIDs with different hardware, hardware with
+a changed UUID, and duplicate UUIDs at multiple addresses are reported for operator
+resolution. Unknown hardware cannot automatically authorize an address change. Inventory
+writes are atomic; invalid files and failed validation preserve existing data. Up to 16
+cameras can be stored. Removal changes inventory only; it does not stop a recording.

@@ -10,3 +10,5 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tempfile.workspace = true
+uuid = { version = "1", features = ["v4"] }
+url = "2"

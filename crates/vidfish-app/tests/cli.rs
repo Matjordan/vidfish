@@ -83,3 +83,41 @@ fn onvif_and_discovery_cli_resolve_fixture_without_creating_settings() {
         assert_eq!(camera["profiles"][0]["codec"], "H264");
     }
 }
+
+#[test]
+fn camera_inventory_commands_persist_aliases_and_reject_credentials_in_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cameras.json");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vidfish"))
+            .args(["cameras", "--inventory"])
+            .arg(&path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let added = run(&["add", "--alias", "Bench", "--rtsp", "rtsp://127.0.0.1/live"]);
+    assert!(added.status.success(), "{added:?}");
+    let id = String::from_utf8(added.stdout).unwrap();
+    assert!(run(&["rename", id.trim(), "Vehicle left"]).status.success());
+    let list = run(&["list"]);
+    let store: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(store["cameras"][0]["alias"], "Vehicle left");
+    let bad = run(&[
+        "add",
+        "--alias",
+        "Invalid",
+        "--rtsp",
+        "rtsp://user:secret@localhost/live",
+    ]);
+    assert!(!bad.status.success());
+    assert!(!String::from_utf8(bad.stderr).unwrap().contains("secret"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&run(&["list"]).stdout).unwrap()["cameras"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(run(&["remove", id.trim()]).status.success());
+}

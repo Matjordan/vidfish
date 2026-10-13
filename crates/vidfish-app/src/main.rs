@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use vidfish_core::{config::AppConfig, engine::Engine};
+mod cameras;
 
 #[cfg(feature = "desktop")]
 mod desktop;
@@ -10,6 +11,8 @@ mod desktop;
 #[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect", "discover", "onvif"])))]
 #[command(group(clap::ArgGroup::new("desktop_input").args(["demo", "preview"])))]
 struct Args {
+    #[command(subcommand)]
+    command: Option<cameras::Command>,
     /// Probe ONVIF cameras on the selected IPv4 adapter and resolve their profiles.
     #[arg(long)]
     discover: bool,
@@ -71,6 +74,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
+    if let Some(command) = args.command {
+        if args.discover
+            || args.onvif.is_some()
+            || args.service
+            || args.record.is_some()
+            || args.check
+            || args.media_check
+            || args.demo
+            || !args.preview.is_empty()
+            || args.inspect.is_some()
+        {
+            return Err("camera commands cannot be combined with another application mode".into());
+        }
+        return cameras::run(command);
+    }
     if args.discover || args.onvif.is_some() {
         let client = vidfish_onvif::OnvifClient::new()?;
         if let Some(address) = args.onvif {
