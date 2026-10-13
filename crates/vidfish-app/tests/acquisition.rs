@@ -198,6 +198,69 @@ fn sixteen_recorders_survive_supervisor_restart() {
             .count()
             == 16
     });
+    // All sixteen hidden cameras can be grabbed while all sixteen recording
+    // processes keep their identities and continue making progress.
+    let initial = supervisor.snapshot().borrow().cameras.clone();
+    let marker_ms = vidfish::operator_events::now();
+    let inputs = store
+        .cameras
+        .iter()
+        .map(|camera| vidfish::operator_events::CameraInput {
+            input: vidfish::operator_events::Input {
+                camera: camera.id.clone(),
+                label: camera.alias.clone(),
+                frame: None,
+            },
+            camera: Some(camera.clone()),
+            profile: None,
+            recording: vidfish::event_references::Reference::at(
+                initial.iter().find(|s| s.camera_id == camera.id),
+                marker_ms,
+            ),
+        })
+        .collect();
+    let root = directory.path().join("operator-events");
+    let saved = vidfish::operator_events::save_request(
+        &root,
+        vidfish::operator_events::Request {
+            kind: "Mark + Grab All".into(),
+            note: "sixteen hidden feeds".into(),
+            unix_ms: marker_ms,
+            elapsed_ns: 1_000_000_000,
+            inputs,
+            inventory: directory.path().join("cameras.json"),
+            grab: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(saved.event.captures.len(), 16);
+    assert!(
+        saved
+            .event
+            .captures
+            .iter()
+            .all(|c| c.image.as_ref().is_some_and(|p| p.exists())
+                && c.capture_unix_ms.is_some()
+                && c.delay_ms.is_some()
+                && c.recording.run_id.is_some())
+    );
+    assert_eq!(saved.thumbnails.len(), 4);
+    wait(supervisor, |s| {
+        initial.iter().all(|before| {
+            s.cameras.iter().any(|after| {
+                after.camera_id == before.camera_id
+                    && after.run_id == before.run_id
+                    && after.state == State::Recording
+                    && after.bytes_written > before.bytes_written
+            })
+        })
+    });
+    // Renaming changes current roster text only; durable references retain IDs.
+    let id = store.cameras[0].id.clone();
+    store.rename(&id, "Renamed after marker").unwrap();
+    let recovered = vidfish::operator_events::load(&root).unwrap();
+    assert_eq!(recovered[0].captures[0].camera, id);
+    assert_eq!(recovered[0].captures[0].label, "Healthy");
     let run_id = supervisor
         .snapshot()
         .borrow()

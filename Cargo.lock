@@ -1873,6 +1873,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4021,6 +4023,7 @@ dependencies = [
  "directories",
  "eframe",
  "fs2",
+ "image",
  "png",
  "serde",
  "serde_json",

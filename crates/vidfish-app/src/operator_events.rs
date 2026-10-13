@@ -1,4 +1,4 @@
-//! Small operator action bridge. Scientific frame/segment correlation belongs to Epic 5.
+//! Durable scientific events, per-camera capture results and derived CSV exports.
 use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
@@ -12,6 +12,12 @@ pub struct Capture {
     pub label: String,
     pub image: Option<PathBuf>,
     pub result: String,
+    #[serde(default)]
+    pub recording: crate::event_references::Reference,
+    #[serde(default)]
+    pub capture_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -23,6 +29,10 @@ pub struct Event {
     pub captures: Vec<Capture>,
     #[serde(default)]
     pub complete: bool,
+    #[serde(default)]
+    pub elapsed_ns: u64,
+    #[serde(default)]
+    pub elapsed_scope: String,
 }
 pub struct Saved {
     pub event: Event,
@@ -41,45 +51,141 @@ pub fn save(
     inputs: Vec<Input>,
     grab: bool,
 ) -> Result<Saved, String> {
+    save_request(
+        root,
+        Request {
+            kind: kind.into(),
+            note,
+            elapsed_ns: elapsed.saturating_mul(1_000_000_000),
+            unix_ms: now(),
+            inputs: inputs
+                .into_iter()
+                .map(|input| CameraInput {
+                    input,
+                    camera: None,
+                    profile: None,
+                    recording: Default::default(),
+                })
+                .collect(),
+            inventory: PathBuf::new(),
+            grab,
+        },
+    )
+}
+pub struct CameraInput {
+    pub input: Input,
+    pub camera: Option<vidfish_core::cameras::CameraRecord>,
+    pub profile: Option<vidfish_onvif::Profile>,
+    pub recording: crate::event_references::Reference,
+}
+pub struct Request {
+    pub kind: String,
+    pub note: String,
+    pub unix_ms: u64,
+    pub elapsed_ns: u64,
+    pub inputs: Vec<CameraInput>,
+    pub inventory: PathBuf,
+    pub grab: bool,
+}
+pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
+    let Request {
+        kind,
+        note,
+        unix_ms,
+        elapsed_ns,
+        inputs,
+        inventory,
+        grab,
+    } = request;
     if note.len() > 16384 || inputs.len() > 16 {
         return Err("Operator action exceeds limits".into());
     }
     let result = (|| -> Result<Saved, Box<dyn std::error::Error>> {
-        std::fs::create_dir_all(root)?;
+        let reserve = lock(root)?;
         let id = uuid::Uuid::new_v4().to_string();
         let directory = root.join(&id);
         std::fs::create_dir(&directory)?;
+        #[cfg(unix)]
+        std::fs::File::open(root)?.sync_all()?;
+        let _event_lock = lock(&directory)?;
+        drop(reserve);
+        // Reuse an active acquisition clock across viewer restarts. Explicitly
+        // identify its run epoch; with no acquisition, use viewer monotonic time.
+        let clock = inputs
+            .iter()
+            .map(|i| &i.recording)
+            .filter(|r| r.running_time_ns.is_some() && r.run_started_unix_ms > 0)
+            .min_by_key(|r| (r.run_started_unix_ms, r.run_id.clone()));
+        let (elapsed_ns, elapsed_scope) = match clock {
+            Some(r) => (
+                r.running_time_ns.unwrap_or(elapsed_ns),
+                format!(
+                    "Acquisition GStreamer monotonic clock, run {} (UTC-extrapolated sample)",
+                    r.run_id.as_deref().unwrap_or("unknown")
+                ),
+            ),
+            None => (
+                elapsed_ns,
+                "Viewer monotonic clock; no active acquisition clock".into(),
+            ),
+        };
         let mut event = Event {
             id,
-            unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
-            elapsed_seconds: elapsed,
-            kind: kind.into(),
+            unix_ms,
+            elapsed_seconds: elapsed_ns / 1_000_000_000,
+            elapsed_ns,
+            elapsed_scope,
+            kind,
             note,
-            captures: Vec::new(),
+            captures: inputs
+                .iter()
+                .map(|i| Capture {
+                    camera: i.input.camera.clone(),
+                    label: i.input.label.clone(),
+                    image: None,
+                    result: if grab { "Pending capture" } else { "Mark only" }.into(),
+                    recording: i.recording.clone(),
+                    capture_unix_ms: None,
+                    delay_ms: None,
+                })
+                .collect(),
             complete: false,
         };
         persist_event(&directory, &event)?;
         let mut thumbnails = Vec::new();
         let action_at = std::time::Instant::now();
-        for input in inputs {
-            let mut capture = Capture {
-                camera: input.camera,
-                label: input.label,
-                image: None,
-                result: if grab {
-                    "Not selected or no fresh preview"
+        let deadline = action_at + std::time::Duration::from_secs(45);
+        for (index, item) in inputs.into_iter().enumerate() {
+            let mut capture = event.captures[index].clone();
+            let mut frame = item.input.frame;
+            if grab && let Some(camera) = &item.camera {
+                // Fresh, one-shot all-camera capture. Never reuse an old selected frame.
+                if std::time::Instant::now() >= deadline {
+                    frame = None;
+                    capture.result = "Capture batch deadline reached; camera skipped".into();
                 } else {
-                    "Mark only"
+                    match crate::snapshots::capture(camera, item.profile.as_ref(), &inventory) {
+                        Ok((fresh, method)) => {
+                            frame = Some(fresh);
+                            capture.result = method;
+                        }
+                        Err(error) => {
+                            frame = None;
+                            capture.result = error;
+                        }
+                    }
                 }
-                .into(),
-            };
+            } else if grab {
+                capture.result = "Not selected or no fresh preview".into();
+            }
+            capture.delay_ms = grab.then(|| now().saturating_sub(unix_ms));
             if grab
-                && let Some(frame) = input.frame.filter(|f| {
+                && let Some(frame) = frame.filter(|f| {
                     action_at.saturating_duration_since(f.received_at)
                         < std::time::Duration::from_secs(5)
                 })
             {
-                let path = directory.join(format!("snapshot-{}.png", event.captures.len()));
+                let path = directory.join(format!("snapshot-{}.png", index));
                 let written = (|| -> Result<(), Box<dyn std::error::Error>> {
                     if !(1..=4096).contains(&frame.width)
                         || !(1..=2160).contains(&frame.height)
@@ -106,12 +212,17 @@ pub fn save(
                 })();
                 if written.is_err() {
                     capture.result = "Snapshot write failed; partial image retained".into();
-                    event.captures.push(capture);
+                    event.captures[index] = capture;
                     persist_event(&directory, &event)?;
                     continue;
                 }
                 capture.image = Some(path);
-                capture.result = "Latest displayed frame (not synchronized)".into();
+                if item.camera.is_none() {
+                    capture.result = "Latest displayed frame (not synchronized)".into();
+                }
+                capture.capture_unix_ms =
+                    Some(now().saturating_sub(frame.received_at.elapsed().as_millis() as u64));
+                capture.delay_ms = capture.capture_unix_ms.map(|t| t.saturating_sub(unix_ms));
                 let width = 128;
                 let height = (frame.height * width / frame.width).clamp(1, 128);
                 let mut rgb = Vec::with_capacity(width * height * 3);
@@ -123,9 +234,12 @@ pub fn save(
                         rgb.extend_from_slice(&frame.rgb[offset..offset + 3]);
                     }
                 }
-                thumbnails.push((capture.label.clone(), width, height, rgb));
+                if thumbnails.len() < 4 {
+                    thumbnails.push((capture.label.clone(), width, height, rgb));
+                }
             }
-            event.captures.push(capture);
+            capture.recording.resolve();
+            event.captures[index] = capture;
             persist_event(&directory, &event)?;
         }
         event.complete = true;
@@ -143,6 +257,9 @@ fn persist_event(directory: &Path, event: &Event) -> Result<(), Box<dyn std::err
     metadata
         .persist(directory.join("event.json"))
         .map_err(|e| e.error)?;
+    persist_csv(directory, event)?;
+    #[cfg(unix)]
+    std::fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
 
@@ -267,5 +384,265 @@ mod failure_tests {
         assert!(disk.captures[0].result.contains("failed"));
         assert!(disk.captures[0].image.is_none());
         assert!(disk.captures[1].image.is_some());
+    }
+}
+
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+fn open_lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(root)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("events.lock"))?;
+    Ok(file)
+}
+fn lock(root: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    let file = open_lock(root)?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    Ok(file)
+}
+fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error::Error>> {
+    // Quote every field (including newlines/quotes) using RFC 4180 rules.
+    fn quote(s: impl ToString) -> String {
+        format!("\"{}\"", s.to_string().replace('"', "\"\""))
+    }
+    let mut rows = Vec::new();
+    writeln!(
+        rows,
+        "event_id,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
+    )?;
+    for c in &event.captures {
+        let r = &c.recording;
+        let fields = [
+            quote(&event.id),
+            quote(event.unix_ms),
+            quote(event.elapsed_ns),
+            quote(&event.elapsed_scope),
+            quote(&event.kind),
+            quote(&event.note),
+            quote(event.complete),
+            quote(&c.camera),
+            quote(&c.label),
+            quote(r.run_id.as_deref().unwrap_or("")),
+            quote(
+                r.segment
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            ),
+            quote(r.offset_ns.map(|t| t.to_string()).unwrap_or_default()),
+            quote(&r.timing),
+            quote(&r.state),
+            quote(
+                c.image
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            ),
+            quote(c.capture_unix_ms.map(|t| t.to_string()).unwrap_or_default()),
+            quote(c.delay_ms.map(|t| t.to_string()).unwrap_or_default()),
+            quote(&c.result),
+        ];
+        writeln!(rows, "{}", fields.join(","))?;
+    }
+    if std::fs::read(directory.join("event.csv")).is_ok_and(|old| old == rows) {
+        return Ok(());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(&rows)?;
+    file.as_file().sync_all()?;
+    file.persist(directory.join("event.csv"))
+        .map_err(|e| e.error)?;
+    Ok(())
+}
+/// Recover canonical JSON, reconcile pending segment boundaries, and regenerate CSV.
+/// Incomplete captures stay visibly incomplete; restart never repeats camera requests.
+pub fn load(root: &Path) -> Result<Vec<Event>, String> {
+    let result = (|| -> Result<_, Box<dyn std::error::Error>> {
+        let reserve = lock(root)?;
+        let mut paths: Vec<_> = std::fs::read_dir(root)?
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .collect();
+        drop(reserve);
+        paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
+        let mut events = Vec::new();
+        for path in paths.into_iter().take(200) {
+            let file = path.path().join("event.json");
+            if !file.exists() {
+                continue;
+            }
+            let _event_lock = open_lock(&path.path())?;
+            match fs2::FileExt::try_lock_exclusive(&_event_lock) {
+                Ok(()) => {}
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            if std::fs::metadata(&file)?.len() > 2 * 1024 * 1024 {
+                return Err("Event metadata too large".into());
+            }
+            let mut event: Event = serde_json::from_slice(&std::fs::read(file)?)?;
+            let before = serde_json::to_vec(&event)?;
+            for c in &mut event.captures {
+                c.recording.resolve();
+            }
+            if before != serde_json::to_vec(&event)? {
+                persist_event(&path.path(), &event)?;
+            } else {
+                persist_csv(&path.path(), &event)?;
+            }
+            events.push(event);
+        }
+        events.sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
+        Ok(events)
+    })();
+    result.map_err(|_| {
+        "Event history could not be read or reconciled; original files retained".into()
+    })
+}
+pub fn edit_note(root: &Path, id: &str, note: String) -> Result<Saved, String> {
+    let result = (|| -> Result<_, Box<dyn std::error::Error>> {
+        uuid::Uuid::parse_str(id)?;
+        if note.len() > 16384 {
+            return Err("Note exceeds limit".into());
+        }
+        let directory = root.join(id);
+        let _lock = lock(&directory)?;
+        let mut event: Event =
+            serde_json::from_slice(&std::fs::read(directory.join("event.json"))?)?;
+        event.note = note;
+        for c in &mut event.captures {
+            c.recording.resolve();
+        }
+        persist_event(&directory, &event)?;
+        Ok(Saved {
+            event,
+            thumbnails: Vec::new(),
+        })
+    })();
+    result.map_err(|_| "Note could not be saved; original event retained".into())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn notes_csv_and_incomplete_events_survive_restart_without_recapture() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = save(
+            root.path(),
+            "Mark",
+            "original".into(),
+            2,
+            vec![Input {
+                camera: "stable-id".into(),
+                label: "Original alias".into(),
+                frame: None,
+            }],
+            false,
+        )
+        .unwrap();
+        let note = "comma, quote \" and\nnew line";
+        edit_note(root.path(), &saved.event.id, note.into()).unwrap();
+        let dir = root.path().join(&saved.event.id);
+        let mut event: Event =
+            serde_json::from_slice(&std::fs::read(dir.join("event.json")).unwrap()).unwrap();
+        event.complete = false;
+        event.captures[0].result = "Pending capture".into();
+        persist_event(&dir, &event).unwrap();
+        // CSV is a derived export: simulate a crash leaving it absent/stale.
+        std::fs::remove_file(dir.join("event.csv")).unwrap();
+        let events = load(root.path()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].note, note);
+        assert!(!events[0].complete);
+        assert!(events[0].captures[0].image.is_none());
+        assert_eq!(events[0].captures[0].camera, "stable-id");
+        let csv = std::fs::read_to_string(dir.join("event.csv")).unwrap();
+        assert!(csv.contains("\"comma, quote \"\" and\nnew line\""));
+        assert!(csv.contains(&saved.event.id));
+        assert!(csv.contains("monotonic_elapsed_ns"));
+        assert!(edit_note(root.path(), "../../bad", "bad".into()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn acquisition_elapsed_clock_keeps_its_epoch_across_viewer_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let input = |t| CameraInput {
+            input: Input {
+                camera: "id".into(),
+                label: "Bench".into(),
+                frame: None,
+            },
+            camera: None,
+            profile: None,
+            recording: crate::event_references::Reference {
+                run_id: Some("ongoing-run".into()),
+                run_started_unix_ms: 1000,
+                running_time_ns: Some(t),
+                ..Default::default()
+            },
+        };
+        let request = |elapsed_ns, t| Request {
+            kind: "Mark".into(),
+            note: String::new(),
+            unix_ms: 2000,
+            elapsed_ns,
+            inputs: vec![input(t)],
+            inventory: PathBuf::new(),
+            grab: false,
+        };
+        let before = save_request(root.path(), request(10_000_000_000, 100_000_000_000)).unwrap();
+        let after = save_request(root.path(), request(1_000_000_000, 103_000_000_000)).unwrap();
+        assert_eq!(before.event.elapsed_ns, 100_000_000_000);
+        assert_eq!(after.event.elapsed_ns, 103_000_000_000);
+        assert_eq!(before.event.elapsed_scope, after.event.elapsed_scope);
+        assert!(after.event.elapsed_scope.contains("ongoing-run"));
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    #[test]
+    fn busy_capture_event_does_not_block_durable_mark_or_lose_capture_results() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = save(root.path(), "Grab All", String::new(), 1, Vec::new(), false).unwrap();
+        let guard = lock(&root.path().join(&saved.event.id)).unwrap();
+        // Model an in-flight capture holding its event lock. A second event must
+        // persist without waiting; history must skip the busy event, not rewrite it.
+        let path = root.path().to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(save(
+                &path,
+                "Mark",
+                "during capture".into(),
+                2,
+                Vec::new(),
+                false,
+            ));
+        });
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        assert_eq!(load(root.path()).unwrap().len(), 1); // busy event is skipped
+        drop(guard);
+        worker.join().unwrap();
+        assert!(result.unwrap().is_ok());
+        assert_eq!(load(root.path()).unwrap().len(), 2);
     }
 }

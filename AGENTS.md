@@ -29,6 +29,8 @@ Epic #4 adds the touch operator layout, persistent selections, fullscreen, resou
 bounds, and a selected-preview event bridge. The user deferred numerical Toughpad
 CPU/GPU measurements and reported that four streams looked fine; do not block on or
 invent those numbers.
-Epics #5–#6 contain planning documents only and branch
-from the initial `main`. Bring the updated `main` into each branch before
-implementation. Preserve existing work and commit any conflict resolutions.
+Epic #5 implements scientific markers, actual-boundary recording references,
+bounded all-camera captures, editable notes and durable JSON/CSV recovery.
+Epic #6 still contains planning documents only and branches from the initial
+`main`. Bring updated `main` into its branch before implementation. Preserve
+existing work and commit any conflict resolutions.

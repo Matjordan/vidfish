@@ -145,3 +145,5 @@ Numerical Toughpad CPU/GPU measurements are deferred at the user's request; the 
 observed that the earlier four-stream build looked fine. Native Windows/Linux checks
 validate functionality. Do not claim zero-copy preview upload, frame-perfect
 synchronization, or sustained physical 16-camera throughput without measurements.
+
+Scientific events (Epic 5): [all-camera grabs, recording references, notes and JSON/CSV](docs/events.md). F6 marks, F7 grabs all cameras, and F8 combines both. Captures run independently of recording; timing uncertainty is explicit.

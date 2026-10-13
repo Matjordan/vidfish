@@ -371,7 +371,7 @@ impl Preview {
         let stop = stopping.clone();
         let worker = std::thread::spawn(move || {
             let _active = PreviewGuard::enter();
-            let result = preview_worker(source, codec, stop, frames_tx, &status_tx);
+            let result = preview_worker(source, codec, stop, frames_tx, &status_tx, None);
             status_tx.send_replace(match result {
                 Ok(()) => "Stopped".into(),
                 Err(error) => error.to_string(),
@@ -400,12 +400,29 @@ impl Drop for Preview {
     }
 }
 
+/// Extract a single fresh frame with a temporary decoder, stopped before returning.
+/// Callers bound concurrent calls separately from the four persistent previews.
+pub fn snapshot(source: Source, codec: Codec, timeout: Duration) -> Result<Arc<Frame>> {
+    let (sender, frames) = tokio::sync::watch::channel(None);
+    let (status, _) = tokio::sync::watch::channel(String::new());
+    preview_worker(
+        source,
+        codec,
+        Arc::new(AtomicBool::new(false)),
+        sender,
+        &status,
+        Some(Instant::now() + timeout),
+    )?;
+    let result = frames.borrow().clone();
+    result.ok_or_else(|| MediaError("Snapshot deadline reached without a frame".into()))
+}
 fn preview_worker(
     source: Source,
     codec: Codec,
     stop: Arc<AtomicBool>,
     frames: tokio::sync::watch::Sender<Option<Arc<Frame>>>,
     status: &tokio::sync::watch::Sender<String>,
+    deadline: Option<Instant>,
 ) -> Result<()> {
     initialize()?;
     let pipeline = gst::Pipeline::new();
@@ -455,6 +472,7 @@ fn preview_worker(
     });
     let mut number = 0u64;
     let frame_status = status.clone();
+    let sample_stop = stop.clone();
     sink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -489,6 +507,9 @@ fn preview_worker(
                     number,
                     received_at: Instant::now(),
                 })));
+                if deadline.is_some() {
+                    sample_stop.store(true, Ordering::Release);
+                }
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -501,7 +522,7 @@ fn preview_worker(
         .bus()
         .ok_or_else(|| MediaError("preview bus unavailable".into()))?;
     let mut result = Ok(());
-    while !stop.load(Ordering::Acquire) {
+    while !stop.load(Ordering::Acquire) && deadline.is_none_or(|d| Instant::now() < d) {
         if let Some(message) = bus.timed_pop_filtered(
             gst::ClockTime::from_mseconds(100),
             &[gst::MessageType::Error, gst::MessageType::Eos],

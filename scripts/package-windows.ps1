@@ -3,7 +3,7 @@ if ($env:VIDFISH_VERSION -notmatch '^[0-9A-Za-z.+-]+$') { throw 'Invalid version
 $root = "dist/windows/vidfish-$env:VIDFISH_VERSION"
 New-Item -ItemType Directory -Force "$root/docs", "$root/gstreamer" | Out-Null
 Copy-Item target/release/vidfish.exe, README.md, scripts/launch-vidfish.cmd, scripts/benchmark-toughpad.ps1 $root/
-Copy-Item docs/media.md, docs/cameras.md, docs/recording.md, docs/monitoring.md "$root/docs/"
+Copy-Item docs/media.md, docs/cameras.md, docs/recording.md, docs/monitoring.md, docs/events.md "$root/docs/"
 $gst = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64
 if (-not $gst) { throw 'GStreamer runtime location missing' }
 # Keep runtime DLLs, plugins, scanner, presets, and original notices together.
