@@ -24,6 +24,7 @@
 | #6 Sessions | `epic/6-session-management` | https://github.com/Matjordan/vidfish/pull/31 |
 
 Epic #2 contains implemented discovery, identity/credential storage, and camera polling
-plus a hot-arrival recording-policy bridge and in-app camera previews on top of the merged foundation. Epics #3–#6 contain planning documents only and branch
+plus a hot-arrival recording-policy bridge and in-app camera previews on top of the merged foundation. Epic #3 adds segmented recording, disk policy, and durable recovery indexes.
+Epics #4–#6 contain planning documents only and branch
 from the initial `main`. Bring the updated `main` into each branch before
 implementation. Preserve existing work and commit any conflict resolutions.

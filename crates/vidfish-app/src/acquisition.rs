@@ -14,7 +14,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::watch;
-use vidfish_core::{cameras::CameraStore, config::AppConfig};
+use vidfish_core::{
+    cameras::CameraStore,
+    config::{AppConfig, DiskPolicy},
+};
 use vidfish_onvif::manager::{Snapshot as Cameras, State as CameraState};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -41,6 +44,12 @@ pub struct Status {
     pub bytes_written: u64,
     pub heartbeat_unix_ms: u64,
     pub error: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+    #[serde(default)]
+    pub disk_available_bytes: Option<u64>,
+    #[serde(default)]
+    pub process_id: u32,
 }
 #[derive(Clone, Default)]
 pub struct Snapshot {
@@ -341,6 +350,9 @@ fn supervise(
                 bytes_written: 0,
                 heartbeat_unix_ms: now(),
                 error: None,
+                warning: None,
+                disk_available_bytes: None,
+                process_id: 0,
             };
             let launched = (|| -> Result<Child> {
                 std::fs::create_dir_all(directory(&path))?;
@@ -454,8 +466,19 @@ pub fn record_camera(
         bytes_written: 0,
         heartbeat_unix_ms: now(),
         error: None,
+        warning: None,
+        disk_available_bytes: None,
+        process_id: std::process::id(),
     };
+    if let Some(mut previous) = read_status(config_path, id)
+        && previous.state.active()
+    {
+        previous.error =
+            Some("Recording worker ended abruptly; open segment retained for recovery".into());
+        record_event(config_path, &previous, "gap_started_after_worker_loss")?;
+    }
     write_status(config_path, &status)?;
+    record_event(config_path, &status, "attempt")?;
     let result = (|| -> Result<()> {
         let inventory = config_path.with_file_name("cameras.json");
         let store = CameraStore::load(&inventory)?;
@@ -500,11 +523,24 @@ pub fn record_camera(
             std::env::current_dir()?.join(&config.output_directory)
         };
         std::fs::create_dir_all(&output_root)?;
-        let output = output_root.join(format!("camera-{id}-{}-{run_id}.mkv", now()));
-        status.output = Some(output.clone());
-        let recording = vidfish_media::Recording::start(&source, codec, &output)?;
+        let available = fs2::available_space(&output_root)?;
+        update_disk(&mut status, config, available);
+        if config.disk_policy == DiskPolicy::Stop && available <= config.disk_stop_bytes {
+            return Err(
+                "Disk capacity below configured stop threshold; no recording started".into(),
+            );
+        }
+        let run_directory = output_root.join(format!("camera-{id}-{}-{run_id}", now()));
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &source,
+            codec,
+            &run_directory,
+            config.segment_seconds,
+        )?;
         recording.wait_started(Duration::from_secs(15))?;
+        status.output = recording.current_output();
         status.state = State::Recording;
+        record_event(config_path, &status, "recording_started")?;
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;
         let mut heartbeat = Instant::now();
@@ -513,17 +549,27 @@ pub fn record_camera(
             && !std::fs::read_to_string(stop_path(config_path, id))
                 .is_ok_and(|request| request.trim() == run_id)
         {
-            recording.poll_error(Duration::from_millis(100))?;
+            recording.poll(Duration::from_millis(100))?;
             if heartbeat.elapsed() >= Duration::from_secs(1) {
-                let size = std::fs::metadata(&output)?.len();
+                let size = recording.bytes_written()?;
+                if let Some(output) = recording.current_output() {
+                    status.output = Some(output);
+                }
+                let available = fs2::available_space(&output_root)?;
+                let was_low = status.warning.is_some();
+                update_disk(&mut status, config, available);
+                if status.warning.is_some() && !was_low {
+                    record_event(config_path, &status, "disk_low")?;
+                }
+                if config.disk_policy == DiskPolicy::Stop && available <= config.disk_stop_bytes {
+                    status.bytes_written = recording.finish()?;
+                    return Err("Disk capacity below configured stop threshold; recording finalized and stopped".into());
+                }
                 if size > status.bytes_written {
                     progress = Instant::now();
                 }
-                if progress.elapsed() > Duration::from_secs(30) {
-                    return Err(
-                        "Recording file made no progress for 30 seconds; stream may be stalled"
-                            .into(),
-                    );
+                if progress.elapsed() > Duration::from_secs(config.stall_seconds) {
+                    return Err("Recording file made no progress before the configured stall deadline; stream may be stalled".into());
                 }
                 status.bytes_written = size;
                 status.heartbeat_unix_ms = now();
@@ -534,8 +580,7 @@ pub fn record_camera(
         status.state = State::Stopping;
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;
-        recording.finish()?;
-        status.bytes_written = std::fs::metadata(&output)?.len();
+        status.bytes_written = recording.finish()?;
         Ok(())
     })();
     status.heartbeat_unix_ms = now();
@@ -546,6 +591,34 @@ pub fn record_camera(
             status.error = Some(error.to_string());
         }
     }
+    record_event(
+        config_path,
+        &status,
+        if result.is_ok() {
+            "recording_stopped"
+        } else {
+            "gap_started"
+        },
+    )?;
     write_status(config_path, &status)?;
     result
+}
+
+fn update_disk(status: &mut Status, config: &AppConfig, available: u64) {
+    status.disk_available_bytes = Some(available);
+    status.warning = (available <= config.disk_warning_bytes)
+        .then(|| "Disk capacity is below the configured warning threshold".into());
+}
+fn record_event(config: &Path, status: &Status, event: &str) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory(config).join(format!("{}.events.jsonl", status.camera_id)))?;
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({"unix_ms":now(),"event":event,"camera_id":status.camera_id,"run_id":status.run_id,"output":status.output,"error":status.error,"last_heartbeat_unix_ms":status.heartbeat_unix_ms}),
+    )?;
+    file.write_all(b"\n")?;
+    file.sync_data()?;
+    Ok(())
 }
