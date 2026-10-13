@@ -9,6 +9,7 @@ use std::{
 };
 use vidfish_core::{config::AppConfig, engine::Engine};
 use vidfish_media::{Codec, Preview, Source};
+use zeroize::Zeroize;
 
 pub fn run(
     path: PathBuf,
@@ -85,6 +86,9 @@ pub fn run(
                 camera_status: Default::default(),
                 camera_control,
                 aliases: Default::default(),
+                login_camera: None,
+                login_username: zeroize::Zeroizing::new(String::new()),
+                login_password: zeroize::Zeroizing::new(String::new()),
                 config,
                 path,
                 status,
@@ -126,6 +130,9 @@ struct Desktop {
     camera_status: vidfish_onvif::manager::Snapshot,
     camera_control: vidfish_onvif::manager::Controller,
     aliases: std::collections::BTreeMap<String, String>,
+    login_camera: Option<String>,
+    login_username: zeroize::Zeroizing<String>,
+    login_password: zeroize::Zeroizing<String>,
     config: AppConfig,
     path: PathBuf,
     status: tokio::sync::watch::Receiver<vidfish_core::engine::EngineStatus>,
@@ -216,6 +223,8 @@ impl eframe::App for Desktop {
                     ui.text_edit_singleline(alias);
                     if ui.add_sized([160.0, 40.0], egui::Button::new("Rename camera")).clicked()
                         && let Err(error) = self.camera_control.command(vidfish_onvif::manager::Command::Rename { id: camera.camera.id.clone(), alias: alias.clone() }) { self.message = error.to_string(); }
+                    if ui.add_sized([160.0, 40.0], egui::Button::new("Camera login")).clicked() { self.login_username.zeroize(); self.login_password.zeroize(); self.login_camera = Some(camera.camera.id.clone()); }
+                    if camera.camera.credential_key.is_some() { ui.label("Login saved locally"); }
                     ui.separator();
                 }
             });
@@ -246,6 +255,49 @@ impl eframe::App for Desktop {
                 }
             });
         });
+        if let Some(id) = self.login_camera.clone() {
+            egui::Window::new("Camera login")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Username");
+                    ui.add(egui::TextEdit::singleline(&mut *self.login_username).char_limit(256));
+                    ui.label("Password");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut *self.login_password)
+                            .password(true)
+                            .char_limit(1024),
+                    );
+                    if ui
+                        .add_sized([160.0, 48.0], egui::Button::new("Save login"))
+                        .clicked()
+                    {
+                        let credentials = vidfish_onvif::credentials::Credentials::new(
+                            std::mem::take(&mut *self.login_username),
+                            std::mem::take(&mut *self.login_password),
+                        );
+                        match credentials.and_then(|credentials| {
+                            self.camera_control.command(
+                                vidfish_onvif::manager::Command::SaveCredentials {
+                                    id,
+                                    credentials,
+                                },
+                            )
+                        }) {
+                            Ok(()) => {
+                                self.message = "Saving login locally…".into();
+                                self.login_camera = None;
+                            }
+                            Err(error) => self.message = error.to_string(),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.login_username.zeroize();
+                        self.login_password.zeroize();
+                        self.login_camera = None;
+                    }
+                });
+        }
         if let Some(seconds) = self.seconds
             && self.started.elapsed() >= Duration::from_secs(seconds)
         {

@@ -3,7 +3,7 @@
 Rust desktop software for scientific camera acquisition on Windows and Linux.
 The foundation provides an egui desktop, persistent typed settings, structured
 logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
-preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, OS-backed
+preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, app-managed local
 credentials, and independent camera polling/reconnection. Automatic recording,
 segmentation, media-health recovery, events, and session management remain later work.
 

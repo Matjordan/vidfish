@@ -63,7 +63,14 @@ impl Options {
     }
 }
 pub enum Command {
-    Rename { id: String, alias: String },
+    Rename {
+        id: String,
+        alias: String,
+    },
+    SaveCredentials {
+        id: String,
+        credentials: credentials::Credentials,
+    },
 }
 #[derive(Clone)]
 pub struct Controller {
@@ -217,6 +224,33 @@ fn run(
         while let Ok(command) = commands.try_recv() {
             changed = true;
             match command {
+                Command::SaveCredentials { id, credentials } => {
+                    let mut updated = store.clone();
+                    let result = match updated.cameras.iter().position(|c| c.id == id) {
+                        Some(index) => {
+                            credentials::save(&credentials::file_path(&options.inventory), &id, &credentials).and_then(|()| {
+                                updated.cameras[index].credential_key = Some(id.clone());
+                                updated.save(&options.inventory).map_err(|_| Error("camera login saved but inventory reference could not be saved; retry"))
+                            })
+                        }
+                        None => Err(Error("unknown camera ID")),
+                    };
+                    match result {
+                        Ok(()) => {
+                            store = updated;
+                            inventory_error = None;
+                            if let Some(s) = statuses.get_mut(&id) {
+                                s.camera.credential_key = Some(id.clone());
+                            }
+                            if let Some(w) = workers.get(&id) {
+                                let mut candidate = w.record.borrow().clone();
+                                candidate.credential_key = Some(id);
+                                w.record.send_replace(candidate);
+                            }
+                        }
+                        Err(error) => inventory_error = Some(error.to_string()),
+                    }
+                }
                 Command::Rename { id, alias } => {
                     let mut updated = store.clone();
                     match updated
@@ -461,6 +495,7 @@ fn start_worker(
     let events = events.clone();
     let poll = options.poll_interval;
     let max = options.retry_max;
+    let credentials_path = credentials::file_path(&options.inventory);
     let worker = thread::spawn(move || {
         let mut failures = 0u32;
         while !stop.load(Ordering::Acquire) {
@@ -476,7 +511,8 @@ fn start_worker(
             };
             let _ = events.try_send(Event::Connecting(record.id.clone()));
             let client = match &record.credential_key {
-                Some(key) => credentials::load(key).and_then(OnvifClient::with_credentials),
+                Some(key) => credentials::load(&credentials_path, key)
+                    .and_then(OnvifClient::with_credentials),
                 None => OnvifClient::new(),
             };
             let delay = match client.and_then(|c| c.resolve(address)) {

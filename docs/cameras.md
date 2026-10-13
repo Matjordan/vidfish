@@ -68,13 +68,19 @@ vidfish cameras resolve CAMERA_ID
 vidfish cameras forget-credentials CAMERA_ID
 ```
 
-Set the named environment variables using your OS's protected credential workflow;
-never put secret values in command arguments or check them into files. Inventory stores
-only a reference to the local camera ID. Windows credentials use Windows Credential
-Manager; Linux uses the user's kernel keyring. Linux keyring entries persist across
-process restarts but expire after the configured user-keyring lifetime and are lost
-across reboot; re-enter credentials when needed. Restricted containers may deny keyring
-access. Errors report this explicitly; there is no plaintext-file fallback.
+In the desktop, use a camera's **Camera login** button, enter the username/password,
+and select **Save login**. The app creates credential storage automatically and retries
+ONVIF resolution without restarting. There is no OS keyring setup or user-session dependency.
+
+For the current closed-system deployment, usernames/passwords are saved as plaintext in
+`cameras.credentials.json` beside `cameras.json`. Custom inventory paths use the same
+`.credentials.json` naming convention. Writes replace files atomically; corrupt files
+are preserved with a clear error. Credential files are excluded from Git and release
+packages. Listing cameras and runtime logs do not contain passwords.
+
+For CLI use, set the named environment variables and run `set-credentials` as above;
+secret values are excluded from process arguments. Inventory stores only the local camera
+ID reference. `forget-credentials` removes that camera's saved login.
 
 Authentication sends a fresh nonce and timestamp with a password digest; a challenged
 HTTP request retries once with Digest authorization. Camera clocks must agree with UTC.

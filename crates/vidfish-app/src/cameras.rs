@@ -86,6 +86,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Some(CameraStore::lock(&path)?)
     };
+    let credentials_path = vidfish_onvif::credentials::file_path(&path);
     let mut store = CameraStore::load(&path)?;
     match args.action {
         Action::Watch {
@@ -141,7 +142,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 &username_env,
                 &password_env,
             )?;
-            vidfish_onvif::credentials::save(&id, &credentials)?;
+            vidfish_onvif::credentials::save(&credentials_path, &id, &credentials)?;
             camera.credential_key = Some(id);
             store.save(&path)?;
         }
@@ -151,7 +152,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 .iter_mut()
                 .find(|c| c.id == id)
                 .ok_or("unknown camera ID")?;
-            vidfish_onvif::credentials::remove(&id)?;
+            vidfish_onvif::credentials::remove(&credentials_path, &id)?;
             camera.credential_key = None;
             store.save(&path)?;
         }
@@ -165,7 +166,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 .device_url
                 .as_deref()
                 .ok_or("manual RTSP cameras do not have an ONVIF service")?;
-            let client = client_for(camera)?;
+            let client = client_for(camera, &credentials_path)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&client.resolve(address)?)?
@@ -187,7 +188,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 .position(|c| c.id == id)
                 .ok_or("unknown camera ID")?;
             if store.cameras[index].credential_key.is_some() {
-                vidfish_onvif::credentials::remove(&id)?;
+                vidfish_onvif::credentials::remove(&credentials_path, &id)?;
             }
             store.cameras.remove(index);
             store.save(&path)?;
@@ -216,7 +217,7 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                         c.endpoint_id.as_deref() == Some(&device.endpoint_id)
                             || c.device_url.as_deref() == Some(&device.device_url)
                     })
-                    .map(client_for)
+                    .map(|camera| client_for(camera, &credentials_path))
                     .unwrap_or_else(vidfish_onvif::OnvifClient::new);
                 let result = match client.and_then(|client| client.resolve(&device.device_url)) {
                     Ok(camera) => {
@@ -250,11 +251,12 @@ pub fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
 
 fn client_for(
     camera: &vidfish_core::cameras::CameraRecord,
+    credentials_path: &std::path::Path,
 ) -> Result<vidfish_onvif::OnvifClient, vidfish_onvif::Error> {
     match &camera.credential_key {
-        Some(key) => {
-            vidfish_onvif::OnvifClient::with_credentials(vidfish_onvif::credentials::load(key)?)
-        }
+        Some(key) => vidfish_onvif::OnvifClient::with_credentials(
+            vidfish_onvif::credentials::load(credentials_path, key)?,
+        ),
         None => vidfish_onvif::OnvifClient::new(),
     }
 }

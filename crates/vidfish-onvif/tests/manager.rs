@@ -157,3 +157,48 @@ fn inventory_lock_rejects_a_second_manager_without_losing_camera_data() {
     first.join();
     assert!(CameraStore::lock(&path).is_ok());
 }
+
+#[test]
+fn runtime_login_creates_storage_and_survives_manager_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cameras.json");
+    let mut inventory = CameraStore::default();
+    let id = inventory
+        .add_manual("Bench", "rtsp://127.0.0.1/live")
+        .unwrap();
+    inventory.save(&path).unwrap();
+    let manager = Manager::start(Options::new(path.clone(), None)).unwrap();
+    manager
+        .command(Command::SaveCredentials {
+            id: id.clone(),
+            credentials: vidfish_onvif::credentials::Credentials::new(
+                "fixture-user".into(),
+                "fixture-password".into(),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    wait(&manager.snapshot(), |s| {
+        s.cameras
+            .first()
+            .is_some_and(|c| c.camera.credential_key.as_deref() == Some(&id))
+    });
+    let saved = vidfish_onvif::credentials::file_path(&path);
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&saved).unwrap()).unwrap();
+    assert_eq!(json["cameras"][&id]["username"], "fixture-user");
+    assert_eq!(json["cameras"][&id]["password"], "fixture-password");
+    assert!(
+        !serde_json::to_string(&*manager.snapshot().borrow())
+            .unwrap()
+            .contains("fixture-password")
+    );
+    manager.join();
+    let restarted = Manager::start(Options::new(path, None)).unwrap();
+    wait(&restarted.snapshot(), |s| {
+        s.cameras
+            .first()
+            .is_some_and(|c| c.camera.credential_key.as_deref() == Some(&id))
+    });
+    assert!(vidfish_onvif::credentials::load(&saved, &id).is_ok());
+    restarted.join();
+}

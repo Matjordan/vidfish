@@ -16,6 +16,7 @@ vidfish-onvif = { path = "../vidfish-onvif" }
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
+zeroize = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"

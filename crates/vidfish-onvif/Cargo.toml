@@ -16,17 +16,10 @@ sha1 = "0.10"
 time = { version = "0.3", features = ["formatting"] }
 digest_auth = "0.3"
 zeroize = "1"
-keyring = { version = "3.6", default-features = false }
+tempfile.workspace = true
 vidfish-core = { path = "../vidfish-core" }
 tokio.workspace = true
 tracing.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3.6", default-features = false, features = ["linux-native"] }
-
-[target.'cfg(windows)'.dependencies]
-keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
-
 [dev-dependencies]
 vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }
-tempfile.workspace = true

@@ -149,3 +149,60 @@ fn headless_camera_watch_reports_real_availability_and_exits_cleanly() {
     );
     assert!(vidfish_core::cameras::CameraStore::lock(&path).is_ok());
 }
+
+#[test]
+fn camera_login_cli_creates_local_storage_and_keeps_credentials_out_of_listing() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cameras.json");
+    let mut inventory = vidfish_core::cameras::CameraStore::default();
+    let id = inventory
+        .add_manual("Bench", "rtsp://127.0.0.1/live")
+        .unwrap();
+    inventory.save(&path).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vidfish"))
+            .args(["cameras", "--inventory"])
+            .arg(&path)
+            .args(args)
+            .env("VIDFISH_FIXTURE_USERNAME", "fixture-user")
+            .env("VIDFISH_FIXTURE_PASSWORD", "never-log-fixture-password")
+            .output()
+            .unwrap()
+    };
+    let saved = run(&[
+        "set-credentials",
+        &id,
+        "--username-env",
+        "VIDFISH_FIXTURE_USERNAME",
+        "--password-env",
+        "VIDFISH_FIXTURE_PASSWORD",
+    ]);
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(
+        !String::from_utf8(saved.stdout)
+            .unwrap()
+            .contains("never-log-fixture-password")
+    );
+    assert!(
+        !String::from_utf8(saved.stderr)
+            .unwrap()
+            .contains("never-log-fixture-password")
+    );
+    let list = run(&["list"]);
+    assert!(
+        !String::from_utf8(list.stdout)
+            .unwrap()
+            .contains("never-log-fixture-password")
+    );
+    let credentials = vidfish_onvif::credentials::file_path(&path);
+    assert!(vidfish_onvif::credentials::load(&credentials, &id).is_ok());
+    assert!(run(&["forget-credentials", &id]).status.success());
+    assert!(vidfish_onvif::credentials::load(&credentials, &id).is_err());
+    assert!(
+        vidfish_core::cameras::CameraStore::load(&path)
+            .unwrap()
+            .cameras[0]
+            .credential_key
+            .is_none()
+    );
+}
