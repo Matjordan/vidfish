@@ -517,18 +517,15 @@ pub fn record_camera(
             .iter()
             .find(|c| c.id == id)
             .ok_or("Unknown camera ID")?;
+        let mut camera = camera.clone();
         let resolved = match &camera.device_url {
-            Some(address) => {
-                let client = match &camera.credential_key {
-                    Some(key) => vidfish_onvif::OnvifClient::with_credentials(
-                        vidfish_onvif::credentials::load(
-                            &vidfish_onvif::credentials::file_path(&inventory),
-                            key,
-                        )?,
-                    )?,
-                    None => vidfish_onvif::OnvifClient::new()?,
-                };
-                Some(client.resolve(address)?)
+            Some(_address) => {
+                let (resolved, used_default) = vidfish_onvif::credentials::resolve(
+                    &vidfish_onvif::credentials::file_path(&inventory),
+                    &camera,
+                )?;
+                camera.use_default_credentials = used_default;
+                Some(resolved)
             }
             None => None,
         };
@@ -542,7 +539,7 @@ pub fn record_camera(
             );
         }
         let (source, codec) = crate::camera_preview::source(
-            camera,
+            &camera,
             resolved.as_ref().and_then(|c| c.profiles.first()),
             &inventory,
         )
@@ -552,7 +549,7 @@ pub fn record_camera(
         status.session_directory = Some(lease.session.directory.clone());
         let profile = resolved.as_ref().and_then(|c| c.profiles.first());
         let run_directory = lease.add_run(
-            camera,
+            &camera,
             run_id,
             match codec {
                 vidfish_media::Codec::H264 => "H264",

@@ -17,15 +17,10 @@ pub fn capture(
         profile.and_then(|p| p.snapshot_uri.as_ref()),
     ) {
         let http = (|| -> Result<_, Box<dyn std::error::Error>> {
-            let client = match &camera.credential_key {
-                Some(key) => {
-                    vidfish_onvif::OnvifClient::with_credentials(vidfish_onvif::credentials::load(
-                        &vidfish_onvif::credentials::file_path(inventory),
-                        key,
-                    )?)?
-                }
-                None => vidfish_onvif::OnvifClient::new()?,
-            };
+            let client = vidfish_onvif::credentials::client(
+                &vidfish_onvif::credentials::file_path(inventory),
+                camera,
+            )?;
             let bytes = client.snapshot(device, uri)?;
             let received_at = Instant::now();
             let mut reader =

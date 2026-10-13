@@ -1,5 +1,5 @@
 //! Independent network workers with bounded channels and retry timers.
-use crate::{Camera, Error, OnvifClient, Profile, credentials, discovery};
+use crate::{Camera, Error, Profile, credentials, discovery};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -24,6 +24,7 @@ pub enum State {
     Reconnecting,
     Offline,
     IdentityConflict,
+    AuthenticationRequired,
     Stopped,
 }
 #[derive(Clone, Serialize)]
@@ -63,6 +64,12 @@ impl Options {
     }
 }
 pub enum Command {
+    SaveDefaults {
+        credentials: Option<credentials::Credentials>,
+    },
+    ClearCredentials {
+        id: String,
+    },
     AddCamera {
         alias: String,
         address: String,
@@ -159,6 +166,7 @@ enum Event {
     Resolved(Box<CameraRecord>, Box<Camera>),
     Failed(String, String, u32, u64),
     Manual(String),
+    Authentication(String, String),
 }
 fn status(record: CameraRecord) -> CameraStatus {
     CameraStatus {
@@ -283,12 +291,62 @@ fn run(
                         Err(error) => inventory_error = Some(format!("Camera not added: {error}")),
                     }
                 }
+                Command::SaveDefaults { credentials } => {
+                    match credentials::set_defaults(
+                        &credentials::file_path(&options.inventory),
+                        credentials,
+                    ) {
+                        Ok(()) => {
+                            inventory_error = None;
+                            for worker in workers.values() {
+                                let mut candidate = worker.record.borrow().clone();
+                                candidate.use_default_credentials = false;
+                                worker.record.send_replace(candidate);
+                            }
+                        }
+                        Err(error) => inventory_error = Some(error.to_string()),
+                    }
+                }
+                Command::ClearCredentials { id } => {
+                    let mut updated = store.clone();
+                    let result = (|| -> Result<(), Error> {
+                        let camera = updated
+                            .cameras
+                            .iter_mut()
+                            .find(|camera| camera.id == id)
+                            .ok_or(Error("Unknown camera ID"))?;
+                        credentials::remove(&credentials::file_path(&options.inventory), &id)?;
+                        camera.credential_key = None;
+                        camera.use_default_credentials = false;
+                        updated
+                            .save(&options.inventory)
+                            .map_err(|_| Error("Cannot save cleared camera login"))
+                    })();
+                    match result {
+                        Ok(()) => {
+                            store = updated;
+                            inventory_error = None;
+                            if let Some(camera) =
+                                store.cameras.iter().find(|camera| camera.id == id)
+                            {
+                                if let Some(status) = statuses.get_mut(&id) {
+                                    status.camera = camera.clone();
+                                }
+                                if let Some(worker) = workers.get(&id) {
+                                    worker.record.send_replace(camera.clone());
+                                }
+                            }
+                        }
+                        Err(error) => inventory_error = Some(error.to_string()),
+                    }
+                }
                 Command::SaveCredentials { id, credentials } => {
                     let mut updated = store.clone();
                     let result = match updated.cameras.iter().position(|c| c.id == id) {
                         Some(index) => {
                             credentials::save(&credentials::file_path(&options.inventory), &id, &credentials).and_then(|()| {
                                 updated.cameras[index].credential_key = Some(id.clone());
+                                updated.cameras[index].use_default_credentials=false;
                                 updated.save(&options.inventory).map_err(|_| Error("camera login saved but inventory reference could not be saved; retry"))
                             })
                         }
@@ -300,10 +358,12 @@ fn run(
                             inventory_error = None;
                             if let Some(s) = statuses.get_mut(&id) {
                                 s.camera.credential_key = Some(id.clone());
+                                s.camera.use_default_credentials = false;
                             }
                             if let Some(w) = workers.get(&id) {
                                 let mut candidate = w.record.borrow().clone();
                                 candidate.credential_key = Some(id);
+                                candidate.use_default_credentials = false;
                                 w.record.send_replace(candidate);
                             }
                         }
@@ -431,6 +491,14 @@ fn run(
                         };
                     }
                 }
+                Event::Authentication(id, error) => {
+                    if let Some(s) = statuses.get_mut(&id) {
+                        s.state = State::AuthenticationRequired;
+                        s.error = Some(error);
+                        s.retry_seconds = None;
+                        s.profiles.clear();
+                    }
+                }
                 Event::Manual(id) => {
                     if let Some(s) = statuses.get_mut(&id) {
                         s.state = State::ManualConfigured;
@@ -471,6 +539,10 @@ fn run(
                         serial_number: camera.serial_number,
                     });
                     let mut updated = store.clone();
+                    if let Some(record) = updated.cameras.iter_mut().find(|c| c.id == candidate.id)
+                    {
+                        record.use_default_credentials = candidate.use_default_credentials;
+                    }
                     let observation = if let Some(endpoint) = &candidate.endpoint_id {
                         updated
                             .observe(
@@ -518,6 +590,14 @@ fn run(
                     }
                     if s.state != State::Available {
                         tracing::info!(camera_id = %candidate.id, "camera available; acquisition policy may start recording independently");
+                    }
+                    if let Some(worker) = workers.get(&candidate.id)
+                        && worker.record.borrow().use_default_credentials
+                            != candidate.use_default_credentials
+                    {
+                        let mut record = worker.record.borrow().clone();
+                        record.use_default_credentials = candidate.use_default_credentials;
+                        worker.record.send_replace(record);
                     }
                     s.state = State::Available;
                     s.profiles = camera.profiles;
@@ -570,22 +650,23 @@ fn start_worker(
                 continue;
             }
             let record = source.borrow_and_update().clone();
-            let Some(address) = &record.device_url else {
+            let Some(_address) = &record.device_url else {
                 let _ = events.try_send(Event::Manual(record.id));
                 wait(&stop, &mut source, poll);
                 continue;
             };
             let _ = events.try_send(Event::Connecting(record.id.clone()));
-            let client = match &record.credential_key {
-                Some(key) => credentials::load(&credentials_path, key)
-                    .and_then(OnvifClient::with_credentials),
-                None => OnvifClient::new(),
-            };
-            let delay = match client.and_then(|c| c.resolve(address)) {
-                Ok(camera) => {
+            let delay = match credentials::resolve(&credentials_path, &record) {
+                Ok((camera, used_default)) => {
                     failures = 0;
+                    let mut record = record;
+                    record.use_default_credentials = used_default;
                     let _ = events.try_send(Event::Resolved(Box::new(record), Box::new(camera)));
                     poll
+                }
+                Err(error) if error.authentication_required() => {
+                    let _ = events.try_send(Event::Authentication(record.id, error.to_string()));
+                    Duration::from_secs(86400)
                 }
                 Err(error) => {
                     failures = failures.saturating_add(1);

@@ -52,6 +52,8 @@ impl Credentials {
 struct CredentialFile {
     schema_version: u32,
     cameras: BTreeMap<String, Credentials>,
+    #[serde(default)]
+    defaults: Option<Credentials>,
 }
 
 pub fn file_path(inventory: &Path) -> PathBuf {
@@ -90,6 +92,9 @@ fn read_file(path: &Path) -> Result<CredentialFile> {
         return Err(Error(
             "unsupported camera credentials schema or too many camera entries",
         ));
+    }
+    if let Some(credentials) = &data.defaults {
+        Credentials::new(credentials.username.clone(), credentials.password.clone())?;
     }
     for (id, credentials) in &data.cameras {
         validate_id(id)?;
@@ -156,6 +161,72 @@ pub fn remove(path: &Path, camera_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Shared defaults live only in the runtime credential file, never AppConfig.
+pub fn set_defaults(path: &Path, credentials: Option<Credentials>) -> Result<()> {
+    let _lock = vidfish_core::cameras::CameraStore::lock(path)
+        .map_err(|_| Error("Camera credential file is busy"))?;
+    let mut data = read_file(path)?;
+    data.defaults = credentials;
+    write_file(path, &data)
+}
+pub fn defaults(path: &Path) -> Result<Option<Credentials>> {
+    Ok(read_file(path)?.defaults)
+}
+pub fn effective(
+    path: &Path,
+    camera: &vidfish_core::cameras::CameraRecord,
+) -> Result<Option<Credentials>> {
+    let mut data = read_file(path)?;
+    if !camera.use_default_credentials
+        && let Some(key) = &camera.credential_key
+    {
+        return data.cameras.remove(key).map(Some).ok_or(Error(
+            "Saved camera credentials are missing; enter camera login",
+        ));
+    }
+    Ok(data.defaults)
+}
+pub fn client(
+    path: &Path,
+    camera: &vidfish_core::cameras::CameraRecord,
+) -> Result<crate::OnvifClient> {
+    match effective(path, camera)? {
+        Some(login) => crate::OnvifClient::with_credentials(login),
+        None => crate::OnvifClient::new(),
+    }
+}
+/// Try the camera override first; only an authentication rejection permits one
+/// shared-default fallback. The returned choice also applies to RTSP/snapshots.
+pub fn resolve(
+    path: &Path,
+    camera: &vidfish_core::cameras::CameraRecord,
+) -> Result<(crate::Camera, bool)> {
+    let address = camera
+        .device_url
+        .as_deref()
+        .ok_or(Error("Camera has no ONVIF service"))?;
+    let result = client(path, camera).and_then(|client| client.resolve(address));
+    match result {
+        Ok(resolved) => Ok((
+            resolved,
+            camera.use_default_credentials || camera.credential_key.is_none(),
+        )),
+        Err(error)
+            if error.authentication_required()
+                && camera.credential_key.is_some()
+                && !camera.use_default_credentials =>
+        {
+            match defaults(path)? {
+                Some(login) => crate::OnvifClient::with_credentials(login)?
+                    .resolve(address)
+                    .map(|resolved| (resolved, true)),
+                None => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +277,65 @@ mod tests {
         assert!(!format!("{error:?} {error}").contains("do-not-log"));
         assert!(!error.to_string().contains("new-secret"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+    #[test]
+    fn defaults_and_overrides_can_be_changed_and_cleared_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let mut store = vidfish_core::cameras::CameraStore::default();
+        let id = store.add_manual("Bench", "rtsp://127.0.0.1/live").unwrap();
+        let mut camera = store.cameras[0].clone();
+        set_defaults(
+            &path,
+            Some(Credentials::new("shared".into(), "shared-secret".into()).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            effective(&path, &camera)
+                .unwrap()
+                .unwrap()
+                .expose(|u, _| u == "shared")
+        );
+        save(
+            &path,
+            &id,
+            &Credentials::new("override".into(), "override-secret".into()).unwrap(),
+        )
+        .unwrap();
+        camera.credential_key = Some(id.clone());
+        assert!(
+            effective(&path, &camera)
+                .unwrap()
+                .unwrap()
+                .expose(|u, _| u == "override")
+        );
+        camera.use_default_credentials = true;
+        assert!(
+            effective(&path, &camera)
+                .unwrap()
+                .unwrap()
+                .expose(|u, _| u == "shared")
+        );
+        set_defaults(&path, None).unwrap();
+        assert!(load(&path, &id).is_ok());
+        assert!(effective(&path, &camera).unwrap().is_none());
+        set_defaults(
+            &path,
+            Some(Credentials::new("new".into(), "new-secret".into()).unwrap()),
+        )
+        .unwrap();
+        remove(&path, &id).unwrap();
+        camera.credential_key = None;
+        assert!(
+            effective(&path, &camera)
+                .unwrap()
+                .unwrap()
+                .expose(|u, _| u == "new")
+        );
     }
 }

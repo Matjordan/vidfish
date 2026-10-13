@@ -27,6 +27,14 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl Error {
+    pub fn authentication_required(&self) -> bool {
+        self.0.starts_with("camera requires")
+            || self.0.starts_with("camera rejected credentials")
+            || self.0.starts_with("camera rejected authentication")
+            || self.0.starts_with("Saved camera credentials")
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
@@ -352,8 +360,17 @@ impl OnvifClient {
             .descendants()
             .any(|n| n.is_element() && n.tag_name().name() == "Fault")
         {
+            if doc
+                .descendants()
+                .filter_map(|node| node.text())
+                .any(|value| {
+                    value.contains("NotAuthorized") || value.contains("FailedAuthentication")
+                })
+            {
+                return Err(Error("camera rejected authentication; enter camera login"));
+            }
             return Err(Error(
-                "camera returned an ONVIF fault; check service support and credentials",
+                "camera returned an ONVIF fault; check service support",
             ));
         }
         Ok(xml)

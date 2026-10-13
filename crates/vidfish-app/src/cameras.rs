@@ -38,6 +38,13 @@ enum Action {
         #[arg(long)]
         device: String,
     },
+    SetDefaultCredentials {
+        #[arg(long)]
+        username_env: String,
+        #[arg(long)]
+        password_env: String,
+    },
+    ForgetDefaultCredentials,
     SetCredentials {
         id: String,
         #[arg(long)]
@@ -138,6 +145,19 @@ pub fn run(
             store.save(&path)?;
             println!("{id}");
         }
+        Action::SetDefaultCredentials {
+            username_env,
+            password_env,
+        } => {
+            let login = vidfish_onvif::credentials::Credentials::from_environment(
+                &username_env,
+                &password_env,
+            )?;
+            vidfish_onvif::credentials::set_defaults(&credentials_path, Some(login))?;
+        }
+        Action::ForgetDefaultCredentials => {
+            vidfish_onvif::credentials::set_defaults(&credentials_path, None)?
+        }
         Action::SetCredentials {
             id,
             username_env,
@@ -154,6 +174,7 @@ pub fn run(
             )?;
             vidfish_onvif::credentials::save(&credentials_path, &id, &credentials)?;
             camera.credential_key = Some(id);
+            camera.use_default_credentials = false;
             store.save(&path)?;
         }
         Action::ForgetCredentials { id } => {
@@ -164,6 +185,7 @@ pub fn run(
                 .ok_or("unknown camera ID")?;
             vidfish_onvif::credentials::remove(&credentials_path, &id)?;
             camera.credential_key = None;
+            camera.use_default_credentials = false;
             store.save(&path)?;
         }
         Action::Resolve { id } => {
@@ -269,10 +291,5 @@ fn client_for(
     camera: &vidfish_core::cameras::CameraRecord,
     credentials_path: &std::path::Path,
 ) -> Result<vidfish_onvif::OnvifClient, vidfish_onvif::Error> {
-    match &camera.credential_key {
-        Some(key) => vidfish_onvif::OnvifClient::with_credentials(
-            vidfish_onvif::credentials::load(credentials_path, key)?,
-        ),
-        None => vidfish_onvif::OnvifClient::new(),
-    }
+    vidfish_onvif::credentials::client(credentials_path, camera)
 }

@@ -289,6 +289,14 @@ impl Desktop {
                                             self.preview_state(index)
                                         ));
                                     }
+                                    if camera.state
+                                        == vidfish_onvif::manager::State::AuthenticationRequired
+                                        && touch(ui, "Enter camera login").clicked()
+                                    {
+                                        self.login_username.zeroize();
+                                        self.login_password.zeroize();
+                                        self.login_camera = Some(camera.camera.id.clone());
+                                    }
                                     if let Some(error) = &camera.error {
                                         ui.colored_label(RED, error);
                                     }
@@ -358,6 +366,15 @@ impl Desktop {
                                             )
                                         {
                                             self.message = e.to_string();
+                                        }
+                                        if touch(ui, "Clear camera login").clicked()
+                                            && let Err(error) = self.camera_control.command(
+                                                vidfish_onvif::manager::Command::ClearCredentials {
+                                                    id: camera.camera.id.clone(),
+                                                },
+                                            )
+                                        {
+                                            self.message = error.to_string();
                                         }
                                         if touch(ui, "Camera login").clicked() {
                                             self.login_username.zeroize();
@@ -547,6 +564,12 @@ impl Desktop {
             .get_or_insert(self.config.retention_days);
         egui::Window::new("Settings").open(&mut open).vscroll(true).default_size([420.0,400.0]).show(ctx,|ui|{
             ui.label(format!("Manager: {:?}",*self.status.borrow()));
+            ui.heading("Camera network and login");
+            ui.label("Shared defaults are saved separately from settings and session exports.");
+            ui.horizontal_wrapped(|ui|{
+                if touch(ui,"Set shared camera login").clicked(){self.login_username.zeroize();self.login_password.zeroize();self.login_camera=Some("shared-defaults".into());}
+                if touch(ui,"Clear shared camera login").clicked(){if let Err(error)=self.camera_control.command(vidfish_onvif::manager::Command::SaveDefaults{credentials:None}){self.message=error.to_string();}else{self.message="Clearing shared login; per-camera overrides are retained".into();}}
+            });
             ui.label("Camera adapter IPv4 (blank searches all active adapters)");ui.text_edit_singleline(&mut self.interface);
             let valid=self.interface.trim().is_empty() || self.interface.trim().parse::<std::net::Ipv4Addr>().is_ok();
             let mut output=self.config.output_directory.to_string_lossy().into_owned();ui.label("Output directory");if ui.text_edit_singleline(&mut output).changed(){self.config.output_directory=output.into();}
