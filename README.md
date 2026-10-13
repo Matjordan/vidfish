@@ -74,6 +74,8 @@ because camera URIs can contain credentials.
 
 ## Branches, CI, and releases
 
+Camera discovery and manual ONVIF resolution are described in [docs/cameras.md](docs/cameras.md).
+
 [AGENTS.md](AGENTS.md) records the per-epic branches/PRs and commit rules. Each
 verified coherent change is committed on its epic branch. Planning PRs remain drafts.
 

@@ -12,6 +12,7 @@ wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 [dependencies]
 vidfish-core = { path = "../vidfish-core" }
 vidfish-media = { path = "../vidfish-media" }
+vidfish-onvif = { path = "../vidfish-onvif" }
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
@@ -27,3 +28,4 @@ wgpu = { version = "27.0.1", optional = true, default-features = false, features
 
 [dev-dependencies]
 tempfile.workspace = true
+vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }

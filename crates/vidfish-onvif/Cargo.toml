@@ -1,0 +1,15 @@
+[package]
+name = "vidfish-onvif"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+roxmltree = "0.21"
+socket2 = "0.6"
+uuid = { version = "1", features = ["v4"] }
+serde.workspace = true
+
+[dev-dependencies]
+vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }

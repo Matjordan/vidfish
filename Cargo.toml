@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vidfish-core", "crates/vidfish-app", "crates/vidfish-media"]
+members = ["crates/vidfish-core", "crates/vidfish-app", "crates/vidfish-media", "crates/vidfish-onvif"]
 resolver = "2"
 
 [workspace.package]

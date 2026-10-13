@@ -39,6 +39,7 @@ fn conflicting_modes_and_missing_recording_output_fail_before_startup() {
         vec!["--demo", "--check"],
         vec!["--record", "rtsp://127.0.0.1:1/camera"],
         vec!["--desktop-seconds", "1"],
+        vec!["--onvif", "http://127.0.0.1/onvif", "--check"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
             .args(args)
@@ -50,5 +51,35 @@ fn conflicting_modes_and_missing_recording_output_fail_before_startup() {
                 .unwrap()
                 .contains("camera manager started")
         );
+    }
+}
+
+#[test]
+fn onvif_and_discovery_cli_resolve_fixture_without_creating_settings() {
+    let camera =
+        vidfish_media::fixtures::OnvifFixture::start("rtsp://127.0.0.1/live".into()).unwrap();
+    for args in [
+        vec!["--onvif".into(), camera.device_url.clone()],
+        vec![
+            "--discover".into(),
+            "--interface".into(),
+            "127.0.0.1".into(),
+            "--discovery-target".into(),
+            camera.discovery_address.to_string(),
+        ],
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        let camera = if json.is_array() {
+            &json[0]["camera"]
+        } else {
+            &json
+        };
+        assert_eq!(camera["serial_number"], "fixture-001");
+        assert_eq!(camera["profiles"][0]["codec"], "H264");
     }
 }
