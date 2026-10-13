@@ -98,7 +98,10 @@ pub fn save(
                     let mut writer = encoder.write_header()?;
                     writer.write_image_data(&frame.rgb)?;
                     writer.finish()?;
-                    std::fs::File::open(&path)?.sync_all()?;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)?
+                        .sync_all()?;
                     Ok(())
                 })();
                 if written.is_err() {
