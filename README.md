@@ -6,6 +6,25 @@ logging, an independently testable Tokio manager, and a GStreamer RTSP recording
 preview prototype. Automated multi-camera discovery, segmentation, reconnects,
 events, and session management remain later epics.
 
+## Target operator UI
+
+![Vidfish target operator interface](docs/target-ui.svg)
+
+[Open full-size target layout](docs/target-ui.svg) · [UI epic #4](https://github.com/Matjordan/vidfish/issues/4)
+
+This layout is the **reference design**, not a screenshot of implemented functionality. It is intended for an attended Toughpad in scientific bench or vehicle testing. Prioritize recording confidence and usable touch targets over visual fidelity where they conflict.
+
+- Four large live previews in a 2×2 grid, with single-camera fullscreen and quick camera swaps.
+- Right-hand camera roster showing all discovered cameras, independent recording state, aliases, and current preview selection (up to 16 recording, up to 4 displayed).
+- Top strip showing session, elapsed time, recording counts, and disk capacity.
+- Large **Mark + Grab All**, **Mark Event**, and **Grab All** controls with keyboard shortcuts; optional notes.
+- Collapsible event log and associated snapshot previews below the camera feeds. Show recording filenames and precise per-camera offsets in event detail.
+- Clear camera-specific failures, missing-camera indicators, reconnect status, and actual file-write health; never equate live preview with successful recording.
+- Responsive for Toughpad resolution and touchscreen interaction. The bottom panel and sidebar may collapse to preserve preview area.
+- Display changes, snapshots, notes, and browsing must not interrupt ongoing recordings.
+
+**Visual source:** The SVG is a checked-in, maintainable layout reference based on the proposed dark Vidfish UI. It uses illustrative camera placeholders, not operational camera imagery. The UI does not need to replicate ornamental styling pixel-for-pixel.
+
 ## Development
 
 Install rustup and the GStreamer development/runtime prerequisites in
