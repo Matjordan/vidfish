@@ -12,6 +12,8 @@ pub struct Views {
     pub selected_slot: usize,
     pub events_expanded: bool,
     pub cameras_collapsed: bool,
+    pub hidden_cameras: Vec<String>,
+    pub show_hidden: bool,
     pub session_label: String,
 }
 impl Default for Views {
@@ -22,6 +24,8 @@ impl Default for Views {
             selected_slot: 0,
             events_expanded: false,
             cameras_collapsed: false,
+            hidden_cameras: Vec::new(),
+            show_hidden: false,
             session_label: "Acquisition".into(),
         }
     }
@@ -29,6 +33,17 @@ impl Default for Views {
 impl Views {
     pub fn validate(&self) -> io::Result<()> {
         let mut ids = std::collections::BTreeSet::new();
+        let mut hidden = std::collections::BTreeSet::new();
+        if self.hidden_cameras.len() > 16
+            || self
+                .hidden_cameras
+                .iter()
+                .any(|id| uuid::Uuid::parse_str(id).is_err() || !hidden.insert(id))
+        {
+            return Err(io::Error::other(
+                "Hidden camera preferences must contain at most 16 unique camera IDs",
+            ));
+        }
         if self.session_label.trim().is_empty()
             || self.session_label.chars().count() > 128
             || self.schema_version != 1
@@ -112,6 +127,8 @@ mod tests {
         assert!(views.slots[0].is_none());
         views.events_expanded = true;
         views.cameras_collapsed = true;
+        views.hidden_cameras.push(views.slots[2].clone().unwrap());
+        views.show_hidden = true;
         views.save(&path).unwrap();
         assert_eq!(Views::load(&path).unwrap(), views);
         std::fs::write(&path, "{").unwrap();
