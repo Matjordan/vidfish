@@ -438,6 +438,21 @@ fn supervise(
                 retries.remove(id);
             }
         }
+        statuses.retain(|id, _| {
+            devices.iter().any(|camera| &camera.camera.id == id)
+                || running.contains_key(id)
+                || active(&path, id)
+        });
+        manual.retain(|id| {
+            statuses.contains_key(id) || devices.iter().any(|camera| &camera.camera.id == id)
+        });
+        suppressed.retain(|id| {
+            statuses.contains_key(id) || devices.iter().any(|camera| &camera.camera.id == id)
+        });
+        retries.retain(|id, _| {
+            statuses.contains_key(id) || devices.iter().any(|camera| &camera.camera.id == id)
+        });
+        logged.retain(|id, _| statuses.contains_key(id));
         for status in statuses.values() {
             let event = (status.run_id.clone(), status.state);
             if logged.get(&status.camera_id) != Some(&event) {

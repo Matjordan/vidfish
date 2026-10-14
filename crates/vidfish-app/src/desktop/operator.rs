@@ -75,11 +75,7 @@ impl Desktop {
             self.close_preview(index);
         }
         for index in 0..self.slots.len() {
-            if let Some(camera) = self
-                .camera_status
-                .cameras
-                .get(page * self.slots.len() + index)
-            {
+            if let Some(camera) = self.visible_cameras().get(page * self.slots.len() + index) {
                 self.views
                     .select_with_limit(index, camera.camera.id.clone(), self.slots.len())
                     .ok();
@@ -224,7 +220,7 @@ impl Desktop {
         });
         self.event_panel(ctx);
         let mut selected = None;
-        let camera_rows = self.camera_status.cameras.clone();
+        let camera_rows = self.visible_cameras();
         let record_rows = self.record_status.cameras.clone();
         if !self.views.cameras_collapsed {
             egui::SidePanel::right("camera-roster")
@@ -237,6 +233,12 @@ impl Desktop {
                             self.adding_camera = true;
                         }
                     });
+                    ui.horizontal_wrapped(|ui|{
+                        if touch(ui,if self.views.show_hidden {"Hide hidden"}else{"Show hidden"}).clicked(){self.views.show_hidden = !self.views.show_hidden;self.views_dirty=true;}
+                        let offline=self.offline_cleanup_candidates();
+                        ui.add_enabled_ui(!offline.is_empty(),|ui|{if touch(ui,"Clear offline cameras").clicked(){self.camera_cleanup=Some(super::camera_cleanup::Confirmation::HideOffline(offline));}});
+                    });
+                    ui.small(format!("{} hidden · cleanup never deletes media",self.views.hidden_cameras.len()));
                     ui.horizontal_wrapped(|ui| {
                         for i in 0..self.slots.len() {
                             if ui
@@ -254,10 +256,7 @@ impl Desktop {
                             }
                         }
                     });
-                    let pages = self
-                        .camera_status
-                        .cameras
-                        .len()
+                    let pages = camera_rows.len()
                         .div_ceil(self.slots.len())
                         .max(1);
                     ui.horizontal(|ui| {
@@ -303,6 +302,7 @@ impl Desktop {
                                     ))
                                     .show(ui, |ui| {
                                         ui.strong(&camera.camera.alias);
+                                        if self.views.hidden_cameras.contains(&camera.camera.id){ui.colored_label(super::theme::WARNING,"HIDDEN · shown by filter");}
                                         let (state_text, state_color) =
                                             super::theme::camera_state(camera.state);
                                         ui.colored_label(state_color, state_text);
@@ -389,11 +389,20 @@ impl Desktop {
                                         let mut editing = ctx.data(|d| {
                                             d.get_temp::<bool>(editor_id).unwrap_or(false)
                                         });
-                                        if touch(ui, "Rename / login").clicked() {
+                                        let actions=touch(ui,"Camera actions");
+                                        super::probe::button(ui,&format!("Camera actions {}",camera.camera.id),&actions);
+                                        if actions.clicked() {
                                             editing = !editing;
                                             ctx.data_mut(|d| d.insert_temp(editor_id, editing));
                                         }
                                         if editing {
+                                            let hidden=self.views.hidden_cameras.contains(&camera.camera.id);
+                                            if touch(ui,if hidden{"Restore to list"}else{"Hide from list"}).clicked(){
+                                                if hidden{self.views.hidden_cameras.retain(|id|id!=&camera.camera.id);}else{self.views.hidden_cameras.push(camera.camera.id.clone());}
+                                                self.views_dirty=true;self.message="Updated camera list preference; recording policy is unchanged".into();
+                                            }
+                                            ui.add_enabled_ui(!self.camera_recording_active(&camera.camera.id),|ui|{if touch(ui,"Forget camera…").clicked(){self.camera_cleanup=Some(super::camera_cleanup::Confirmation::Forget{id:camera.camera.id.clone(),label:camera.camera.alias.clone()});}});
+                                            ui.small("Forget requires stopped recording and confirmation.");
                                             let alias = self
                                                 .aliases
                                                 .entry(camera.camera.id.clone())

@@ -72,6 +72,9 @@ enum Action {
     },
     Remove {
         id: String,
+        /// Explicitly confirm inventory/credential removal; historical media is retained.
+        #[arg(long)]
+        confirm: bool,
     },
     Scan {
         #[arg(long)]
@@ -207,17 +210,11 @@ pub fn run(
             store.rename(&id, &alias)?;
             store.save(&path)?;
         }
-        Action::Remove { id } => {
-            let index = store
-                .cameras
-                .iter()
-                .position(|c| c.id == id)
-                .ok_or("unknown camera ID")?;
-            if store.cameras[index].credential_key.is_some() {
-                vidfish_onvif::credentials::remove(&credentials_path, &id)?;
+        Action::Remove { id, confirm } => {
+            if !confirm {
+                return Err("Forgetting a camera requires --confirm; existing recordings and history are preserved".into());
             }
-            store.cameras.remove(index);
-            store.save(&path)?;
+            vidfish_onvif::cleanup::forget(&mut store, &path, &id)?;
         }
         Action::Scan { interface, target } => {
             let report =

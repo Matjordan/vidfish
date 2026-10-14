@@ -4,9 +4,22 @@ pub(super) fn button(ui: &egui::Ui, name: &str, response: &egui::Response) {
     if ui.ctx().data(|d| {
         d.get_temp::<bool>(egui::Id::new("probe-enabled"))
             .unwrap_or(false)
-    }) && ui.is_rect_visible(response.rect)
-    {
+    }) {
+        let visible = ui.is_rect_visible(response.rect);
         ui.ctx().data_mut(|d| {
+            let rect = response.rect;
+            let clip = ui.clip_rect();
+            d.get_temp_mut_or_default::<Vec<(String, [f32; 4], [f32; 4])>>(egui::Id::new(
+                "probe-controls",
+            ))
+            .push((
+                name.into(),
+                [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                [clip.min.x, clip.min.y, clip.max.x, clip.max.y],
+            ));
+            if !visible {
+                return;
+            }
             let buttons = d
                 .get_temp_mut_or_default::<Vec<(String, [f32; 4])>>(egui::Id::new("probe-buttons"));
             buttons.push((
@@ -40,9 +53,14 @@ impl Desktop {
         let buttons = ctx
             .data(|d| d.get_temp::<Vec<(String, [f32; 4])>>(egui::Id::new("probe-buttons")))
             .unwrap_or_default();
+        let controls = ctx
+            .data(|d| {
+                d.get_temp::<Vec<(String, [f32; 4], [f32; 4])>>(egui::Id::new("probe-controls"))
+            })
+            .unwrap_or_default();
         let slots:Vec<_>=self.slots.iter().enumerate().map(|(i,s)|serde_json::json!({"camera":s.camera_id,"label":s.label,"frame":s.number,"size":s.texture.as_ref().map(|t|t.size()),"state":self.preview_state(i),"pending":s.pending.is_some()})).collect();
         let (active, peak) = vidfish_media::preview_worker_counts();
-        let snapshot = serde_json::json!({"buttons":buttons,"scale":ctx.pixels_per_point(),"fullscreen":self.fullscreen,"page":self.page,"cameras_collapsed":self.views.cameras_collapsed,"camera_count":self.camera_status.cameras.len(),"slots":slots,"active_workers":active,"peak_workers":peak,"events":self.events.len(),"session_id":self.active_session.as_ref().map(|s|&s.id),"library":self.library.probe(),"viewport":ctx.input(|i|[i.content_rect().width(),i.content_rect().height()])});
+        let snapshot = serde_json::json!({"buttons":buttons,"controls":controls,"scale":ctx.pixels_per_point(),"fullscreen":self.fullscreen,"page":self.page,"cameras_collapsed":self.views.cameras_collapsed,"hidden_cameras":self.views.hidden_cameras,"show_hidden":self.views.show_hidden,"camera_count":self.camera_status.cameras.len(),"camera_states":self.camera_status.cameras.iter().map(|c|serde_json::json!({"id":c.camera.id,"label":c.camera.alias,"state":c.state})).collect::<Vec<_>>(),"cleanup_confirmation":self.camera_cleanup.is_some(),"slots":slots,"active_workers":active,"peak_workers":peak,"events":self.events.len(),"session_id":self.active_session.as_ref().map(|s|&s.id),"library":self.library.probe(),"viewport":ctx.input(|i|[i.content_rect().width(),i.content_rect().height()])});
         let (sender, receiver) = tokio::sync::oneshot::channel();
         self.runtime.spawn_blocking(move || {
             let result = (|| -> std::io::Result<()> {

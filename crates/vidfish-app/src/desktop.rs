@@ -1,3 +1,4 @@
+mod camera_cleanup;
 mod library;
 mod operator;
 mod probe;
@@ -119,6 +120,7 @@ pub fn run(
                 camera_control,
                 aliases: Default::default(),
                 login_camera: None,
+                camera_cleanup: None,
                 login_username: zeroize::Zeroizing::new(String::new()),
                 login_password: zeroize::Zeroizing::new(String::new()),
                 adding_camera: false,
@@ -221,6 +223,7 @@ struct Desktop {
     camera_control: vidfish_onvif::manager::Controller,
     aliases: std::collections::BTreeMap<String, String>,
     login_camera: Option<String>,
+    camera_cleanup: Option<camera_cleanup::Confirmation>,
     login_username: zeroize::Zeroizing<String>,
     login_password: zeroize::Zeroizing<String>,
     config: AppConfig,
@@ -308,6 +311,7 @@ impl eframe::App for Desktop {
             });
             self.saving = Some(receiver);
         }
+        self.reconcile_camera_views();
         self.poll_view_save();
         if self.required_previews == 0 {
             let restore: Vec<_> = self
@@ -397,9 +401,14 @@ impl eframe::App for Desktop {
             d.insert_temp(
                 egui::Id::new("probe-buttons"),
                 Vec::<(String, [f32; 4])>::new(),
+            );
+            d.insert_temp(
+                egui::Id::new("probe-controls"),
+                Vec::<(String, [f32; 4], [f32; 4])>::new(),
             )
         });
         self.draw_operator(ctx);
+        self.camera_cleanup_dialog(ctx);
         self.write_probe(ctx);
         if self.adding_camera {
             egui::Window::new("Add camera")

@@ -466,3 +466,95 @@ fn shared_login_fallback_pauses_wrong_password_retries_and_preserves_overrides()
     assert!(credentials::load(&credentials::file_path(&path), &id).is_err());
     manager.join();
 }
+
+#[test]
+fn forgetting_retires_worker_and_rediscovery_assigns_new_identity_with_shared_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cameras.json");
+    let camera = OnvifFixture::start_at(
+        "rtsp://127.0.0.1/live".into(),
+        136,
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .unwrap();
+    let mut options = Options::new(path.clone(), Some(Ipv4Addr::LOCALHOST));
+    let SocketAddr::V4(target) = camera.discovery_address else {
+        panic!("IPv4 required")
+    };
+    options.target = target;
+    options.discovery_interval = Duration::from_millis(200);
+    options.poll_interval = Duration::from_millis(200);
+    let credentials_path = vidfish_onvif::credentials::file_path(&path);
+    vidfish_onvif::credentials::set_defaults(
+        &credentials_path,
+        Some(
+            vidfish_onvif::credentials::Credentials::new("shared".into(), "shared-password".into())
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    let manager = Manager::start(options.clone()).unwrap();
+    let snapshot = manager.snapshot();
+    wait(&snapshot, |s| {
+        s.cameras.len() == 1 && s.cameras[0].state == State::Available
+    });
+    let old = snapshot.borrow().cameras[0].camera.id.clone();
+    manager
+        .command(Command::Rename {
+            id: old.clone(),
+            alias: "Obsolete alias".into(),
+        })
+        .unwrap();
+    wait(&snapshot, |s| s.cameras[0].camera.alias == "Obsolete alias");
+    vidfish_onvif::credentials::save(
+        &credentials_path,
+        &old,
+        &vidfish_onvif::credentials::Credentials::new(
+            "override".into(),
+            "override-password".into(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let guard =
+        CameraStore::lock(&dir.path().join("acquisition").join(format!("{old}.record"))).unwrap();
+    manager
+        .command(Command::Forget { id: old.clone() })
+        .unwrap();
+    wait(&snapshot, |s| s.inventory_error.is_some());
+    assert!(
+        CameraStore::load(&path)
+            .unwrap()
+            .cameras
+            .iter()
+            .any(|c| c.id == old)
+    );
+    drop(guard);
+    manager
+        .command(Command::Forget { id: old.clone() })
+        .unwrap();
+    wait(&snapshot, |s| {
+        s.cameras.len() == 1
+            && s.cameras[0].camera.id != old
+            && s.cameras[0].state == State::Available
+    });
+    let new = snapshot.borrow().cameras[0].camera.clone();
+    assert_ne!(new.alias, "Obsolete alias");
+    assert!(new.credential_key.is_none());
+    assert!(new.use_default_credentials);
+    assert!(vidfish_onvif::credentials::load(&credentials_path, &old).is_err());
+    assert!(
+        vidfish_onvif::credentials::defaults(&credentials_path)
+            .unwrap()
+            .is_some()
+    );
+    manager.join();
+    let manager = Manager::start(options).unwrap();
+    wait(&manager.snapshot(), |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera.id == new.id && c.state == State::Available)
+    });
+    manager.join();
+}

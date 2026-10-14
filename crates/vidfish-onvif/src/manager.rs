@@ -39,6 +39,7 @@ pub struct CameraStatus {
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub cameras: Vec<CameraStatus>,
+    pub inventory_loaded: bool,
     pub discovery_error: Option<String>,
     pub inventory_error: Option<String>,
 }
@@ -64,6 +65,9 @@ impl Options {
     }
 }
 pub enum Command {
+    Forget {
+        id: String,
+    },
     SaveDefaults {
         credentials: Option<credentials::Credentials>,
     },
@@ -186,6 +190,7 @@ fn publish(
 ) {
     sender.send_replace(Snapshot {
         cameras: statuses.values().cloned().collect(),
+        inventory_loaded: true,
         discovery_error: discovery_error.clone(),
         inventory_error: inventory_error.clone(),
     });
@@ -218,6 +223,7 @@ fn run(
     };
     let mut statuses = BTreeMap::new();
     let mut workers = BTreeMap::new();
+    let mut retiring = Vec::<thread::JoinHandle<()>>::new();
     let (events, receiver) = mpsc::sync_channel(64);
     let mut discovery_error = None;
     let mut inventory_error = None;
@@ -234,10 +240,44 @@ fn run(
     let mut next_discovery = Instant::now();
     publish(&snapshots, &statuses, &discovery_error, &inventory_error);
     while !stop.load(Ordering::Acquire) {
+        let mut index = 0;
+        while index < retiring.len() {
+            if retiring[index].is_finished() {
+                let _ = retiring.swap_remove(index).join();
+            } else {
+                index += 1;
+            }
+        }
         let mut changed = false;
         while let Ok(command) = commands.try_recv() {
             changed = true;
             match command {
+                Command::Forget { id } => {
+                    if retiring.len() >= 64 {
+                        inventory_error = Some(
+                            "Previous camera workers are still closing; retry cleanup shortly"
+                                .into(),
+                        );
+                        continue;
+                    }
+                    match crate::cleanup::forget(&mut store, &options.inventory, &id) {
+                        Ok(()) => {
+                            inventory_error = None;
+                            statuses.remove(&id);
+                            if let Some(worker) = workers.remove(&id) {
+                                let Worker {
+                                    record,
+                                    paused: _,
+                                    thread,
+                                } = worker;
+                                drop(record);
+                                retiring.push(thread);
+                            }
+                        }
+                        Err(error) => inventory_error = Some(error.to_string()),
+                    }
+                }
+
                 Command::AddCamera {
                     alias,
                     address,
@@ -617,6 +657,9 @@ fn run(
         }
         thread::sleep(Duration::from_millis(20));
     }
+    for worker in retiring {
+        let _ = worker.join();
+    }
     for (_, worker) in workers {
         let _ = worker.thread.join();
     }
@@ -646,7 +689,7 @@ fn start_worker(
     let credentials_path = credentials::file_path(&options.inventory);
     let worker = thread::spawn(move || {
         let mut failures = 0u32;
-        while !stop.load(Ordering::Acquire) {
+        while !stop.load(Ordering::Acquire) && source.has_changed().is_ok() {
             if worker_paused.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(20));
                 continue;

@@ -535,3 +535,167 @@ fn disk_stop_prevents_writes_and_warning_policy_allows_manual_recording() {
     });
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
 }
+
+#[test]
+fn forget_requires_actual_recorder_stop_preserves_history_and_peer_and_auto_records_rediscovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let inventory = dir.path().join("cameras.json");
+    let config = AppConfig {
+        output_directory: dir.path().join("media"),
+        ..Default::default()
+    };
+    config.save(&path).unwrap();
+    let rtsp = RtspFixture::start(320, 240).unwrap();
+    let camera = OnvifFixture::start_at(
+        rtsp.uri.clone(),
+        236,
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .unwrap();
+    let peer_fixture = OnvifFixture::start_at(
+        rtsp.uri.clone(),
+        237,
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .unwrap();
+    let mut store = CameraStore::default();
+    let id = store
+        .add_onvif("Obsolete alias", &camera.device_url)
+        .unwrap();
+    let peer_id = store.add_onvif("Peer", &peer_fixture.device_url).unwrap();
+    store.save(&inventory).unwrap();
+    let mut options = Options::new(inventory.clone(), Some(Ipv4Addr::LOCALHOST));
+    let SocketAddr::V4(target) = camera.discovery_address else {
+        panic!("IPv4 required")
+    };
+    options.target = target;
+    options.discovery_interval = Duration::from_millis(200);
+    let manager = Manager::start(options).unwrap();
+    let snapshot = manager.snapshot();
+    let supervisor = Supervisor::start_with_executable(
+        path.clone(),
+        config,
+        manager.snapshot(),
+        PathBuf::from(env!("CARGO_BIN_EXE_vidfish")),
+    )
+    .unwrap();
+    let mut cleanup = Cleanup {
+        manager: Some(manager),
+        supervisor: Some(supervisor),
+    };
+    let manager = cleanup.manager.as_ref().unwrap();
+    let supervisor = cleanup.supervisor.as_ref().unwrap();
+    wait(supervisor, |s| {
+        s.cameras.len() == 2
+            && s.cameras
+                .iter()
+                .all(|c| c.state == State::Recording && c.bytes_written > 0)
+    });
+    manager
+        .command(vidfish_onvif::manager::Command::Forget { id: id.clone() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while snapshot.borrow().inventory_error.is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        CameraStore::load(&inventory)
+            .unwrap()
+            .cameras
+            .iter()
+            .any(|c| c.id == id)
+    );
+    let original = supervisor
+        .snapshot()
+        .borrow()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == id)
+        .unwrap()
+        .clone();
+    let peer = supervisor
+        .snapshot()
+        .borrow()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == peer_id)
+        .unwrap()
+        .clone();
+    supervisor
+        .controller()
+        .command(Control::Stop(id.clone()))
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera_id == id && c.state == State::Stopped)
+    });
+    let record_lock = dir.path().join("acquisition").join(format!("{id}.record"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(guard) = CameraStore::lock(&record_lock) {
+            drop(guard);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = vidfish::acquisition::read_status(&path, &id).unwrap();
+    let media = stopped.output.as_ref().unwrap();
+    let bytes = std::fs::read(media).unwrap();
+    let session = original.session_directory.as_ref().unwrap();
+    let original_run = vidfish::sessions::read(session)
+        .unwrap()
+        .runs
+        .into_iter()
+        .find(|r| r.id == original.run_id)
+        .unwrap();
+    let original_run = serde_json::to_value(original_run).unwrap();
+    let historical = session.join("events").join("retained-event.json");
+    std::fs::write(&historical, b"historical-camera-reference").unwrap();
+    manager
+        .command(vidfish_onvif::manager::Command::Forget { id: id.clone() })
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id != id
+                && c.camera_id != peer_id
+                && c.state == State::Recording
+                && c.bytes_written > 0
+        }) && s.cameras.iter().any(|c| {
+            c.camera_id == peer_id
+                && c.run_id == peer.run_id
+                && c.bytes_written > peer.bytes_written
+        })
+    });
+    let current = CameraStore::load(&inventory).unwrap();
+    let new = current.cameras.iter().find(|c| c.id != peer_id).unwrap();
+    assert_ne!(new.id, id);
+    assert_ne!(new.alias, "Obsolete alias");
+    assert!(new.credential_key.is_none());
+    assert_eq!(std::fs::read(media).unwrap(), bytes);
+    vidfish_media::inspect_recording(media).unwrap();
+    assert_eq!(
+        std::fs::read(&historical).unwrap(),
+        b"historical-camera-reference"
+    );
+    let retained = vidfish::sessions::read(session)
+        .unwrap()
+        .runs
+        .into_iter()
+        .find(|r| r.id == original.run_id)
+        .unwrap();
+    assert_eq!(serde_json::to_value(retained).unwrap(), original_run);
+    assert_eq!(
+        vidfish::sessions::current(&path)
+            .unwrap()
+            .unwrap()
+            .directory,
+        *session
+    );
+    cleanup.supervisor.take().unwrap().finish_all().unwrap();
+}
