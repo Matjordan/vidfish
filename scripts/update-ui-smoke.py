@@ -56,17 +56,21 @@ def main():
             subprocess.run([str(helper),'recover','--root',str(root)],check=True,stdout=log,stderr=log,timeout=60)
             assert not (root/'transaction.json').exists() and (root/'current.txt').read_text()==version
             # Version-confirmed actual desktop restart, without changing stored auto-record.
-            saved=json.loads(config.read_text());saved['auto_record']=False;config.write_text(json.dumps(saved));probe.unlink(missing_ok=True)
+            saved=json.loads(config.read_text());probe.unlink(missing_ok=True)
             result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=environment,stdout=log,stderr=log,timeout=90)
             assert result.returncode==0
             health=json.loads((root/'health.json').read_text());assert health['version']==version and health['desktop_startup_confirmed']
             operator.until(lambda:state().get('process_id') and not state()['updates']['startup_probation']);restarted_pid=state()['process_id'];assert json.loads(config.read_text())==saved
-            os.kill(restarted_pid,signal.SIGTERM);restarted_pid=None;time.sleep(1)
+            operator.until(lambda:len(statuses())==4 and all(s['state']=='Recording' and s['run_id']!=before[s['camera_id']][0] and s['bytes_written']>0 for s in statuses()))
+            os.kill(restarted_pid,signal.SIGTERM);restarted_pid=None
+            for p in (base/'acquisition').glob('*.json'):p.with_suffix('.stop').write_text(json.loads(p.read_text())['run_id'])
+            operator.until(lambda:all(s['state'] in ('Stopped','Failed') for s in statuses()));time.sleep(1)
+            saved['auto_record']=False;config.write_text(json.dumps(saved))
             # A replacement UI that cannot start rolls back without touching operator data.
             failed_environment=dict(environment,DISPLAY=':9999') if os.name!='nt' else None
             if failed_environment:
                 result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=failed_environment,stdout=log,stderr=log,timeout=90);assert result.returncode!=0;assert not (root/'transaction.json').exists();assert (root/'current.txt').read_text()==version
-            print('PASS: manual checks with auto disabled, real native offer/Later, four unchanged growing recorders, post-UI-exit guard, forced helper-crash recovery, confirmed desktop restart and failed-desktop rollback')
+            print('PASS: manual checks with auto disabled, real native offer/Later, four unchanged growing recorders, post-UI-exit guard, forced helper-crash recovery, confirmed desktop restart with restored recording policy and failed-desktop rollback')
         finally:
             if sys.exc_info()[0] is not None:log.flush();print((base/'smoke.log').read_text()[-10000:]);print('Probe:',state())
             if app and app.poll() is None:app.kill();app.wait(timeout=10)

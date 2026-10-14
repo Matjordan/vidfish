@@ -37,6 +37,7 @@ impl Desktop {
         if self.startup_frames > 2
             && let Some(root) = installation::installed_root()
             && !root.join("transaction.json").exists()
+            && installation::lock(&root, "operation.lock", true).is_ok()
         {
             if std::fs::read_to_string(root.join("current.txt"))
                 .is_ok_and(|v| v.trim() == installation::VERSION)
@@ -44,7 +45,7 @@ impl Desktop {
                 let _ = self
                     .record_control
                     .command(vidfish::acquisition::Control::AutoRecord(
-                        self.startup_auto_record,
+                        self.config.auto_record,
                     ));
                 self.startup_health = None;
             } else {
@@ -183,6 +184,14 @@ impl Desktop {
             {
                 self.updates.status = format!("Update recovery: {error}");
                 self.updates.open = true;
+            }
+            if self
+                .updates
+                .root
+                .as_ref()
+                .is_some_and(|r| std::fs::metadata(r).is_ok_and(|m| m.permissions().readonly()))
+            {
+                self.updates.root = None;
             }
             if self.config.automatic_update_checks
                 && !self.updates.disabled
