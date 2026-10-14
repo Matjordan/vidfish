@@ -10,3 +10,6 @@ pub mod library;
 pub mod retention;
 pub mod sessions;
 pub mod snapshots;
+
+pub mod installation;
+pub mod updater;

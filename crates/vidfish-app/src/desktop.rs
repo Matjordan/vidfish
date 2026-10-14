@@ -3,6 +3,7 @@ mod library;
 mod operator;
 mod probe;
 mod theme;
+mod updates;
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -16,6 +17,10 @@ use vidfish_core::{config::AppConfig, engine::Engine};
 use vidfish_media::{Codec, Preview, Source};
 use zeroize::Zeroize;
 
+pub struct LaunchOptions {
+    pub force_opengl: bool,
+    pub no_update_check: bool,
+}
 pub fn run(
     path: PathBuf,
     config: AppConfig,
@@ -23,8 +28,12 @@ pub fn run(
     sources: Vec<Source>,
     codec: Codec,
     seconds: Option<u64>,
-    force_opengl: bool,
+    options: LaunchOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let LaunchOptions {
+        force_opengl,
+        no_update_check,
+    } = options;
     let probe_path = std::env::var_os("VIDFISH_UI_PROBE").map(PathBuf::from);
     let window_size = std::env::var("VIDFISH_UI_SIZE")
         .ok()
@@ -143,6 +152,10 @@ pub fn run(
                 fullscreen: None,
                 page: 0,
                 show_settings: false,
+                updates: updates::Updates {
+                    disabled: no_update_check,
+                    ..Default::default()
+                },
                 library: library::Library::default(),
                 note: String::new(),
                 event_job: None,
@@ -241,6 +254,7 @@ struct Desktop {
     fullscreen: Option<usize>,
     page: usize,
     show_settings: bool,
+    updates: updates::Updates,
     library: library::Library,
     note: String,
     event_job:
@@ -408,6 +422,7 @@ impl eframe::App for Desktop {
             )
         });
         self.draw_operator(ctx);
+        self.poll_updates(ctx);
         self.camera_cleanup_dialog(ctx);
         self.write_probe(ctx);
         if self.adding_camera {

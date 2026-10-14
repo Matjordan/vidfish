@@ -1,9 +1,10 @@
 $ErrorActionPreference = 'Stop'
 if ($env:VIDFISH_VERSION -notmatch '^[0-9A-Za-z.+-]+$') { throw 'Invalid version' }
 $root = "dist/windows/vidfish-$env:VIDFISH_VERSION"
-New-Item -ItemType Directory -Force "$root/docs", "$root/gstreamer" | Out-Null
-Copy-Item target/release/vidfish.exe, README.md, scripts/launch-vidfish.cmd, scripts/benchmark-toughpad.ps1 $root/
+New-Item -ItemType Directory -Force "$root/docs", "$root/gstreamer", "$root/assets" | Out-Null
+Copy-Item target/release/vidfish.exe, target/release/vidfish-maintenance.exe, README.md, scripts/launch-vidfish.cmd, scripts/benchmark-toughpad.ps1 $root/
 Copy-Item docs/media.md, docs/cameras.md, docs/recording.md, docs/monitoring.md, docs/events.md, docs/sessions.md "$root/docs/"
+Copy-Item assets/vidfish.* "$root/assets/"
 $gst = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64
 if (-not $gst) { throw 'GStreamer runtime location missing' }
 # Keep runtime DLLs, plugins, scanner, presets, and original notices together.
@@ -26,4 +27,9 @@ try {
     & "$root/launch-vidfish.cmd" --check
     if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime launch failed' }
 } finally { $env:PATH = $oldPath; $env:GST_PLUGIN_SYSTEM_PATH_1_0 = $oldPlugins }
+python scripts/make-update-payload.py $root $env:VIDFISH_VERSION windows-x86_64
+if ($LASTEXITCODE -ne 0) { throw "Update payload generation failed" }
 Compress-Archive -Path $root -DestinationPath "vidfish-$env:VIDFISH_VERSION-windows-x86_64.zip"
+
+& "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" "/DReleaseVersion=$env:VIDFISH_VERSION" "/DBundleRoot=$((Resolve-Path $root).Path)" scripts/vidfish-installer.iss
+if ($LASTEXITCODE -ne 0) { throw "Native installer compilation failed" }
