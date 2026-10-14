@@ -100,10 +100,15 @@ impl Desktop {
         let Some(offer) = self.updates.offer.clone() else {
             return;
         };
+        let reserve = self
+            .config
+            .disk_warning_bytes
+            .max(self.config.disk_stop_bytes)
+            .saturating_add(1024 * 1024 * 1024);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (progress, samples) = std::sync::mpsc::sync_channel(16);
         self.runtime.spawn_blocking(move || {
-            let result = updater::download(&root, &offer, |n, total| {
+            let result = updater::download(&root, &offer, reserve, |n, total| {
                 let _ = progress.try_send((n, total));
             })
             .map_err(|e| e.to_string());

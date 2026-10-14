@@ -161,7 +161,12 @@ pub fn checksum(bytes: &[u8], name: &str) -> Result<String> {
     }
     found.ok_or_else(|| "Required update checksum is missing".into())
 }
-pub fn download(root: &Path, offer: &Offer, progress: impl Fn(u64, u64)) -> Result<PathBuf> {
+pub fn download(
+    root: &Path,
+    offer: &Offer,
+    reserve: u64,
+    progress: impl Fn(u64, u64),
+) -> Result<PathBuf> {
     installation::version(&offer.version)?;
     let tag = format!("v{}", offer.version);
     asset_url(&offer.url, &tag, &offer.asset)?;
@@ -178,15 +183,18 @@ pub fn download(root: &Path, offer: &Offer, progress: impl Fn(u64, u64)) -> Resu
     let sums = client.get(&offer.checksum_url).send()?.error_for_status()?;
     let hash = checksum(&bounded(sums, 1024 * 1024)?, &offer.asset)?;
     let response = client.get(&offer.url).send()?.error_for_status()?;
-    stage_download(root, offer, response, &hash, progress)
+    stage_download(root, offer, response, &hash, reserve, progress)
 }
 fn stage_download(
     root: &Path,
     offer: &Offer,
     mut response: impl Read,
     hash: &str,
+    reserve: u64,
     progress: impl Fn(u64, u64),
 ) -> Result<PathBuf> {
+    let reserve = reserve.max(1024 * 1024 * 1024);
+    space_budget(root, offer.size, reserve)?;
     let staging = root.join("staging");
     fs::create_dir_all(&staging)?;
     let temp = tempfile::tempdir_in(&staging)?;
@@ -203,6 +211,7 @@ fn stage_download(
         if total > offer.size {
             return Err("Download exceeded expected size".into());
         }
+        space_budget(&staging, offer.size - total + n as u64, reserve)?;
         file.write_all(&buffer[..n])?;
         progress(total, offer.size);
     }
@@ -215,7 +224,7 @@ fn stage_download(
     }
     let bundle = temp.path().join("bundle");
     fs::create_dir(&bundle)?;
-    extract(&archive, &bundle)?;
+    extract_budget(&archive, &bundle, reserve)?;
     let manifest = installation::verify(&bundle)?;
     if manifest.version != offer.version {
         return Err("Payload version differs from release".into());
@@ -225,9 +234,29 @@ fn stage_download(
     Ok(retained.join("bundle"))
 }
 pub fn extract(archive: &Path, destination: &Path) -> Result<()> {
+    extract_budget(archive, destination, 0)
+}
+fn space_budget(path: &Path, need: u64, reserve: u64) -> Result<()> {
+    if fs2::available_space(path)? < need.saturating_add(reserve) {
+        return Err("Insufficient staging space without consuming the recording disk reserve. Current version is unchanged; free space or update after acquisition.".into());
+    }
+    Ok(())
+}
+fn extract_budget(archive: &Path, destination: &Path, reserve: u64) -> Result<()> {
     let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
     if zip.len() > 20000 {
         return Err("Too many archive entries".into());
+    }
+    let expected_expanded = (0..zip.len()).try_fold(0u64, |total, i| -> Result<u64> {
+        Ok(total
+            .checked_add(zip.by_index(i)?.size())
+            .ok_or("Archive size overflow")?)
+    })?;
+    if expected_expanded > 4 * MAX_PAYLOAD {
+        return Err("Expanded archive exceeds limit".into());
+    }
+    if reserve > 0 {
+        space_budget(destination, expected_expanded, reserve)?;
     }
     let mut expanded = 0u64;
     let mut names = BTreeSet::new();
@@ -260,7 +289,21 @@ pub fn extract(archive: &Path, destination: &Path) -> Result<()> {
         }
         fs::create_dir_all(path.parent().ok_or("Missing parent")?)?;
         let mut out = File::create(&path)?;
-        let count = std::io::copy(&mut file, &mut out)?;
+        let mut count = 0u64;
+        let mut next_check = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            if reserve > 0 && count >= next_check {
+                space_budget(destination, 0, reserve)?;
+                next_check = count + 16 * 1024 * 1024;
+            }
+            out.write_all(&buffer[..n])?;
+            count += n as u64;
+        }
         if count != file.size() {
             return Err("Truncated archive entry".into());
         }
@@ -344,6 +387,21 @@ mod tests {
         let mut offer = parse_release(&serde_json::to_vec(&release("0.2.0")).unwrap(), "0.1.0")
             .unwrap()
             .unwrap();
+        assert!(
+            stage_download(
+                tmp.path(),
+                &offer,
+                b"abc".as_slice(),
+                &"f".repeat(64),
+                u64::MAX,
+                |_, _| {}
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("current.txt")).unwrap(),
+            b"0.1.0"
+        );
         for (bytes, size, hash) in [
             (b"abc".as_slice(), 4, "f".repeat(64)),
             (b"abc".as_slice(), 3, "f".repeat(64)),
@@ -354,7 +412,7 @@ mod tests {
             ),
         ] {
             offer.size = size;
-            assert!(stage_download(tmp.path(), &offer, bytes, &hash, |_, _| {}).is_err());
+            assert!(stage_download(tmp.path(), &offer, bytes, &hash, 0, |_, _| {}).is_err());
             assert_eq!(
                 std::fs::read(tmp.path().join("current.txt")).unwrap(),
                 b"0.1.0"

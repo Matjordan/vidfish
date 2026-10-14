@@ -91,7 +91,11 @@ continues; the updater never sends Stop All, changes auto-record policy or termi
 a recorder. Finish acquisition and stop recordings explicitly when ready. The
 pending install can be canceled while downloading or waiting; a completed verified
 payload can later be installed from the update window. Downloads stay in staging,
-never in the current bundle. Failed/partial downloads are discarded automatically.
+never in the current bundle. Staging checks free space before downloading/extracting
+and while writing, reserving the configured disk warning/stop threshold plus 1 GiB
+so an update does not deliberately consume the recording capacity reserve. Insufficient
+space rejects staging and keeps the current app running. Failed/partial downloads
+are discarded automatically.
 
 The payload is checked against the release's `SHA256SUMS`, then every bundle file is
 checked against its manifest. URLs and filenames must match the official repository
