@@ -208,16 +208,7 @@ pub fn run(
             store.save(&path)?;
         }
         Action::Remove { id } => {
-            let index = store
-                .cameras
-                .iter()
-                .position(|c| c.id == id)
-                .ok_or("unknown camera ID")?;
-            if store.cameras[index].credential_key.is_some() {
-                vidfish_onvif::credentials::remove(&credentials_path, &id)?;
-            }
-            store.cameras.remove(index);
-            store.save(&path)?;
+            vidfish_onvif::cleanup::forget(&mut store, &path, &id)?;
         }
         Action::Scan { interface, target } => {
             let report =

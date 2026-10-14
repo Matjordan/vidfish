@@ -2,6 +2,7 @@
 use base64::Engine;
 use reqwest::{Url, blocking::Client};
 use sha1::{Digest, Sha1};
+pub mod cleanup;
 pub mod credentials;
 pub mod discovery;
 pub mod manager;
