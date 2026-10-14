@@ -52,6 +52,8 @@ recording-safe maintenance. Preserve the exclusive recording gate across runtime
 checks and desktop startup confirmation; do not send Stop All or mutate operator
 settings during update. Install/uninstall ownership manifests must never claim
 scientific files or follow symlinks. Windows installer/native update smoke checks
-are implemented under `windows_tests` and remain paused. Physical Toughpad installer
+are implemented under `windows_tests`. The user explicitly authorized Windows
+checks for PR #43 (`epic/41-installers-updater`); run and fix its full Windows
+suite. The general pause still applies to other branches. Physical Toughpad installer
 verification is pending; do not close this epic until its required platform checks
 are actually complete or the user explicitly changes those acceptance criteria.
