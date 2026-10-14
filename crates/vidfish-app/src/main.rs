@@ -97,7 +97,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(probe) = &args.update_startup_health {
         let root = vidfish::installation::installed_root()
             .ok_or("Startup confirmation requires a managed install")?;
-        if probe.parent() != Some(root.as_path())
+        let canonical_root = root.canonicalize()?;
+        if probe
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .as_deref()
+            != Some(canonical_root.as_path())
             || probe.is_symlink()
             || !probe
                 .file_name()

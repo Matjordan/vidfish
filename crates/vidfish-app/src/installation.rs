@@ -47,7 +47,11 @@ pub fn root(prefix: &Path) -> PathBuf {
     prefix.join("lib/vidfish")
 }
 pub fn installed_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = std::env::current_exe().ok()?;
+    // Windows canonicalization adds a verbatim prefix that DLL/command search
+    // paths need not accept; GetModuleFileName already supplies the loaded path.
+    #[cfg(not(windows))]
+    let exe = exe.canonicalize().ok()?;
     let bundle = exe.parent()?;
     let versions = bundle.parent()?;
     let root = versions.parent()?;
