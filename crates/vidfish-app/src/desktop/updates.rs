@@ -158,7 +158,8 @@ impl Desktop {
         });
         let result = (|| -> std::io::Result<()> {
             let log = std::fs::File::create(root.join("update-helper.log"))?;
-            std::process::Command::new(helper)
+            let mut command = std::process::Command::new(helper);
+            command
                 .arg("apply")
                 .arg("--root")
                 .arg(root)
@@ -168,8 +169,11 @@ impl Desktop {
                 .arg("--config")
                 .arg(&self.path)
                 .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?;
+                .stderr(log);
+            if self.force_opengl {
+                command.arg("--opengl");
+            }
+            command.spawn()?;
             Ok(())
         })();
         match result {
@@ -217,7 +221,8 @@ impl Desktop {
         }
         if !self.updates.started {
             self.updates.started = true;
-            self.updates.root = installation::installed_root();
+            self.updates.root = installation::installed_root()
+                .filter(|r| installation::prefix_from_root(r).is_ok());
             if let Some(root) = &self.updates.root
                 && let Ok(error) = std::fs::read_to_string(root.join("update-error.txt"))
             {

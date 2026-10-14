@@ -33,6 +33,8 @@ enum Operation {
         #[arg(long)]
         relaunch: bool,
         #[arg(long)]
+        opengl: bool,
+        #[arg(long)]
         config: Option<PathBuf>,
     },
 }
@@ -45,7 +47,8 @@ fn main() -> installation::Result<()> {
             root,
             bundle,
             relaunch,
+            opengl,
             config,
-        } => installation::apply(&root, &bundle, relaunch, config.as_deref()),
+        } => installation::apply_with_renderer(&root, &bundle, relaunch, config.as_deref(), opengl),
     }
 }

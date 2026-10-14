@@ -115,7 +115,8 @@ this install lock protocol: close them explicitly before installing or updating.
 The helper stages a full version (including Windows media runtime), writes a synced
 transaction journal, atomically switches the version pointer, then checks reported
 version, isolated configuration startup and H.264/H.265/RTSP media prerequisites.
-A desktop update then relaunches Vidfish with the same config path in probation:
+A desktop update then relaunches Vidfish with the same config path and any
+`--opengl` renderer override in probation:
 recording stays gated until the actual UI renders and confirms the expected version.
 Automatic recording settings are not changed; their normal behavior resumes only
 after confirmation. Failed startup closes that probationary UI before recording can

@@ -136,6 +136,7 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
+                force_opengl,
                 interface: config
                     .camera_interface
                     .map(|ip| ip.to_string())
@@ -246,6 +247,7 @@ impl Slot {
     }
 }
 struct Desktop {
+    force_opengl: bool,
     adding_camera: bool,
     new_alias: String,
     new_address: String,

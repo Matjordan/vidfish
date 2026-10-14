@@ -623,6 +623,7 @@ fn launch(
     launcher: &Path,
     config: Option<&Path>,
     probe: Option<&Path>,
+    opengl: bool,
 ) -> Result<std::process::Child> {
     let mut cmd = if cfg!(windows)
         && launcher
@@ -651,6 +652,9 @@ fn launch(
     } else {
         Command::new(launcher)
     };
+    if opengl {
+        cmd.arg("--opengl");
+    }
     cmd.arg("--no-update-check")
         .stdout(std::process::Stdio::null());
     if let Some(probe) = probe {
@@ -676,7 +680,13 @@ fn launch(
     }
     Ok(cmd.spawn()?)
 }
-fn apply_inner(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>) -> Result<()> {
+fn apply_inner(
+    root: &Path,
+    bundle: &Path,
+    relaunch: bool,
+    config: Option<&Path>,
+    opengl: bool,
+) -> Result<()> {
     let _operation = exclusive_lock(root, "operation.lock")?;
     let _recording = exclusive_lock(root, "recording.lock")
         .map_err(|_| "Recording is still active. Update canceled; no pipeline was stopped.")?;
@@ -715,7 +725,7 @@ fn apply_inner(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>
         "launch-vidfish.sh"
     });
     let startup = (|| -> Result<()> {
-        let mut child = launch(&launcher, config, Some(probe.path()))?;
+        let mut child = launch(&launcher, config, Some(probe.path()), opengl)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let confirmed = fs::read(probe.path())
@@ -749,8 +759,17 @@ fn apply_inner(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>
     startup
 }
 pub fn apply(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>) -> Result<()> {
+    apply_with_renderer(root, bundle, relaunch, config, false)
+}
+pub fn apply_with_renderer(
+    root: &Path,
+    bundle: &Path,
+    relaunch: bool,
+    config: Option<&Path>,
+    opengl: bool,
+) -> Result<()> {
     prefix_from_root(root)?;
-    let result = apply_inner(root, bundle, relaunch, config);
+    let result = apply_inner(root, bundle, relaunch, config, opengl);
     if let Err(error) = &result {
         let _ = atomic(&root.join("update-error.txt"), error.to_string().as_bytes());
         if relaunch {
@@ -760,7 +779,7 @@ pub fn apply(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>) 
             } else {
                 "bin/vidfish"
             });
-            launch(&launcher, config, None)?;
+            launch(&launcher, config, None, opengl)?;
         }
     }
     result

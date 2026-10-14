@@ -33,7 +33,7 @@ def main():
         try:
             fixture=subprocess.Popen([str(fixture_binary),'--small'],stdout=subprocess.PIPE,stderr=log,text=True);uri=fixture.stdout.readline().strip();assert uri.startswith('rtsp://')
             for i in range(4):subprocess.run([str(binary),'cameras','--inventory',str(base/'cameras.json'),'add','--alias',f'Stream {i+1}','--rtsp',uri],check=True,stdout=log,stderr=log)
-            app=subprocess.Popen([str(binary),'--config',str(config),'--no-update-check'],env=environment,stdout=log,stderr=log);mouse.pid=app.pid
+            app=subprocess.Popen([str(binary),'--config',str(config),'--no-update-check','--opengl'],env=environment,stdout=log,stderr=log);mouse.pid=app.pid
             operator.until(lambda:len(statuses())==4 and all(s['state']=='Recording' and s['bytes_written']>0 for s in statuses()))
             before={s['camera_id']:(s['run_id'],s['bytes_written']) for s in statuses()}
             operator.until(lambda:state().get('updates'));assert not state()['updates']['open'] and not state()['updates']['checking']
@@ -48,7 +48,7 @@ def main():
             for p in (base/'acquisition').glob('*.json'):p.with_suffix('.stop').write_text(json.loads(p.read_text())['run_id'])
             operator.until(lambda:all(s['state'] in ('Stopped','Failed') for s in statuses()));time.sleep(1)
             # Kill the actual helper after its durable journal is written, before UI launch.
-            crashing=subprocess.Popen([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=environment,stdout=log,stderr=log)
+            crashing=subprocess.Popen([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--opengl','--config',str(config)],env=environment,stdout=log,stderr=log)
             deadline=time.monotonic()+40
             while time.monotonic()<deadline and not (root/'transaction.json').exists():
                 if crashing.poll() is not None:raise RuntimeError('Helper ended before crash injection')
@@ -58,10 +58,10 @@ def main():
             assert not (root/'transaction.json').exists() and (root/'current.txt').read_text()==version
             # Version-confirmed actual desktop restart, without changing stored auto-record.
             saved=json.loads(config.read_text());probe.unlink(missing_ok=True)
-            result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=environment,stdout=log,stderr=log,timeout=90)
+            result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--opengl','--config',str(config)],env=environment,stdout=log,stderr=log,timeout=90)
             assert result.returncode==0
             health=json.loads((root/'health.json').read_text());assert health['version']==version and health['desktop_startup_confirmed']
-            operator.until(lambda:state().get('process_id') and not state()['updates']['startup_probation']);restarted_pid=state()['process_id'];assert json.loads(config.read_text())==saved
+            operator.until(lambda:state().get('process_id') and not state()['updates']['startup_probation']);restarted_pid=state()['process_id'];assert json.loads(config.read_text())==saved;assert state()['opengl_override']
             operator.until(lambda:len(statuses())==4 and all(s['state']=='Recording' and s['run_id']!=before[s['camera_id']][0] and s['bytes_written']>0 for s in statuses()))
             os.kill(restarted_pid,signal.SIGTERM);restarted_pid=None
             for p in (base/'acquisition').glob('*.json'):p.with_suffix('.stop').write_text(json.loads(p.read_text())['run_id'])
@@ -70,7 +70,7 @@ def main():
             # A replacement UI that cannot start rolls back without touching operator data.
             failed_environment=dict(environment,DISPLAY=':9999') if os.name!='nt' else None
             if failed_environment:
-                result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=failed_environment,stdout=log,stderr=log,timeout=90);assert result.returncode!=0;assert not (root/'transaction.json').exists();assert (root/'current.txt').read_text()==version
+                result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--opengl','--config',str(config)],env=failed_environment,stdout=log,stderr=log,timeout=90);assert result.returncode!=0;assert not (root/'transaction.json').exists();assert (root/'current.txt').read_text()==version
             print('PASS: manual checks with auto disabled, real native offer/Later, four unchanged growing recorders, post-UI-exit guard, forced helper-crash recovery, confirmed desktop restart with restored recording policy and failed-desktop rollback')
         finally:
             if sys.exc_info()[0] is not None:
