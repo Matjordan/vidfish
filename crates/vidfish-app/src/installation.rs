@@ -297,11 +297,11 @@ exec "$r/versions/$v/launch-vidfish.sh" "$@"
         )
     }
 }
-fn executable(path: &Path) -> Result<()> {
+fn executable(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
 }
