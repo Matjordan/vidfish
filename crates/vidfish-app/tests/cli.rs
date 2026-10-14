@@ -123,7 +123,15 @@ fn camera_inventory_commands_persist_aliases_and_reject_credentials_in_urls() {
             .len(),
         1
     );
-    assert!(run(&["remove", id.trim()]).status.success());
+    assert!(!run(&["remove", id.trim()]).status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&run(&["list"]).stdout).unwrap()["cameras"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(run(&["remove", id.trim(), "--confirm"]).status.success());
 }
 
 #[test]

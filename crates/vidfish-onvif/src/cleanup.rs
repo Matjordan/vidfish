@@ -95,4 +95,26 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn failed_credential_cleanup_restores_inventory_and_retains_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cameras.json");
+        let mut store = CameraStore::default();
+        let id = store
+            .add_manual("Saved alias", "rtsp://127.0.0.1/live")
+            .unwrap();
+        store.save(&path).unwrap();
+        let credentials = credentials::file_path(&path);
+        std::fs::write(&credentials, b"corrupt-credential-file").unwrap();
+        assert!(forget(&mut store, &path, &id).is_err());
+        assert_eq!(store.cameras[0].id, id);
+        assert_eq!(
+            CameraStore::load(&path).unwrap().cameras[0].alias,
+            "Saved alias"
+        );
+        assert_eq!(
+            std::fs::read(credentials).unwrap(),
+            b"corrupt-credential-file"
+        );
+    }
 }
