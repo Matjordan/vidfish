@@ -26,7 +26,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('--bundle',required=True);ap.add_argument('--fixture',required=True);ap.add_argument('--native-installer');ap.add_argument('--previous-binary');args=ap.parse_args()
     bundle=pathlib.Path(args.bundle).resolve();fixture=pathlib.Path(args.fixture).resolve();exe='vidfish.exe' if os.name=='nt' else 'vidfish';maintenance=bundle/('vidfish-maintenance.exe' if os.name=='nt' else 'vidfish-maintenance');v=json.loads((bundle/'bundle.json').read_text())['version']
     with tempfile.TemporaryDirectory(prefix='vidfish-install-') as folder:
-        base=pathlib.Path(folder);prefix=base/'prefix with spaces';root=prefix/'lib/vidfish';settings=base/'settings';settings.mkdir();config=settings/'config.json';media=base/'scientific-data';media.mkdir();config.write_text(json.dumps(dict(output_directory=str(media),auto_record=False,segment_seconds=2,automatic_update_checks=False)))
+        base=pathlib.Path(folder);prefix=base/'prefix with spaces';root=prefix/'lib/vidfish';settings=base/'settings';settings.mkdir();config=settings/'config.json';media=base/'scientific-data';media.mkdir();config.write_text(json.dumps(dict(output_directory=str(media),auto_record=False,segment_seconds=2)))
         for name in ['cameras.credentials.json','views.json','events.json']:(settings/name).write_text('operator data\n')
         (media/'existing.mkv').write_bytes(b'precious scientific bytes');before={str(p):p.read_bytes() for p in [config,*settings.glob('*json'),media/'existing.mkv']}
         if args.previous_binary:

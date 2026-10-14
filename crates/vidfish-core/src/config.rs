@@ -14,7 +14,6 @@ pub enum DiskPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     pub schema_version: u32,
-    pub automatic_update_checks: bool,
     pub session_name: String,
     pub retention_days: Option<u32>,
     pub output_directory: PathBuf,
@@ -33,7 +32,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            automatic_update_checks: true,
             session_name: String::new(),
             retention_days: None,
             output_directory: "recordings".into(),

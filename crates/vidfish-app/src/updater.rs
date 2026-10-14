@@ -368,3 +368,67 @@ mod tests {
         }
     }
 }
+
+/// Kept outside AppConfig so an older binary can still read settings after rollback.
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Preferences {
+    pub schema_version: u32,
+    pub automatic_checks: bool,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            automatic_checks: true,
+        }
+    }
+}
+impl Preferences {
+    pub fn load(path: &Path) -> Result<Self> {
+        let preferences: Self = match File::open(path) {
+            Ok(file) => serde_json::from_slice(&bounded(file, 16384)?)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => return Err(e.into()),
+        };
+        if preferences.schema_version != 1 {
+            return Err("Unsupported update preference schema".into());
+        }
+        Ok(preferences)
+    }
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err("Unsupported update preference schema".into());
+        }
+        installation::atomic(path, &serde_json::to_vec_pretty(self)?)
+    }
+}
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+    #[test]
+    fn preferences_are_separate_and_corrupt_files_are_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config.json");
+        std::fs::write(&config, br#"{"auto_record":true}"#).unwrap();
+        let path = tmp.path().join("updates.json");
+        assert!(Preferences::load(&path).unwrap().automatic_checks);
+        Preferences {
+            automatic_checks: false,
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        assert!(!Preferences::load(&path).unwrap().automatic_checks);
+        assert_eq!(std::fs::read(&config).unwrap(), br#"{"auto_record":true}"#);
+        for bytes in [
+            b"{".as_slice(),
+            br#"{"schema_version":2}"#,
+            br#"{"unknown":true}"#,
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(Preferences::load(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+}

@@ -11,7 +11,8 @@ def main():
         base=pathlib.Path(folder);prefix=base/'prefix';root=prefix/'lib/vidfish';config=base/'config.json';probe=base/'ui.json';release=base/'release.json';log=(base/'smoke.log').open('w');fixture=None;app=None;restarted_pid=None
         subprocess.run([str(helper),'install','--prefix',str(prefix),'--bundle',str(bundle)],check=True,stdout=log,stderr=log)
         binary=root/'versions'/version/name
-        config.write_text(json.dumps(dict(output_directory=str(base/'media'),auto_record=True,segment_seconds=2,automatic_update_checks=False)))
+        config.write_text(json.dumps(dict(output_directory=str(base/'media'),auto_record=True,segment_seconds=2)))
+        (base/'updates.json').write_text(json.dumps(dict(schema_version=1,automatic_checks=False)))
         asset=f'vidfish-999.0.0-{"windows" if os.name=="nt" else "linux"}-x86_64-update.zip';url='https://github.com/Matjordan/vidfish/releases/download/v999.0.0/'
         release.write_text(json.dumps(dict(tag_name='v999.0.0',draft=False,prerelease=False,body='Synthetic release used for UI validation. No download is started.',assets=[dict(name=asset,size=100,browser_download_url=url+asset),dict(name='SHA256SUMS',size=100,browser_download_url=url+'SHA256SUMS')])))
         environment=dict(os.environ,VIDFISH_UI_PROBE=str(probe),VIDFISH_UPDATE_PROBE_RELEASE=str(release),VIDFISH_UI_SIZE='1280x800')

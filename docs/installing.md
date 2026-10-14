@@ -72,8 +72,8 @@ configured output directory. The default is `recordings` relative to the launch
 working directory; set an absolute output directory in Settings for deployment.
 Never place scientific data in an application bundle. Install/uninstall does not
 migrate or remove the operator data directories; an updated app reopens its normal
-settings and session history. No schema migration is
-introduced by this epic; unsupported existing config schemas still report an error.
+settings and session history. The separate `updates.json` stores only the automatic-check preference. No camera
+settings schema migration is introduced by this epic; unsupported existing config schemas still report an error.
 
 ## Safe in-app updates
 
@@ -82,8 +82,9 @@ Offline, current, missing-platform and prerelease results do not interrupt the U
 or show an automatic prompt. A newer compatible release displays version, release
 notes and download size. Update Now starts a download only after operator choice;
 Later dismisses that prompt for the session. Settings → Check for updates also
-works when automatic checks are disabled. Save Settings to persist the automatic
-check choice. `vidfish --no-update-check` suppresses startup checks on offline rigs.
+works when automatic checks are disabled. The automatic-check choice is saved immediately in `updates.json` beside
+the config; it is excluded from AppConfig so older binaries can still read camera
+settings after rollback. `vidfish --no-update-check` suppresses startup checks on offline rigs.
 
 While recording, the choice becomes **Download and defer until safe**. Recording
 continues; the updater never sends Stop All, changes auto-record policy or terminates

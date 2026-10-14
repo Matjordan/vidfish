@@ -2,6 +2,9 @@ use super::*;
 use vidfish::{installation, updater};
 #[derive(Default)]
 pub(super) struct Updates {
+    pub automatic_checks: bool,
+    pub preferences_dirty: bool,
+    pub preferences_saving: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
     pub checking: Option<tokio::sync::oneshot::Receiver<Result<Option<updater::Offer>, String>>>,
     pub downloading: Option<tokio::sync::oneshot::Receiver<Result<PathBuf, String>>>,
     pub progress: Option<std::sync::mpsc::Receiver<(u64, u64)>>,
@@ -126,7 +129,9 @@ impl Desktop {
         }
         // Saving, captures and events finish before the desktop closes. Maintenance also
         // waits for every process lease, then rechecks the recording gate exclusively.
-        if self.saving.is_some()
+        if self.updates.preferences_saving.is_some()
+            || self.updates.preferences_dirty
+            || self.saving.is_some()
             || self.views_saving.is_some()
             || self.event_job.is_some()
             || !self.mark_jobs.is_empty()
@@ -176,6 +181,35 @@ impl Desktop {
         }
     }
     pub(super) fn poll_updates(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &mut self.updates.preferences_saving {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if let Err(e) = result {
+                        self.updates.status = format!("Update preference was not saved: {e}");
+                        self.updates.open = true;
+                    }
+                    self.updates.preferences_saving = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.updates.preferences_saving = None;
+                    self.updates.status = "Update preference save worker stopped".into();
+                }
+                Err(_) => {}
+            }
+        }
+        if self.updates.preferences_dirty && self.updates.preferences_saving.is_none() {
+            self.updates.preferences_dirty = false;
+            let preference = updater::Preferences {
+                automatic_checks: self.updates.automatic_checks,
+                ..Default::default()
+            };
+            let path = self.path.with_file_name("updates.json");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.runtime.spawn_blocking(move || {
+                let _ = tx.send(preference.save(&path).map_err(|e| e.to_string()));
+            });
+            self.updates.preferences_saving = Some(rx);
+        }
         if !self.updates.started {
             self.updates.started = true;
             self.updates.root = installation::installed_root();
@@ -193,7 +227,7 @@ impl Desktop {
             {
                 self.updates.root = None;
             }
-            if self.config.automatic_update_checks
+            if self.updates.automatic_checks
                 && !self.updates.disabled
                 && self.updates.status.is_empty()
             {

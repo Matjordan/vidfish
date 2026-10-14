@@ -46,6 +46,8 @@ pub fn run(
         .and_then(|(w, h)| Some([w? as f32, h? as f32]))
         .filter(|s| s[0] >= 800.0 && s[1] >= 600.0 && s[0] <= 3840.0 && s[1] <= 2160.0)
         .unwrap_or([1280.0, 800.0]);
+    let update_preferences =
+        vidfish::updater::Preferences::load(&path.with_file_name("updates.json"));
     let views = vidfish_core::views::Views::load(&path.with_file_name("views.json"))?;
     let engine = {
         let _guard = runtime.enter();
@@ -101,11 +103,19 @@ pub fn run(
         let _ = force_opengl;
         eframe::Renderer::Glow
     };
+    let icon_image =
+        image::load_from_memory(include_bytes!("../../../assets/vidfish.png"))?.into_rgba8();
+    let icon = egui::IconData {
+        width: icon_image.width(),
+        height: icon_image.height(),
+        rgba: icon_image.into_raw(),
+    };
     let result = eframe::run_native(
         "Vidfish",
         eframe::NativeOptions {
             renderer,
             viewport: egui::ViewportBuilder::default()
+                .with_icon(Arc::new(icon))
                 .with_inner_size(window_size)
                 .with_min_inner_size([800.0, 600.0]),
             ..Default::default()
@@ -165,6 +175,9 @@ pub fn run(
                 show_settings: false,
                 updates: updates::Updates {
                     disabled: no_update_check,
+                    automatic_checks: update_preferences.as_ref().is_ok_and(|p|p.automatic_checks),
+                    status: update_preferences.as_ref().err().map(|e|format!("Update preferences could not be loaded: {e}. Automatic checks are disabled; camera settings are unchanged.")).unwrap_or_default(),
+                    open: update_preferences.is_err(),
                     ..Default::default()
                 },
                 library: library::Library::default(),

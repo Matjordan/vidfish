@@ -649,8 +649,8 @@ impl Desktop {
             ui.label(format!("Manager: {:?}",*self.status.borrow()));
             ui.heading("Application updates");
             ui.label(format!("Version {}",vidfish::installation::VERSION));
-            ui.checkbox(&mut self.config.automatic_update_checks,"Automatically check for stable updates at startup");
-            ui.label("Save settings to persist this choice. --no-update-check suppresses startup checks for offline rigs.");
+            if ui.checkbox(&mut self.updates.automatic_checks,"Automatically check for stable updates at startup").changed(){self.updates.preferences_dirty=true;}
+            ui.label("This choice is saved automatically, separately from camera settings. --no-update-check suppresses startup checks for offline rigs.");
             if touch(ui,"Check for updates").clicked(){check_updates = true;}
             ui.heading("Camera network and login");
             ui.label("Shared defaults are saved separately from settings and session exports.");
