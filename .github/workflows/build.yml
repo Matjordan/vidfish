@@ -60,7 +60,7 @@ jobs:
       - if: runner.os != 'Windows' || inputs.windows_tests
         run: cargo fmt --all --check
       - if: runner.os != 'Windows' || inputs.windows_tests
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: python scripts/run-cargo-tests.py clippy --locked --workspace --all-targets --all-features -- -D warnings
       - if: runner.os != 'Windows' || inputs.windows_tests
         run: python scripts/run-cargo-tests.py
       - run: cargo build --locked --release -p vidfish

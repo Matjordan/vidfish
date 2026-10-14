@@ -2,9 +2,10 @@
 from collections import deque
 import os
 import subprocess
+import sys
 
 process = subprocess.Popen(
-    ["cargo", "test", "--locked", "--workspace", "--all-features"],
+    ["cargo", *(sys.argv[1:] or ["test", "--locked", "--workspace", "--all-features"])],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,
@@ -18,5 +19,5 @@ for line in process.stdout:
 code = process.wait()
 if code and os.environ.get("GITHUB_ACTIONS") == "true":
     message = "".join(tail).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print("::error title=Rust integration tests failed::" + message, flush=True)
+    print("::error title=Cargo check failed::" + message, flush=True)
 raise SystemExit(code)
