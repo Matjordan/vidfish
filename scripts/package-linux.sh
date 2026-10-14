@@ -3,6 +3,7 @@ set -euo pipefail
 : "${VIDFISH_VERSION:?VIDFISH_VERSION must be set}"
 case "$VIDFISH_VERSION" in *[!0-9A-Za-z.+-]*) echo 'Invalid version' >&2; exit 1;; esac
 root="dist/linux/vidfish-${VIDFISH_VERSION}"
+if [ -e "$root" ]; then echo "Package directory already exists: $root. Move it aside or use a fresh version; operator files will not be repackaged." >&2; exit 1; fi
 mkdir -p "$root/docs" "$root/assets"
 cp target/release/vidfish target/release/vidfish-maintenance README.md "$root/"
 cp docs/media.md docs/cameras.md docs/recording.md docs/monitoring.md docs/events.md docs/sessions.md docs/installing.md "$root/docs/"

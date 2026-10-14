@@ -78,4 +78,10 @@ def main():
             assert (native_prefix/'bin/vidfish.cmd').exists()
             uninstaller=native_prefix/'unins000.exe';run(uninstaller,'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART');assert not (native_prefix/'bin/vidfish.cmd').exists()
             print('PASS: native per-user Windows installer/uninstaller')
-if __name__=='__main__':main()
+if __name__=='__main__':
+    try:main()
+    except Exception:
+        import traceback
+        text=traceback.format_exc().replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+        print('::error title=Installer smoke failed::'+text)
+        raise

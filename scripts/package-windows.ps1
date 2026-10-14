@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 if ($env:VIDFISH_VERSION -notmatch '^[0-9A-Za-z.+-]+$') { throw 'Invalid version' }
 $root = "dist/windows/vidfish-$env:VIDFISH_VERSION"
+if (Test-Path $root) { throw "Package directory already exists: $root. Move it aside or use a fresh version; operator files will not be repackaged." }
 New-Item -ItemType Directory -Force "$root/docs", "$root/gstreamer", "$root/assets" | Out-Null
 Copy-Item target/release/vidfish.exe, target/release/vidfish-maintenance.exe, README.md, scripts/launch-vidfish.cmd, scripts/benchmark-toughpad.ps1 $root/
 Copy-Item docs/media.md, docs/cameras.md, docs/recording.md, docs/monitoring.md, docs/events.md, docs/sessions.md, docs/installing.md "$root/docs/"

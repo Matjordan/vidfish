@@ -73,7 +73,8 @@ def main():
                 result=subprocess.run([str(helper),'apply','--root',str(root),'--bundle',str(bundle),'--relaunch','--config',str(config)],env=failed_environment,stdout=log,stderr=log,timeout=90);assert result.returncode!=0;assert not (root/'transaction.json').exists();assert (root/'current.txt').read_text()==version
             print('PASS: manual checks with auto disabled, real native offer/Later, four unchanged growing recorders, post-UI-exit guard, forced helper-crash recovery, confirmed desktop restart with restored recording policy and failed-desktop rollback')
         finally:
-            if sys.exc_info()[0] is not None:log.flush();print((base/'smoke.log').read_text()[-10000:]);print('Probe:',state())
+            if sys.exc_info()[0] is not None:
+                log.flush();diagnostic=str(sys.exc_info()[1])+'\n'+(base/'smoke.log').read_text()[-7000:]+'\nProbe: '+json.dumps(state());print(diagnostic);print('::error title=Native update smoke failed::'+diagnostic.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
             if app and app.poll() is None:app.kill();app.wait(timeout=10)
             if restarted_pid:
                 try:os.kill(restarted_pid,signal.SIGTERM)
