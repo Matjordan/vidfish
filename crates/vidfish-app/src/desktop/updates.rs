@@ -126,7 +126,10 @@ impl Desktop {
                 self.updates.status = format!("Update recovery: {error}");
                 self.updates.open = true;
             }
-            if self.config.automatic_update_checks && !self.updates.disabled {
+            if self.config.automatic_update_checks
+                && !self.updates.disabled
+                && self.updates.status.is_empty()
+            {
                 self.check_updates();
                 self.updates.open = false;
             }

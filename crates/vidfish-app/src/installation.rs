@@ -194,12 +194,22 @@ fn inventory(base: &Path, path: &Path, out: &mut BTreeMap<String, String>) -> Re
 }
 pub fn lock(root: &Path, name: &str, exclusive: bool) -> Result<File> {
     fs::create_dir_all(root)?;
+    if exclusive && fs::metadata(root)?.permissions().readonly() {
+        return Err("Install directory is read-only; use the administrator/package manager for manual updates".into());
+    }
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(root.join(name))?;
+        .open(root.join(name))
+        .or_else(|error| {
+            if !exclusive {
+                File::open(root.join(name))
+            } else {
+                Err(error)
+            }
+        })?;
     if exclusive {
         file.try_lock()?;
     } else {
@@ -225,19 +235,38 @@ pub fn recording_idle(root: &Path) -> bool {
 fn launcher(prefix: &Path) -> String {
     let r = root(prefix);
     if cfg!(windows) {
+        let r = r.display();
         format!(
-            "@echo off\r\nsetlocal\r\nset /p VIDFISH_INSTALLED_VERSION=<\"{}\\current.txt\"\r\nif exist \"{}\\transaction.json\" (\r\n  \"{}\\versions\\%VIDFISH_INSTALLED_VERSION%\\vidfish-maintenance.exe\" recover --root \"{}\"\r\n  if errorlevel 1 exit /b 1\r\n)\r\nset /p VIDFISH_INSTALLED_VERSION=<\"{}\\current.txt\"\r\ncall \"{}\\versions\\%VIDFISH_INSTALLED_VERSION%\\launch-vidfish.cmd\" %*\r\nexit /b %errorlevel%\r\n",
-            r.display(),
-            r.display(),
-            r.display(),
-            r.display(),
-            r.display(),
-            r.display()
+            r#"@echo off
+setlocal
+if exist "{r}\transaction.json" (
+  call :recover
+  if errorlevel 1 exit /b 1
+)
+set /p VIDFISH_INSTALLED_VERSION=<"{r}\current.txt"
+call "{r}\versions\%VIDFISH_INSTALLED_VERSION%\launch-vidfish.cmd" %*
+exit /b %errorlevel%
+:recover
+set /p VIDFISH_OLD_VERSION=<"{r}\previous.txt"
+"{r}\versions\%VIDFISH_OLD_VERSION%\vidfish-maintenance.exe" recover --root "{r}"
+exit /b %errorlevel%
+"#
         )
     } else {
         let quoted = r.to_string_lossy().replace('\'', "'\\''");
         format!(
-            "#!/bin/sh\nset -eu\nr='{quoted}'\nv=$(cat \"$r/current.txt\")\ncase \"$v\" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid installed version; run install.sh to repair' >&2; exit 1;; esac\nif [ -f \"$r/transaction.json\" ]; then \"$r/versions/$v/vidfish-maintenance\" recover --root \"$r\"; v=$(cat \"$r/current.txt\"); fi\nexec \"$r/versions/$v/launch-vidfish.sh\" \"$@\"\n"
+            r#"#!/bin/sh
+set -eu
+r='{quoted}'
+if [ -f "$r/transaction.json" ]; then
+  old=$(cat "$r/previous.txt")
+  case "$old" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid prior version; run install.sh to repair' >&2; exit 1;; esac
+  "$r/versions/$old/vidfish-maintenance" recover --root "$r"
+fi
+v=$(cat "$r/current.txt")
+case "$v" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid installed version; run install.sh to repair' >&2; exit 1;; esac
+exec "$r/versions/$v/launch-vidfish.sh" "$@"
+"#
         )
     }
 }
@@ -250,6 +279,7 @@ fn executable(path: &Path) -> Result<()> {
     Ok(())
 }
 fn health(bundle: &Path, expected: &str) -> Result<()> {
+    let settings = tempfile::tempdir()?;
     let binary = bundle.join(if cfg!(windows) {
         "vidfish.exe"
     } else {
@@ -265,6 +295,9 @@ fn health(bundle: &Path, expected: &str) -> Result<()> {
         cmd.args(&args)
             .env("VIDFISH_INSTALL_HEALTH", "1")
             .current_dir(bundle);
+        if args == ["--check"] {
+            cmd.arg("--config").arg(settings.path().join("config.json"));
+        }
         if cfg!(windows) {
             let path = std::env::var_os("PATH").unwrap_or_default();
             let mut paths = vec![bundle.join("gstreamer/bin")];
@@ -318,7 +351,11 @@ fn copy_bundle(bundle: &Path, destination: &Path, manifest: &Bundle) -> Result<(
         let dest = staged.join(&path);
         fs::create_dir_all(dest.parent().ok_or("Missing parent")?)?;
         fs::copy(bundle.join(path), &dest)?;
-        File::open(&dest)?.sync_all()?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&dest)?
+            .sync_all()?;
         if [
             "vidfish",
             "vidfish-maintenance",
@@ -332,6 +369,8 @@ fn copy_bundle(bundle: &Path, destination: &Path, manifest: &Bundle) -> Result<(
         }
     }
     verify(&staged)?;
+    #[cfg(unix)]
+    sync_directories(&staged)?;
     fs::rename(&staged, destination)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
@@ -365,15 +404,15 @@ fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
             .replace('%', "%%");
         files.push(("share/applications/vidfish.desktop".into(),format!("[Desktop Entry]\nType=Application\nName=Vidfish\nComment=Scientific camera acquisition\nExec=\"{path}\"\nIcon=vidfish\nTerminal=false\nCategories=Science;AudioVideo;\nStartupWMClass=Vidfish\n").into_bytes()));
     }
-    for (name, bytes) in files {
-        let path = prefix.join(&name);
+    for (name, _) in &files {
+        let path = prefix.join(name);
         if path.is_symlink() {
             return Err("Refusing a symlink in install integration files".into());
         }
         if path.exists()
             && owned
                 .files
-                .get(&name)
+                .get(name)
                 .is_none_or(|hash| digest(&path).ok().as_ref() != Some(hash))
         {
             return Err(format!(
@@ -382,6 +421,19 @@ fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
             )
             .into());
         }
+    }
+    // Persist ownership before creating integrations, allowing interrupted fresh installs to retry.
+    for (name, bytes) in &files {
+        owned
+            .files
+            .insert(name.clone(), format!("{:x}", Sha256::digest(bytes)));
+    }
+    atomic(
+        &root(prefix).join("install.json"),
+        &serde_json::to_vec_pretty(owned)?,
+    )?;
+    for (name, bytes) in files {
+        let path = prefix.join(&name);
         atomic(&path, &bytes)?;
         if name == bin {
             executable(&path)?;
@@ -453,6 +505,8 @@ fn apply_locked(root: &Path, next: &str) -> Result<()> {
     if manifest.version != next {
         return Err("Bundle directory/version mismatch".into());
     }
+    verify(&root.join("versions").join(&transaction.previous))?;
+    atomic(&root.join("previous.txt"), transaction.previous.as_bytes())?;
     atomic(
         &root.join("transaction.json"),
         &serde_json::to_vec(&transaction)?,
@@ -462,7 +516,18 @@ fn apply_locked(root: &Path, next: &str) -> Result<()> {
     match health(&bundle, next) {
         Ok(()) => {
             atomic(&root.join("previous.txt"), transaction.previous.as_bytes())?;
+            atomic(
+                &root.join("health.json"),
+                &serde_json::to_vec(
+                    &serde_json::json!({"version":next,"runtime_checks":"version, configuration startup, H.264, H.265, RTSP plugins"}),
+                )?,
+            )?;
+            if root.join("update-error.txt").is_file() {
+                fs::remove_file(root.join("update-error.txt"))?;
+            }
             fs::remove_file(root.join("transaction.json"))?;
+            #[cfg(windows)]
+            update_uninstall_version(next);
             Ok(())
         }
         Err(error) => {
@@ -590,6 +655,7 @@ pub fn uninstall(prefix: &Path) -> Result<()> {
         "transaction.json",
         "update-error.txt",
         "install.json",
+        "health.json",
     ] {
         let path = root.join(name);
         if path.is_file() {
@@ -727,4 +793,43 @@ mod tests {
         assert!(install(&prefix, &second).is_err());
         assert_eq!(fs::read(prefix.join("bin/vidfish")).unwrap(), b"user");
     }
+}
+
+#[cfg(windows)]
+fn update_uninstall_version(version: &str) {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\VidfishScientificAcquisition_is1";
+    if Command::new("reg.exe")
+        .args(["query", key])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        let _ = Command::new("reg.exe")
+            .args([
+                "add",
+                key,
+                "/v",
+                "DisplayVersion",
+                "/t",
+                "REG_SZ",
+                "/d",
+                version,
+                "/f",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+#[cfg(unix)]
+fn sync_directories(path: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_directories(&entry.path())?;
+        }
+    }
+    File::open(path)?.sync_all()
 }

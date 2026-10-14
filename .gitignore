@@ -9,3 +9,5 @@ views.json
 operator-events/
 recordings/
 acquisition/
+
+/vidfish-*-setup.exe

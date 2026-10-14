@@ -22,10 +22,9 @@ RestartApplications=no
 Source: "{#BundleRoot}\*"; DestDir: "{tmp}\vidfish-bundle"; Flags: recursesubdirs createallsubdirs deleteafterinstall
 ; A dedicated bootstrap remains available for uninstall without touching app data.
 Source: "{#BundleRoot}\vidfish-maintenance.exe"; DestDir: "{app}\native"; Flags: ignoreversion
+Source: "{#BundleRoot}\*.dll"; DestDir: "{app}\native"; Flags: ignoreversion
 [Icons]
 Name: "{userprograms}\Vidfish"; Filename: "{app}\bin\vidfish.cmd"; IconFilename: "{app}\share\icons\vidfish.ico"; WorkingDir: "{localappdata}"
-[UninstallRun]
-Filename: "{app}\native\vidfish-maintenance.exe"; Parameters: "uninstall --prefix ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "OwnedBundleUninstall"
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
@@ -39,5 +38,16 @@ begin
       'install --prefix "' + ExpandConstant('{app}') + '" --bundle "' + ExpandConstant('{tmp}\vidfish-bundle') + '"',
       '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
       RaiseException('Vidfish installation could not be completed. Close Vidfish and its recording services, check free space and write access, then retry. Existing recordings and settings are retained.');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var ExitCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then begin
+    if not Exec(ExpandConstant('{app}\native\vidfish-maintenance.exe'),
+      'uninstall --prefix "' + ExpandConstant('{app}') + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      RaiseException('Close Vidfish and recording services before uninstalling. No scientific data was removed.');
   end;
 end;
