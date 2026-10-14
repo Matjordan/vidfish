@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--fixture", required=True)
+    parser.add_argument("--size", default="1280x800")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
     with tempfile.TemporaryDirectory(prefix="vidfish-cleanup-smoke-") as folder:
@@ -53,25 +54,31 @@ def main():
 
             def start():
                 probe.unlink(missing_ok=True)
-                process = subprocess.Popen([binary, "--config", str(config)], env=dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE="1280x800"), stdout=log, stderr=log)
+                process = subprocess.Popen([binary, "--config", str(config)], env=dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=args.size), stdout=log, stderr=log)
                 mouse.pid = process.pid
-                operator.until(lambda: len(state().get("slots", [])) == 4 and all(slot["frame"] > 0 for slot in state()["slots"]))
+                try:
+                    operator.until(lambda: len(state().get("slots", [])) == 4 and all(slot["frame"] > 0 for slot in state()["slots"]))
+                except Exception:
+                    process.kill();process.wait(timeout=10)
+                    raise
                 return process
 
             def click(name, roster=False):
-                for _ in range(16):
+                for _ in range(48):
                     time.sleep(.7)
                     value = state()
-                    matches = [button for button in value.get("buttons", []) if button[0] == name and 0 < (button[1][1] + button[1][3]) / 2 < (700 if roster else 780)]
+                    controls=[control for control in value.get("controls",[]) if control[0]==name]
+                    matches=[control for control in controls if control[2][0] < (control[1][0]+control[1][2])/2 < control[2][2] and control[2][1] < (control[1][1]+control[1][3])/2 < min(control[2][3],value["viewport"][1])]
                     if matches:
-                        rect = matches[0][1]
-                        if rect[3] - rect[1] < 43:
-                            raise RuntimeError("Cleanup control is smaller than its touch target")
-                        mouse.click((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+                        rect=matches[0][1]
+                        if rect[3]-rect[1]<43:raise RuntimeError("Cleanup control is smaller than its touch target")
+                        mouse.click((rect[0]+rect[2])/2*value["scale"],(rect[1]+rect[3])/2*value["scale"])
                         time.sleep(.7)
                         return
                     if roster:
-                        mouse.scroll(3, 1160, 600)
+                        clip=controls[0][2] if controls else [value["viewport"][0]-270,390,value["viewport"][0],value["viewport"][1]-90]
+                        direction=-1 if controls and (controls[0][1][1]+controls[0][1][3])/2 < clip[1] else 1
+                        mouse.scroll(direction,(clip[0]+clip[2])/2*value["scale"],(clip[1]+min(clip[3],value["viewport"][1]-90))/2*value["scale"])
                     else:
                         time.sleep(.2)
                 raise RuntimeError("Cleanup control unavailable: " + name)
@@ -118,7 +125,7 @@ def main():
                 raise RuntimeError("Confirmed forget retained the obsolete camera")
             before = {status["camera_id"]: status["bytes_written"] for status in statuses()}
             operator.until(lambda: len(statuses()) == 4 and all(status["state"] == "Recording" and status["run_id"] == original_runs[status["camera_id"]] and status["bytes_written"] > before[status["camera_id"]] for status in statuses()))
-            print(json.dumps({"hide_restore": "passed", "bulk_offline": "hide only", "restart": "preferences persisted", "forget": "confirmed and cancelable", "active_recorder": "protected", "recording_peers": "same runs, continued progress"}))
+            print(json.dumps({"viewport":state()["viewport"],"hide_restore": "passed", "bulk_offline": "hide only", "restart": "preferences persisted", "forget": "confirmed and cancelable", "active_recorder": "protected", "recording_peers": "same runs, continued progress"}))
         finally:
             if sys.exc_info()[0] is not None and probe.exists():
                 value=json.loads(probe.read_text())

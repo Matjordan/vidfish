@@ -53,7 +53,7 @@ vidfish cameras scan --interface 192.168.1.10
 vidfish cameras list
 vidfish cameras add --alias "Bench left" --rtsp rtsp://192.168.1.20/live
 vidfish cameras rename CAMERA_ID "Vehicle left"
-vidfish cameras remove CAMERA_ID
+vidfish cameras remove CAMERA_ID --confirm
 ```
 
 Use `vidfish cameras --inventory PATH ...` for a separate inventory. The default is
@@ -165,7 +165,7 @@ For a manual H.265 camera use `cameras add --alias NAME --rtsp URI --h265`.
 ## Shared login defaults and authentication recovery
 
 In **Settings → Set shared camera login**, enter the default username/password.
-**Clear shared camera login** removes only these defaults. In a camera's **Rename / login**
+**Clear shared camera login** removes only these defaults. In a camera's **Camera actions**
 controls, **Camera login** replaces its override and **Clear camera login** removes only
 that override. CLI equivalents are `cameras set-default-credentials --username-env NAME
 --password-env NAME` and `cameras forget-default-credentials`; named environment

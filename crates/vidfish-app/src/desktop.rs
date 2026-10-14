@@ -401,6 +401,10 @@ impl eframe::App for Desktop {
             d.insert_temp(
                 egui::Id::new("probe-buttons"),
                 Vec::<(String, [f32; 4])>::new(),
+            );
+            d.insert_temp(
+                egui::Id::new("probe-controls"),
+                Vec::<(String, [f32; 4], [f32; 4])>::new(),
             )
         });
         self.draw_operator(ctx);

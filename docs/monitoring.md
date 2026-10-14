@@ -26,7 +26,7 @@ selected slot, event-panel visibility, and session display label. It contains no
 camera URLs or logins. Reducing the configured slot limit preserves other choices;
 selecting a camera from a hidden slot moves it safely into an active slot.
 
-Use **Rename / login** for a large alias editor and login action. Alias changes
+Use **Camera actions** for a large alias editor and login action. Alias changes
 persist in the inventory and update displayed names without restarting a recording
 or preview. `views.json` and inventory writes happen off the UI thread. Corrupt view
 preferences produce a startup error rather than being silently overwritten.
