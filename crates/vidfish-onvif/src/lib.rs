@@ -3,6 +3,7 @@ use base64::Engine;
 use reqwest::{Url, blocking::Client};
 use sha1::{Digest, Sha1};
 pub mod credentials;
+pub mod discovery;
 pub mod manager;
 use serde::Serialize;
 use std::{
@@ -26,6 +27,14 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl Error {
+    pub fn authentication_required(&self) -> bool {
+        self.0.starts_with("camera requires")
+            || self.0.starts_with("camera rejected credentials")
+            || self.0.starts_with("camera rejected authentication")
+            || self.0.starts_with("Saved camera credentials")
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
@@ -332,9 +341,15 @@ impl OnvifClient {
                 ));
             }
         }
-        if !response.status().is_success() {
+        let status = response.status();
+        if status == reqwest::StatusCode::FORBIDDEN {
             return Err(Error(
-                "camera rejected ONVIF operation; check service support and authentication",
+                "camera rejected authentication or permissions; check camera login",
+            ));
+        }
+        if !status.is_success() && status != reqwest::StatusCode::INTERNAL_SERVER_ERROR {
+            return Err(Error(
+                "camera rejected ONVIF operation; check service support",
             ));
         }
         let mut bytes = Vec::new();
@@ -351,8 +366,22 @@ impl OnvifClient {
             .descendants()
             .any(|n| n.is_element() && n.tag_name().name() == "Fault")
         {
+            if doc
+                .descendants()
+                .filter_map(|node| node.text())
+                .any(|value| {
+                    value.contains("NotAuthorized") || value.contains("FailedAuthentication")
+                })
+            {
+                return Err(Error("camera rejected authentication; enter camera login"));
+            }
             return Err(Error(
-                "camera returned an ONVIF fault; check service support and credentials",
+                "camera returned an ONVIF fault; check service support",
+            ));
+        }
+        if !status.is_success() {
+            return Err(Error(
+                "camera rejected ONVIF operation; check service support",
             ));
         }
         Ok(xml)
@@ -641,5 +670,20 @@ mod authentication_tests {
             .unwrap();
         assert!(!format!("{error:?} {error}").contains("do-not-log"));
         assert!(error.to_string().contains("credentials"));
+    }
+    #[test]
+    fn soap_http_500_not_authorized_is_classified_without_exposing_server_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}/onvif", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            let _ = read_request(&mut peer);
+            let body = "<Envelope><Body><Fault><Code><Value>NotAuthorized</Value></Code><Reason>private-server-message</Reason></Fault></Body></Envelope>";
+            write!(peer,"HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let error = OnvifClient::new().unwrap().resolve(&address).err().unwrap();
+        assert!(error.authentication_required());
+        assert!(!error.to_string().contains("private-server-message"));
+        worker.join().unwrap();
     }
 }

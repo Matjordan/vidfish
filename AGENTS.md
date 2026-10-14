@@ -34,3 +34,10 @@ bounded all-camera captures, editable notes and durable JSON/CSV recovery.
 Epic #6 implements durable acquisition sessions, filtered media/event browsing,
 portable event bundles, storage estimates and opt-in audited retention. Windows
 checks remain paused as specified above.
+
+Follow-ups #32–#34 and the Epic 6 release recovery-smoke fix share PR #35 on
+`fix/session-recovery-smoke`, explicitly requested by the user. They implement
+operator polish, automatic active-IPv4 discovery and shared login defaults.
+Authentication rejection pauses ONVIF retries until credentials change or the manager
+restarts. Credential values remain outside AppConfig/session metadata. Preserve
+this behavior and the continued Windows-check pause.

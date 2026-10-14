@@ -61,6 +61,23 @@ def main():
             owner = start_owner()
             status = until(lambda: (s if s.get("state") == "Recording" and s.get("bytes_written", 0) > 0 else None) if (s := read_status()) else None)
             run_id = status["run_id"]
+            session_id = status["session_id"]
+            session_directory = Path(status["session_directory"])
+            original_run_directory = Path(status["output"]).parent
+
+            def recording_directories():
+                registry = json.loads((root / "sessions.json").read_text())
+                if registry["active"] != session_id or len(registry["sessions"]) != 1:
+                    raise RuntimeError("Recorder recovery changed or duplicated the acquisition session")
+                current = read_status()
+                if current.get("session_id") != session_id or Path(current["session_directory"]) != session_directory:
+                    raise RuntimeError("Recorder did not rejoin the original session")
+                manifest = json.loads((session_directory / "manifest.json").read_text())
+                directories = {entry for entry in (session_directory / "recordings").iterdir() if entry.is_dir()}
+                if manifest["id"] != session_id or {Path(run["directory"]) for run in manifest["runs"]} != directories:
+                    raise RuntimeError("Session manifest does not match recorder run directories")
+                return directories
+
             before = status["bytes_written"]
             owner.kill()
             owner.wait(timeout=10)
@@ -76,7 +93,7 @@ def main():
                     return []
 
             finalized_before_crash = until(lambda: (events if len(events) >= 2 else None) if (events := closed_segments()) else None)
-            if len(list((root / "media").iterdir())) != 1:
+            if recording_directories() != {original_run_directory}:
                 raise RuntimeError("Owner restart created a duplicate recorder run")
             # Kill the recorder itself as well as the owner: previous closed segments
             # must survive; the restarted recorder reserves a different run directory.
@@ -100,9 +117,10 @@ def main():
             media = json.loads(info.stdout)
             if media["width"] != 1920 or media["height"] != 1080 or media["duration_seconds"] < 1:
                 raise RuntimeError("Recorder did not finalize valid 1080p media")
-            if len(list((root / "media").iterdir())) != 2:
+            recovered_run_directory = Path(status["output"]).parent
+            if recovered_run_directory == original_run_directory or recording_directories() != {original_run_directory, recovered_run_directory}:
                 raise RuntimeError("Recorder recovery created unexpected run directories")
-            print(json.dumps({"owner_crash": "survived", "reattached_run": True, "duplicate_recordings": False, "recorder_crash": "recovered", "closed_segments_preserved": len(finalized_before_crash), "gap_logged": True, "finalized_media": media}))
+            print(json.dumps({"owner_crash": "survived", "reattached_run": True, "duplicate_recordings": False, "session": "preserved across owner and recorder crashes", "recorder_crash": "recovered", "closed_segments_preserved": len(finalized_before_crash), "gap_logged": True, "finalized_media": media}))
         finally:
             for owner in owners:
                 if owner.poll() is None:

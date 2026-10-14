@@ -231,3 +231,238 @@ fn manual_camera_can_be_added_during_a_run_with_codec_and_alias_persisted() {
     assert!(store.cameras[0].manual_h265);
     manager.join();
 }
+
+/// Authentication gate checks WS-Security password digests, then forwards to the
+/// real ONVIF fixture. This keeps credential fallback tests on actual HTTP/SOAP.
+struct LoginGate {
+    address: String,
+    requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl LoginGate {
+    fn start(upstream: &str) -> Self {
+        use base64::Engine;
+        use sha1::{Digest, Sha1};
+        use std::io::{Read, Write};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        );
+        let upstream = reqwest::Url::parse(upstream).unwrap();
+        let upstream = format!(
+            "{}:{}",
+            upstream.host_str().unwrap(),
+            upstream.port().unwrap()
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let stopping = stop.clone();
+        let count = requests.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopping.load(Ordering::Acquire) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let n = stream.read(&mut buffer).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    if bytes.len() > 65536 {
+                        break;
+                    }
+                }
+                count.fetch_add(1, Ordering::Relaxed);
+                let request = String::from_utf8_lossy(&bytes);
+                let body = request.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+                let allowed = (|| -> Option<bool> {
+                    let doc = roxmltree::Document::parse(body).ok()?;
+                    let value = |name| {
+                        doc.descendants()
+                            .find(|n| n.is_element() && n.tag_name().name() == name)
+                            .and_then(|n| n.text())
+                    };
+                    let nonce = base64::engine::general_purpose::STANDARD
+                        .decode(value("Nonce")?)
+                        .ok()?;
+                    let mut digest = Sha1::new();
+                    digest.update(nonce);
+                    digest.update(value("Created")?.as_bytes());
+                    digest.update(b"gate-password");
+                    Some(
+                        value("Username")? == "gate-user"
+                            && value("Password")?
+                                == base64::engine::general_purpose::STANDARD
+                                    .encode(digest.finalize()),
+                    )
+                })();
+                if allowed == Some(true) {
+                    if let Ok(mut peer) = std::net::TcpStream::connect(&upstream) {
+                        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        peer.write_all(&bytes).unwrap();
+                        let mut response = Vec::new();
+                        let _ = peer.read_to_end(&mut response);
+                        let _ = stream.write_all(&response);
+                    }
+                } else {
+                    let _=stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"camera\", nonce=\"fixed\", algorithm=MD5, qop=\"auth\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                }
+            }
+        });
+        Self {
+            address,
+            requests,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for LoginGate {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+#[test]
+fn shared_login_fallback_pauses_wrong_password_retries_and_preserves_overrides() {
+    use vidfish_onvif::credentials::{self, Credentials};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cameras.json");
+    let fixture = OnvifFixture::start("rtsp://127.0.0.1/live".into()).unwrap();
+    let gate = LoginGate::start(&fixture.device_url);
+    let mut store = CameraStore::default();
+    let id = store.add_onvif("Login camera", &gate.address).unwrap();
+    store
+        .add_onvif("Healthy peer", &fixture.device_url)
+        .unwrap();
+    store.save(&path).unwrap();
+    let manager = Manager::start(Options::new(path.clone(), None)).unwrap();
+    let snapshot = manager.snapshot();
+    let auth = |s: &Snapshot| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera.id == id && c.state == State::AuthenticationRequired)
+    };
+    wait(&snapshot, |s| {
+        auth(s)
+            && s.cameras
+                .iter()
+                .any(|c| c.camera.alias == "Healthy peer" && c.state == State::Available)
+    });
+    manager
+        .command(Command::SaveDefaults {
+            credentials: Some(
+                Credentials::new("gate-user".into(), "wrong-password".into()).unwrap(),
+            ),
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    wait(&snapshot, auth);
+    let count = gate.requests.load(std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(1300));
+    assert_eq!(
+        gate.requests.load(std::sync::atomic::Ordering::Relaxed),
+        count,
+        "bad login retried without operator action"
+    );
+    manager
+        .command(Command::SaveDefaults {
+            credentials: Some(
+                Credentials::new("gate-user".into(), "gate-password".into()).unwrap(),
+            ),
+        })
+        .unwrap();
+    wait(&snapshot, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera.id == id && c.state == State::Available && c.camera.use_default_credentials
+        })
+    });
+    manager
+        .command(Command::SaveCredentials {
+            id: id.clone(),
+            credentials: Credentials::new("bad-override".into(), "wrong-override".into()).unwrap(),
+        })
+        .unwrap();
+    wait(&snapshot, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera.id == id
+                && c.state == State::Available
+                && c.camera.credential_key.is_some()
+                && c.camera.use_default_credentials
+        })
+    });
+    let disk = CameraStore::load(&path).unwrap();
+    let camera = disk.cameras.iter().find(|c| c.id == id).unwrap();
+    assert!(
+        credentials::effective(&credentials::file_path(&path), camera)
+            .unwrap()
+            .unwrap()
+            .expose(|u, p| u == "gate-user" && p == "gate-password")
+    );
+    let serialized = serde_json::to_string(&*snapshot.borrow()).unwrap();
+    for secret in [
+        "gate-password",
+        "wrong-password",
+        "wrong-override",
+        "bad-override",
+    ] {
+        assert!(!serialized.contains(secret));
+    }
+    manager.join();
+    let manager = Manager::start(Options::new(path.clone(), None)).unwrap();
+    let snapshot = manager.snapshot();
+    wait(&snapshot, |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera.id == id && c.state == State::Available)
+    });
+    manager
+        .command(Command::SaveCredentials {
+            id: id.clone(),
+            credentials: Credentials::new("gate-user".into(), "gate-password".into()).unwrap(),
+        })
+        .unwrap();
+    wait(&snapshot, |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera.id == id && !c.camera.use_default_credentials)
+    });
+    manager
+        .command(Command::SaveDefaults { credentials: None })
+        .unwrap();
+    assert!(credentials::load(&credentials::file_path(&path), &id).is_ok());
+    manager
+        .command(Command::ClearCredentials { id: id.clone() })
+        .unwrap();
+    wait(&snapshot, auth);
+    assert!(credentials::load(&credentials::file_path(&path), &id).is_err());
+    manager.join();
+}

@@ -1,15 +1,21 @@
 # Camera discovery prototype
 
-Select the local IPv4 address of the adapter attached to the camera network. On Windows,
-use `Get-NetIPAddress -AddressFamily IPv4`; on Linux, use `ip -4 address`. Cameras need
-UDP 3702 multicast and their HTTP/HTTPS ONVIF ports reachable through the firewall.
+Leave the adapter field blank for automatic discovery on all active non-loopback IPv4
+addresses. Each address gets its own bound multicast probe; replies are collected
+concurrently and identity/address duplicates are removed. Adapters are re-enumerated
+on each scan, so unplugging Ethernet or changing Wi-Fi needs no restart. IPv6 discovery
+is not implemented. Active virtual adapters are included to avoid hiding working camera
+networks; use an explicit local IPv4 override to restrict a scan. Partial adapter
+failures remain visible while healthy peers continue. Cameras need UDP 3702 multicast
+and HTTP/HTTPS ONVIF ports reachable through the firewall.
 
 ```sh
+vidfish --discover
 vidfish --discover --interface 192.168.1.10
 vidfish --onvif http://192.168.1.20/onvif/device_service
 ```
 
-Discovery sends a WS-Discovery probe on that adapter, collects correlated replies for
+Discovery sends a WS-Discovery probe on each selected adapter, collects correlated replies for
 two seconds, and resolves up to 16 devices. Results include endpoint identity, device
 information, H.264/H.265 media profiles, RTSP URIs, and optional snapshot URIs. Duplicate
 identity/address pairs are deduplicated; conflicting addresses remain visible for
@@ -97,9 +103,9 @@ vidfish cameras watch --seconds 30
 
 Watch emits bounded JSON status updates until Ctrl+C or the optional time limit.
 The desktop and `--service` start the same camera manager independently of previews.
-Existing ONVIF inventory entries are polled even when discovery is disabled. To enable
-continuous discovery in the desktop/service, enter the local adapter IPv4 in settings,
-save, and restart. Custom `--config` files use `cameras.json` in the same directory.
+Existing ONVIF inventory entries are polled independently of discovery. Continuous
+discovery is enabled by default in the desktop/service. An explicit adapter override
+in settings takes effect after saving and restarting the manager. Custom `--config` files use `cameras.json` in the same directory.
 A file lock permits one manager or inventory writer at a time. Stop the desktop/service/
 watch before editing that inventory with CLI commands; concurrent read-only listing and
 resolution remain available.
@@ -155,3 +161,33 @@ directories. Durable segment indexes, disk warning/stop policy, and recording ga
 described in [continuous recording](recording.md). Existing scientific data is never
 overwritten or deleted. Full session organization remains later work.
 For a manual H.265 camera use `cameras add --alias NAME --rtsp URI --h265`.
+
+## Shared login defaults and authentication recovery
+
+In **Settings → Set shared camera login**, enter the default username/password.
+**Clear shared camera login** removes only these defaults. In a camera's **Rename / login**
+controls, **Camera login** replaces its override and **Clear camera login** removes only
+that override. CLI equivalents are `cameras set-default-credentials --username-env NAME
+--password-env NAME` and `cameras forget-default-credentials`; named environment
+variables keep password values out of command arguments.
+
+An explicit camera override is tried first. An authentication rejection permits one
+shared-default fallback; the successful choice is remembered for ONVIF, RTSP and
+snapshot requests. Cameras without overrides use shared defaults when configured.
+Rejected ONVIF authentication leaves the camera visible with **Authentication required** and
+an **Enter camera login** action. Automatic authentication retries pause until an
+operator changes credentials (or the manager restarts); discovery and healthy cameras
+continue. This prevents repeatedly submitting wrong passwords. Network failures retain
+bounded reconnect backoff and stay distinct from authentication failures. Generic SOAP
+service faults do not trigger a password fallback.
+
+Defaults and overrides live in the existing automatically provisioned plaintext runtime
+credential file, as approved for this closed deployment. They are excluded from
+AppConfig, view preferences, scientific session metadata, event exports and application
+errors. Changing credentials never reconfigures an active recording pipeline; use them
+on the next connection/run. Credentials are not included in release packages.
+
+Linux tests exercise multiple bound loopback addresses and adapter-failure isolation,
+authenticated SOAP fallback, wrong-password retry suppression, independent clearing,
+restart persistence, and metadata redaction. They do not prove physical multi-NIC
+multicast delivery. Windows test execution remains paused by user direction.

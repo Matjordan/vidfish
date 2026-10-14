@@ -23,6 +23,8 @@ pub struct CameraRecord {
     pub device_url: Option<String>,
     pub manual_rtsp: Option<String>,
     pub credential_key: Option<String>,
+    #[serde(default)]
+    pub use_default_credentials: bool,
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -250,6 +252,7 @@ impl CameraStore {
             device_url: Some(address.into()),
             manual_rtsp: None,
             credential_key: None,
+            use_default_credentials: false,
         };
         let mut next = self.clone();
         next.cameras.push(camera);
@@ -269,6 +272,7 @@ impl CameraStore {
             device_url: None,
             manual_rtsp: Some(uri.into()),
             credential_key: None,
+            use_default_credentials: false,
         });
         next.validate()?;
         *self = next;
@@ -286,6 +290,7 @@ impl CameraStore {
             device_url: Some(device_url.into()),
             manual_rtsp: None,
             credential_key: None,
+            use_default_credentials: false,
         });
         next.validate()?;
         *self = next;

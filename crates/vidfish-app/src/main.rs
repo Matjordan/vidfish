@@ -26,7 +26,7 @@ struct Args {
     /// Resolve a manually supplied ONVIF device service URL without discovery.
     #[arg(long)]
     onvif: Option<String>,
-    /// Local IPv4 address of the camera-network adapter (required for discovery).
+    /// Optional local IPv4 adapter override; blank probes all active IPv4 adapters.
     #[arg(long, requires = "discover")]
     interface: Option<std::net::Ipv4Addr>,
     /// Discovery destination; override only for a known unicast camera or fixture.
@@ -75,6 +75,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .json()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -105,14 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::to_string_pretty(&client.resolve(&address)?)?
             );
         } else {
-            let interface = args.interface.ok_or(
-                "discovery needs --interface LOCAL_IPV4; choose the camera-network adapter",
-            )?;
-            let devices = vidfish_onvif::discover(
-                interface,
+            let report = vidfish_onvif::discovery::selected(
+                args.interface,
                 args.discovery_target,
                 std::time::Duration::from_secs(2),
             )?;
+            for warning in report.warnings {
+                tracing::warn!("{warning}");
+            }
+            let devices = report.cameras;
             let results: Vec<_> = devices
                 .into_iter()
                 .map(|device| match client.resolve(&device.device_url) {

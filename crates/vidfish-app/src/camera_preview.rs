@@ -31,16 +31,17 @@ pub fn source(
             "Camera has no available RTSP profile; check login or camera connection".into(),
         );
     };
-    let source = match &camera.credential_key {
-        Some(id) => {
-            vidfish_onvif::credentials::load(&vidfish_onvif::credentials::file_path(inventory), id)
-                .map_err(|error| error.to_string())?
-                .expose(|username, password| Source::AuthenticatedRtsp {
-                    uri,
-                    username: zeroize::Zeroizing::new(username.into()),
-                    password: zeroize::Zeroizing::new(password.into()),
-                })
-        }
+    let source = match vidfish_onvif::credentials::effective(
+        &vidfish_onvif::credentials::file_path(inventory),
+        camera,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        Some(login) => login.expose(|username, password| Source::AuthenticatedRtsp {
+            uri,
+            username: zeroize::Zeroizing::new(username.into()),
+            password: zeroize::Zeroizing::new(password.into()),
+        }),
         None => Source::Rtsp(uri),
     };
     Ok((source, codec))

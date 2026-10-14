@@ -38,6 +38,13 @@ enum Action {
         #[arg(long)]
         device: String,
     },
+    SetDefaultCredentials {
+        #[arg(long)]
+        username_env: String,
+        #[arg(long)]
+        password_env: String,
+    },
+    ForgetDefaultCredentials,
     SetCredentials {
         id: String,
         #[arg(long)]
@@ -68,7 +75,7 @@ enum Action {
     },
     Scan {
         #[arg(long)]
-        interface: Ipv4Addr,
+        interface: Option<Ipv4Addr>,
         #[arg(long, default_value = "239.255.255.250:3702")]
         target: SocketAddrV4,
     },
@@ -138,6 +145,19 @@ pub fn run(
             store.save(&path)?;
             println!("{id}");
         }
+        Action::SetDefaultCredentials {
+            username_env,
+            password_env,
+        } => {
+            let login = vidfish_onvif::credentials::Credentials::from_environment(
+                &username_env,
+                &password_env,
+            )?;
+            vidfish_onvif::credentials::set_defaults(&credentials_path, Some(login))?;
+        }
+        Action::ForgetDefaultCredentials => {
+            vidfish_onvif::credentials::set_defaults(&credentials_path, None)?
+        }
         Action::SetCredentials {
             id,
             username_env,
@@ -154,6 +174,7 @@ pub fn run(
             )?;
             vidfish_onvif::credentials::save(&credentials_path, &id, &credentials)?;
             camera.credential_key = Some(id);
+            camera.use_default_credentials = false;
             store.save(&path)?;
         }
         Action::ForgetCredentials { id } => {
@@ -164,6 +185,7 @@ pub fn run(
                 .ok_or("unknown camera ID")?;
             vidfish_onvif::credentials::remove(&credentials_path, &id)?;
             camera.credential_key = None;
+            camera.use_default_credentials = false;
             store.save(&path)?;
         }
         Action::Resolve { id } => {
@@ -172,15 +194,8 @@ pub fn run(
                 .iter()
                 .find(|c| c.id == id)
                 .ok_or("unknown camera ID")?;
-            let address = camera
-                .device_url
-                .as_deref()
-                .ok_or("manual RTSP cameras do not have an ONVIF service")?;
-            let client = client_for(camera, &credentials_path)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&client.resolve(address)?)?
-            );
+            let (resolved, _) = vidfish_onvif::credentials::resolve(&credentials_path, camera)?;
+            println!("{}", serde_json::to_string_pretty(&resolved)?);
         }
         Action::Add { alias, rtsp, h265 } => {
             let id = store.add_manual(&alias, &rtsp)?;
@@ -205,7 +220,12 @@ pub fn run(
             store.save(&path)?;
         }
         Action::Scan { interface, target } => {
-            let found = vidfish_onvif::discover(interface, target, Duration::from_secs(2))?;
+            let report =
+                vidfish_onvif::discovery::selected(interface, target, Duration::from_secs(2))?;
+            for warning in report.warnings {
+                tracing::warn!("{warning}");
+            }
+            let found = report.cameras;
             // Duplicate UUIDs at different addresses are quarantined before any mutation.
             let mut addresses =
                 std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
@@ -264,10 +284,5 @@ fn client_for(
     camera: &vidfish_core::cameras::CameraRecord,
     credentials_path: &std::path::Path,
 ) -> Result<vidfish_onvif::OnvifClient, vidfish_onvif::Error> {
-    match &camera.credential_key {
-        Some(key) => vidfish_onvif::OnvifClient::with_credentials(
-            vidfish_onvif::credentials::load(credentials_path, key)?,
-        ),
-        None => vidfish_onvif::OnvifClient::new(),
-    }
+    vidfish_onvif::credentials::client(credentials_path, camera)
 }

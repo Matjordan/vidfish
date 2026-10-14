@@ -14,7 +14,7 @@ fn check_runs_without_display_and_does_not_create_settings() {
         .unwrap();
     assert!(result.status.success(), "{:?}", result);
     assert!(!path.exists());
-    let logs = String::from_utf8(result.stdout).unwrap();
+    let logs = String::from_utf8(result.stderr).unwrap();
     assert!(logs.contains("camera manager started"));
     assert!(logs.contains("camera manager stopped"));
 }
@@ -70,6 +70,7 @@ fn onvif_and_discovery_cli_resolve_fixture_without_creating_settings() {
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
             .args(args)
+            .env("RUST_LOG", "info")
             .output()
             .unwrap();
         assert!(result.status.success(), "{result:?}");
@@ -198,9 +199,35 @@ fn camera_login_cli_creates_local_storage_and_keeps_credentials_out_of_listing()
             .contains("never-log-fixture-password")
     );
     let credentials = vidfish_onvif::credentials::file_path(&path);
+    let defaults = run(&[
+        "set-default-credentials",
+        "--username-env",
+        "VIDFISH_FIXTURE_USERNAME",
+        "--password-env",
+        "VIDFISH_FIXTURE_PASSWORD",
+    ]);
+    assert!(defaults.status.success());
+    assert!(!String::from_utf8_lossy(&defaults.stdout).contains("never-log-fixture-password"));
+    assert!(!String::from_utf8_lossy(&defaults.stderr).contains("never-log-fixture-password"));
+    assert!(
+        vidfish_onvif::credentials::defaults(&credentials)
+            .unwrap()
+            .is_some()
+    );
     assert!(vidfish_onvif::credentials::load(&credentials, &id).is_ok());
     assert!(run(&["forget-credentials", &id]).status.success());
     assert!(vidfish_onvif::credentials::load(&credentials, &id).is_err());
+    assert!(
+        vidfish_onvif::credentials::defaults(&credentials)
+            .unwrap()
+            .is_some()
+    );
+    assert!(run(&["forget-default-credentials"]).status.success());
+    assert!(
+        vidfish_onvif::credentials::defaults(&credentials)
+            .unwrap()
+            .is_none()
+    );
     assert!(
         vidfish_core::cameras::CameraStore::load(&path)
             .unwrap()
