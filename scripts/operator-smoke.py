@@ -198,7 +198,7 @@ def main():
             def start(size):
                 probe.unlink(missing_ok=True)
                 env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=size)
-                app = subprocess.Popen([binary, "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
+                app = subprocess.Popen([binary, "--no-update-check", "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
                 apps.append(app)
                 mouse.pid = app.pid
                 return app

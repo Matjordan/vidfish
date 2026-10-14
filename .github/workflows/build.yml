@@ -74,7 +74,7 @@ jobs:
           ./target/release/vidfish --check
           ./target/release/vidfish --media-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/media-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --desktop
-          xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5
+          xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5 --no-update-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/operator-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/camera-cleanup-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --size 800x600
           python3 scripts/acquisition-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
@@ -92,7 +92,7 @@ jobs:
       - name: Check Windows desktop launch
         if: runner.os == 'Windows' && inputs.windows_tests
         run: |
-          $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 2>&1
+          $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 --no-update-check 2>&1
           $output | Write-Output
           if ($LASTEXITCODE -ne 0) {
             $message = ($output -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
