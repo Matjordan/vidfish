@@ -14,7 +14,7 @@ fn check_runs_without_display_and_does_not_create_settings() {
         .unwrap();
     assert!(result.status.success(), "{:?}", result);
     assert!(!path.exists());
-    let logs = String::from_utf8(result.stdout).unwrap();
+    let logs = String::from_utf8(result.stderr).unwrap();
     assert!(logs.contains("camera manager started"));
     assert!(logs.contains("camera manager stopped"));
 }
@@ -70,6 +70,7 @@ fn onvif_and_discovery_cli_resolve_fixture_without_creating_settings() {
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_vidfish"))
             .args(args)
+            .env("RUST_LOG", "info")
             .output()
             .unwrap();
         assert!(result.status.success(), "{result:?}");
