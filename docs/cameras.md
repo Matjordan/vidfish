@@ -191,3 +191,38 @@ Linux tests exercise multiple bound loopback addresses and adapter-failure isola
 authenticated SOAP fallback, wrong-password retry suppression, independent clearing,
 restart persistence, and metadata redaction. They do not prove physical multi-NIC
 multicast delivery. Windows test execution remains paused by user direction.
+
+## Hide, restore and forget cameras
+
+Open a camera's **Camera actions** panel for cleanup controls. **Hide from list**
+is a saved view preference keyed by the camera's local UUID, which remains stable
+across verified address changes. It removes the row from the normal roster/group
+choices. Existing previews and recording continue, and discovery still polls that
+camera. **Show hidden** includes hidden rows with a visible badge; **Restore to list**
+returns a row to normal view. These choices survive restart. Hidden cameras still
+count toward the registered/recording totals and the 16-camera inventory limit.
+
+**Clear offline cameras** opens a count/confirmation dialog and **hides** eligible
+cameras. It never forgets credentials or settings. Only cameras currently reported
+Offline and not recording are eligible; the set is checked again on confirmation.
+Connecting, authentication-required, online and recording cameras are skipped.
+Manual RTSP entries without an ONVIF offline determination can be hidden individually.
+
+**Forget camera…** removes saved identity/alias settings and that camera's login after
+explicit confirmation. Stop the camera's recorder and wait for it to finish first.
+The UI disables forgetting during recording; the backend also owns the recorder lock
+while changing inventory, so an independent recorder surviving viewer shutdown is
+protected. A credential-removal failure restores inventory and reports the error.
+Shared defaults and other cameras' overrides are retained.
+
+Forget never removes recordings, snapshots, events, session manifests or historical
+camera IDs/aliases. The obsolete polling worker retires, and saved view references are
+cleared when the viewer receives the updated inventory. If the device is discovered
+again, it receives a new local camera UUID/default alias and follows the current
+shared-login and auto-record policy. An online forgotten device may therefore return
+immediately; forgetting is not a permanent discovery blocklist.
+
+The headless equivalent is `vidfish cameras --inventory /path/cameras.json remove
+CAMERA_ID --confirm`. It uses the same recorder-lock guard and preserves historical
+media. Stop the manager before CLI inventory edits; UI cleanup works while the manager
+and other recorders continue. A viewer restart reconciles obsolete view references.

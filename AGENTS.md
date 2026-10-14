@@ -41,3 +41,7 @@ operator polish, automatic active-IPv4 discovery and shared login defaults.
 Authentication rejection pauses ONVIF retries until credentials change or the manager
 restarts. Credential values remain outside AppConfig/session metadata. Preserve
 this behavior and the continued Windows-check pause.
+
+Issue #36 uses `feat/36-camera-list-cleanup` for persistent roster hiding/restoration,
+confirmed offline hiding, and recorder-lock-guarded inventory forgetting. Never remove
+scientific files during camera cleanup or turn hiding into a discovery/recording policy.

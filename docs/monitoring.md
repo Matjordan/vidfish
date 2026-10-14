@@ -109,3 +109,9 @@ collapses the roster without changing preview workers or recorder ownership; thi
 choice persists with view preferences. Events remain collapsible, and preview images
 fit within the remaining card area at smaller resolutions. Keyboard shortcuts remain
 F6/F7/F8 for events, F9 for the session library, and Escape to return from fullscreen.
+
+Camera cleanup lives in the **Camera actions** details panel. **Show hidden** and
+**Clear offline cameras** are roster controls; bulk cleanup hides confirmed offline
+entries and preserves their settings. Forgetting is separately confirmed and disabled
+while recording. The native cleanup smoke exercises these touch controls, cancellation,
+restart persistence and uninterrupted peer recording; see [camera cleanup](cameras.md#hide-restore-and-forget-cameras).
