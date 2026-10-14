@@ -20,6 +20,7 @@ use zeroize::Zeroize;
 pub struct LaunchOptions {
     pub force_opengl: bool,
     pub no_update_check: bool,
+    pub startup_health: Option<PathBuf>,
 }
 pub fn run(
     path: PathBuf,
@@ -33,6 +34,7 @@ pub fn run(
     let LaunchOptions {
         force_opengl,
         no_update_check,
+        startup_health,
     } = options;
     let probe_path = std::env::var_os("VIDFISH_UI_PROBE").map(PathBuf::from);
     let window_size = std::env::var("VIDFISH_UI_SIZE")
@@ -55,8 +57,15 @@ pub fn run(
         path.with_file_name("cameras.json"),
         config.camera_interface,
     ))?;
-    let recordings =
-        vidfish::acquisition::Supervisor::start(path.clone(), config.clone(), cameras.snapshot())?;
+    let mut recording_config = config.clone();
+    if startup_health.is_some() {
+        recording_config.auto_record = false;
+    }
+    let recordings = vidfish::acquisition::Supervisor::start(
+        path.clone(),
+        recording_config,
+        cameras.snapshot(),
+    )?;
     let record_snapshot = recordings.snapshot();
     let record_control = recordings.controller();
     let camera_snapshot = cameras.snapshot();
@@ -137,8 +146,11 @@ pub fn run(
                 new_address: String::new(),
                 new_onvif: true,
                 new_h265: false,
+                startup_auto_record: config.auto_record,
                 config,
                 path,
+                startup_health,
+                startup_frames: 0,
                 status,
                 message: String::new(),
                 runtime: handle,
@@ -241,6 +253,9 @@ struct Desktop {
     login_password: zeroize::Zeroizing<String>,
     config: AppConfig,
     path: PathBuf,
+    startup_auto_record: bool,
+    startup_health: Option<PathBuf>,
+    startup_frames: u32,
     status: tokio::sync::watch::Receiver<vidfish_core::engine::EngineStatus>,
     message: String,
     runtime: tokio::runtime::Handle,
@@ -422,6 +437,7 @@ impl eframe::App for Desktop {
             )
         });
         self.draw_operator(ctx);
+        self.poll_startup_health();
         self.poll_updates(ctx);
         self.camera_cleanup_dialog(ctx);
         self.write_probe(ctx);

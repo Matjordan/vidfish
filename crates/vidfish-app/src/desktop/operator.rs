@@ -55,6 +55,10 @@ impl Desktop {
         }
     }
     fn record_command(&mut self, command: Control) {
+        if self.startup_health.is_some() {
+            self.message="Waiting for the updater to confirm desktop startup; recording controls will resume afterward.".into();
+            return;
+        }
         if let Err(e) = self.record_control.command(command) {
             self.message = e.into();
         }

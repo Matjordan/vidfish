@@ -70,8 +70,9 @@ acquisition status live beside the settings file: Linux normally
 Recordings, session/event manifests, indexes, snapshots and exports live under the
 configured output directory. The default is `recordings` relative to the launch
 working directory; set an absolute output directory in Settings for deployment.
-Never place scientific data in an application bundle. Update/uninstall does not
-read, migrate or remove the operator data directories. No schema migration is
+Never place scientific data in an application bundle. Install/uninstall does not
+migrate or remove the operator data directories; an updated app reopens its normal
+settings and session history. No schema migration is
 introduced by this epic; unsupported existing config schemas still report an error.
 
 ## Safe in-app updates
@@ -109,9 +110,13 @@ this install lock protocol: close them explicitly before installing or updating.
 The helper stages a full version (including Windows media runtime), writes a synced
 transaction journal, atomically switches the version pointer, then checks reported
 version, isolated configuration startup and H.264/H.265/RTSP media prerequisites.
-Successful checks create `health.json`; failure restores the previous pointer and
-records a recovery message. A desktop update relaunches Vidfish with the same config
-path. These bounded runtime checks do not certify a physical GPU/camera or prove
+A desktop update then relaunches Vidfish with the same config path in probation:
+recording stays gated until the actual UI renders and confirms the expected version.
+Automatic recording settings are not changed; their normal behavior resumes only
+after confirmation. Failed startup closes that probationary UI before recording can
+start, restores the previous pointer and relaunches the old version. Successful checks
+create `health.json`; failure records a recovery message. These bounded checks do not
+certify a physical GPU/camera or prove
 that a later operator session cannot fail; check the launched desktop on your rig.
 
 An interrupted transaction is recovered by the installed launcher before starting
@@ -158,8 +163,12 @@ update/helper is running. Deleting scientific output is a separate operator acti
 Linux CI runs real previous-version install/upgrade, reinstall/uninstall, version and
 runtime readiness, corrupt/wrong-architecture rejection, failed-health rollback,
 interrupted-journal recovery and actual RTSP recording protection. Rust tests cover
-release selection, checksum parsing, archive traversal and file ownership. Existing
-native GUI/media/acquisition smoke checks continue to run.
+release selection, checksum parsing, archive traversal and file ownership. The native update smoke also checks an offered release and Later with four growing
+recorders, manual checks with auto disabled, and real version-confirmed desktop
+restart/failure rollback. Existing native GUI/media/acquisition smoke checks continue
+to run. An explicit `VIDFISH_UPDATE_PROBE_RELEASE` metadata fixture is accepted only
+when `VIDFISH_UI_PROBE` is enabled, and still uses the strict official-URL parser; it
+does not supply an alternative download endpoint.
 
 Windows release compilation/packaging and package readiness remain enabled.
 Windows installer/update and native UI tests are implemented behind `windows_tests`

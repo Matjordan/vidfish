@@ -17,13 +17,71 @@ pub(super) struct Updates {
     pub dismissed: bool,
 }
 impl Desktop {
+    pub(super) fn poll_startup_health(&mut self) {
+        let Some(path) = self.startup_health.as_ref() else {
+            return;
+        };
+        self.startup_frames += 1;
+        if self.startup_frames == 2 {
+            let path = path.clone();
+            self.runtime.spawn_blocking(move || {
+                let _ = installation::atomic(
+                    &path,
+                    &serde_json::to_vec(
+                        &serde_json::json!({"version":installation::VERSION,"ready":true}),
+                    )
+                    .unwrap_or_default(),
+                );
+            });
+        }
+        if self.startup_frames > 2
+            && let Some(root) = installation::installed_root()
+            && !root.join("transaction.json").exists()
+        {
+            if std::fs::read_to_string(root.join("current.txt"))
+                .is_ok_and(|v| v.trim() == installation::VERSION)
+            {
+                let _ = self
+                    .record_control
+                    .command(vidfish::acquisition::Control::AutoRecord(
+                        self.startup_auto_record,
+                    ));
+                self.startup_health = None;
+            } else {
+                self.message="Update rollback restored a previous version. Close this probationary window and reopen Vidfish.".into();
+            }
+        }
+    }
+
     pub(super) fn check_updates(&mut self) {
         if self.updates.checking.is_some() || self.updates.downloading.is_some() {
             return;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
+        // Explicit diagnostic fixture, enabled only alongside the UI probe. The
+        // same strict release parsing is used; downloads still pin official URLs.
+        let fixture = if self.probe_path.is_some() {
+            std::env::var_os("VIDFISH_UPDATE_PROBE_RELEASE").map(PathBuf::from)
+        } else {
+            None
+        };
         self.runtime.spawn_blocking(move || {
-            let _ = tx.send(updater::check(installation::VERSION).map_err(|e| e.to_string()));
+            let result = if let Some(path) = fixture {
+                use std::io::Read;
+                (|| -> installation::Result<Option<updater::Offer>> {
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(path)?
+                        .take(1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() > 1024 * 1024 {
+                        return Err("Fixture metadata too large".into());
+                    }
+                    updater::parse_release(&bytes, installation::VERSION)
+                })()
+            } else {
+                updater::check(installation::VERSION)
+            };
+            let _ = tx.send(result.map_err(|e| e.to_string()));
         });
         self.updates.checking = Some(rx);
         self.updates.status = "Checking official stable releases…".into();

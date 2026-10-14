@@ -16,6 +16,8 @@ struct Args {
     /// Disable startup release checks for offline rigs (manual checks remain available).
     #[arg(long)]
     no_update_check: bool,
+    #[arg(long, hide = true)]
+    update_startup_health: Option<PathBuf>,
     /// Record a saved camera independently, using its saved login and recording policy.
     #[arg(long)]
     record_camera: Option<String>,
@@ -85,11 +87,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
-    let _process_lease = if std::env::var_os("VIDFISH_INSTALL_HEALTH").is_none() {
+    let _process_lease = if !(std::env::var_os("VIDFISH_INSTALL_HEALTH").is_some()
+        && (args.check || args.media_check))
+    {
         vidfish::installation::process_lease().map_err(|e| e as Box<dyn std::error::Error>)?
     } else {
         None
     };
+    if let Some(probe) = &args.update_startup_health {
+        let root = vidfish::installation::installed_root()
+            .ok_or("Startup confirmation requires a managed install")?;
+        if probe.parent() != Some(root.as_path())
+            || probe.is_symlink()
+            || !probe
+                .file_name()
+                .is_some_and(|p| p.to_string_lossy().starts_with(".tmp"))
+            || std::fs::metadata(probe)?.len() != 0
+            || !root.join("transaction.json").exists()
+        {
+            return Err("Invalid update startup confirmation file".into());
+        }
+    }
     if let Some(command) = args.command {
         if args.discover
             || args.onvif.is_some()
@@ -280,6 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             desktop::LaunchOptions {
                 force_opengl: args.opengl,
                 no_update_check: args.no_update_check,
+                startup_health: args.update_startup_health,
             },
         )?;
     }

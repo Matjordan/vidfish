@@ -37,8 +37,10 @@ struct Transaction {
 pub fn platform() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows-x86_64"
-    } else {
+    } else if cfg!(target_os = "linux") {
         "linux-x86_64"
+    } else {
+        "unsupported"
     }
 }
 pub fn root(prefix: &Path) -> PathBuf {
@@ -217,6 +219,27 @@ pub fn lock(root: &Path, name: &str, exclusive: bool) -> Result<File> {
     }
     Ok(file)
 }
+// Concurrent process creation can temporarily inherit a CLOEXEC lock descriptor
+// until exec. Maintenance tolerates that short handoff, while UI probes stay immediate.
+fn exclusive_lock(root: &Path, name: &str) -> Result<File> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match lock(root, name, true) {
+            Ok(file) => return Ok(file),
+            Err(error) => {
+                if Instant::now() < deadline
+                    && error
+                        .downcast_ref::<std::fs::TryLockError>()
+                        .is_some_and(|e| matches!(e, std::fs::TryLockError::WouldBlock))
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
 /// Held by each recorder through EOS, status, session manifest and event persistence.
 /// The updater takes the exclusive side before any pointer change, preventing new starts.
 pub fn recording_lease() -> Result<Option<File>> {
@@ -376,6 +399,30 @@ fn copy_bundle(bundle: &Path, destination: &Path, manifest: &Bundle) -> Result<(
     File::open(parent)?.sync_all()?;
     Ok(())
 }
+fn validate_owned(owned: &Install) -> Result<()> {
+    let allowed = [
+        "bin/vidfish",
+        "bin/vidfish.cmd",
+        "share/icons/hicolor/256x256/apps/vidfish.png",
+        "share/icons/vidfish.ico",
+        "share/applications/vidfish.desktop",
+    ];
+    if owned.schema != 1 || owned.files.keys().any(|p| !allowed.contains(&p.as_str())) {
+        return Err("Unsupported or unsafe installation ownership manifest".into());
+    }
+    Ok(())
+}
+fn integration_path(prefix: &Path, name: &str) -> Result<PathBuf> {
+    let relative = relative(name)?;
+    let mut path = prefix.to_path_buf();
+    for component in relative.components() {
+        path.push(component);
+        if path.is_symlink() {
+            return Err("Refusing a symlink in owned install paths".into());
+        }
+    }
+    Ok(path)
+}
 fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
     let bin = if cfg!(windows) {
         "bin/vidfish.cmd"
@@ -405,7 +452,7 @@ fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
         files.push(("share/applications/vidfish.desktop".into(),format!("[Desktop Entry]\nType=Application\nName=Vidfish\nComment=Scientific camera acquisition\nExec=\"{path}\"\nIcon=vidfish\nTerminal=false\nCategories=Science;AudioVideo;\nStartupWMClass=Vidfish\n").into_bytes()));
     }
     for (name, _) in &files {
-        let path = prefix.join(name);
+        let path = integration_path(prefix, name)?;
         if path.is_symlink() {
             return Err("Refusing a symlink in install integration files".into());
         }
@@ -433,7 +480,7 @@ fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
         &serde_json::to_vec_pretty(owned)?,
     )?;
     for (name, bytes) in files {
-        let path = prefix.join(&name);
+        let path = integration_path(prefix, &name)?;
         atomic(&path, &bytes)?;
         if name == bin {
             executable(&path)?;
@@ -443,6 +490,9 @@ fn write_integrations(prefix: &Path, owned: &mut Install) -> Result<()> {
     Ok(())
 }
 pub fn install(prefix: &Path, bundle: &Path) -> Result<()> {
+    if !prefix.is_absolute() {
+        return Err("Install prefix must be absolute".into());
+    }
     if prefix.to_string_lossy().contains(['\n', '\r']) {
         return Err("Unsupported newline in install prefix".into());
     }
@@ -450,11 +500,11 @@ pub fn install(prefix: &Path, bundle: &Path) -> Result<()> {
     health(bundle, &manifest.version)?;
     let root = root(prefix);
     fs::create_dir_all(&root)?;
-    let _operation = lock(&root, "operation.lock", true)?;
-    let _recording = lock(&root, "recording.lock", true).map_err(
+    let _operation = exclusive_lock(&root, "operation.lock")?;
+    let _recording = exclusive_lock(&root, "recording.lock").map_err(
         |_| "Recording in progress; installation deferred. Stop recordings explicitly and retry.",
     )?;
-    let _process = lock(&root, "process.lock", true)
+    let _process = exclusive_lock(&root, "process.lock")
         .map_err(|_| "Close Vidfish and camera services before installation")?;
     let mut owned = if root.join("install.json").exists() {
         read_json::<Install>(&root.join("install.json"))?
@@ -464,9 +514,7 @@ pub fn install(prefix: &Path, bundle: &Path) -> Result<()> {
             files: BTreeMap::new(),
         }
     };
-    if owned.schema != 1 {
-        return Err("Unsupported installation manifest".into());
-    }
+    validate_owned(&owned)?;
     recover_locked(&root)?;
     let versions = root.join("versions");
     fs::create_dir_all(&versions)?;
@@ -482,7 +530,7 @@ pub fn install(prefix: &Path, bundle: &Path) -> Result<()> {
         &serde_json::to_vec_pretty(&owned)?,
     )?;
     if root.join("current.txt").exists() {
-        apply_locked(&root, &manifest.version)?;
+        apply_locked(&root, &manifest.version, false)?;
     } else {
         atomic(&root.join("current.txt"), manifest.version.as_bytes())?;
     }
@@ -493,7 +541,7 @@ pub fn install(prefix: &Path, bundle: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn apply_locked(root: &Path, next: &str) -> Result<()> {
+fn apply_locked(root: &Path, next: &str, probation: bool) -> Result<()> {
     version(next)?;
     let previous = current(root)?;
     let transaction = Transaction {
@@ -515,19 +563,9 @@ fn apply_locked(root: &Path, next: &str) -> Result<()> {
     atomic(&root.join("current.txt"), next.as_bytes())?;
     match health(&bundle, next) {
         Ok(()) => {
-            atomic(&root.join("previous.txt"), transaction.previous.as_bytes())?;
-            atomic(
-                &root.join("health.json"),
-                &serde_json::to_vec(
-                    &serde_json::json!({"version":next,"runtime_checks":"version, configuration startup, H.264, H.265, RTSP plugins"}),
-                )?,
-            )?;
-            if root.join("update-error.txt").is_file() {
-                fs::remove_file(root.join("update-error.txt"))?;
+            if !probation {
+                commit_update(root, next, false)?;
             }
-            fs::remove_file(root.join("transaction.json"))?;
-            #[cfg(windows)]
-            update_uninstall_version(next);
             Ok(())
         }
         Err(error) => {
@@ -555,17 +593,91 @@ fn recover_locked(root: &Path) -> Result<()> {
     Ok(())
 }
 pub fn recover(root: &Path) -> Result<()> {
-    let _operation = lock(root, "operation.lock", true)?;
-    let _recording = lock(root, "recording.lock", true)?;
-    let _process = lock(root, "process.lock", true)?;
+    let _operation = exclusive_lock(root, "operation.lock")?;
+    let _recording = exclusive_lock(root, "recording.lock")?;
+    let _process = exclusive_lock(root, "process.lock")?;
     recover_locked(root)
 }
-fn apply_inner(root: &Path, bundle: &Path) -> Result<()> {
-    let _operation = lock(root, "operation.lock", true)?;
-    let _recording = lock(root, "recording.lock", true)
+fn commit_update(root: &Path, next: &str, desktop: bool) -> Result<()> {
+    atomic(
+        &root.join("health.json"),
+        &serde_json::to_vec(
+            &serde_json::json!({"version":next,"desktop_startup_confirmed":desktop,"runtime_checks":"version, configuration startup, H.264, H.265, RTSP plugins"}),
+        )?,
+    )?;
+    if root.join("update-error.txt").is_file() {
+        fs::remove_file(root.join("update-error.txt"))?;
+    }
+    fs::remove_file(root.join("transaction.json"))?;
+    #[cfg(unix)]
+    File::open(root)?.sync_all()?;
+    #[cfg(windows)]
+    update_uninstall_version(next);
+    Ok(())
+}
+fn launch(
+    launcher: &Path,
+    config: Option<&Path>,
+    probe: Option<&Path>,
+) -> Result<std::process::Child> {
+    let mut cmd = if cfg!(windows)
+        && launcher
+            .file_name()
+            .is_some_and(|p| p == "launch-vidfish.cmd")
+    {
+        let bundle = launcher.parent().ok_or("Missing launcher parent")?;
+        let mut c = Command::new(bundle.join("vidfish.exe"));
+        let mut paths = vec![bundle.join("gstreamer/bin")];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        c.env("PATH", std::env::join_paths(paths)?).env(
+            "GST_PLUGIN_SYSTEM_PATH_1_0",
+            bundle.join("gstreamer/lib/gstreamer-1.0"),
+        );
+        let scanner = bundle.join("gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner.exe");
+        if scanner.is_file() {
+            c.env("GST_PLUGIN_SCANNER_1_0", scanner);
+        }
+        c
+    } else if cfg!(windows) {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/C").arg(launcher);
+        c
+    } else {
+        Command::new(launcher)
+    };
+    cmd.arg("--no-update-check")
+        .stdout(std::process::Stdio::null());
+    if let Some(probe) = probe {
+        cmd.stderr(File::create(
+            probe
+                .parent()
+                .ok_or("Missing probe parent")?
+                .join("update-startup.log"),
+        )?);
+    } else {
+        cmd.stderr(std::process::Stdio::null());
+    }
+    if let Some(config) = config {
+        cmd.arg("--config").arg(config);
+    }
+    if let Some(probe) = probe {
+        cmd.arg("--update-startup-health").arg(probe);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    Ok(cmd.spawn()?)
+}
+fn apply_inner(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>) -> Result<()> {
+    let _operation = exclusive_lock(root, "operation.lock")?;
+    let _recording = exclusive_lock(root, "recording.lock")
         .map_err(|_| "Recording is still active. Update canceled; no pipeline was stopped.")?;
     let deadline = Instant::now() + Duration::from_secs(30);
-    let _process = loop {
+    let process = loop {
         match lock(root, "process.lock", true) {
             Ok(f) => break f,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
@@ -584,54 +696,80 @@ fn apply_inner(root: &Path, bundle: &Path) -> Result<()> {
     } else if verify(&dest)?.files != manifest.files {
         return Err("Conflicting installed version".into());
     }
-    let result = apply_locked(root, &manifest.version);
-    if let Err(e) = &result {
-        atomic(&root.join("update-error.txt"), e.to_string().as_bytes())?;
+    apply_locked(root, &manifest.version, relaunch)?;
+    if !relaunch {
+        return Ok(());
     }
-    drop(_process);
-    drop(_recording);
-    drop(_operation);
-
-    result
+    // The replacement UI starts in probation: auto-record remains suspended and
+    // the exclusive recording gate stays held until a rendered startup is confirmed.
+    // No user setting is changed, and a failed UI can be closed without a recorder.
+    drop(process);
+    let probe = tempfile::NamedTempFile::new_in(root)?;
+    let launcher = dest.join(if cfg!(windows) {
+        "launch-vidfish.cmd"
+    } else {
+        "launch-vidfish.sh"
+    });
+    let startup = (|| -> Result<()> {
+        let mut child = launch(&launcher, config, Some(probe.path()))?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let confirmed = fs::read(probe.path())
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .is_some_and(|v| v["version"] == manifest.version && v["ready"] == true);
+            if confirmed {
+                let result = commit_update(root, &manifest.version, true);
+                if result.is_err() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                return result;
+            }
+            if child.try_wait()?.is_some() {
+                return Err("Updated desktop exited before confirming startup".into());
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    "Updated desktop did not confirm startup; previous version restored".into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    })();
+    if startup.is_err() {
+        recover_locked(root)?;
+    }
+    startup
 }
 pub fn apply(root: &Path, bundle: &Path, relaunch: bool, config: Option<&Path>) -> Result<()> {
     prefix_from_root(root)?;
-    let result = apply_inner(root, bundle);
+    let result = apply_inner(root, bundle, relaunch, config);
     if let Err(error) = &result {
         let _ = atomic(&root.join("update-error.txt"), error.to_string().as_bytes());
-    }
-    if relaunch {
-        let prefix = prefix_from_root(root)?;
-        let launcher = prefix.join(if cfg!(windows) {
-            "bin/vidfish.cmd"
-        } else {
-            "bin/vidfish"
-        });
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd.exe");
-            c.arg("/C").arg(launcher);
-            c
-        } else {
-            Command::new(launcher)
-        };
-        if let Some(config) = config {
-            cmd.arg("--config").arg(config);
+        if relaunch {
+            let prefix = prefix_from_root(root)?;
+            let launcher = prefix.join(if cfg!(windows) {
+                "bin/vidfish.cmd"
+            } else {
+                "bin/vidfish"
+            });
+            launch(&launcher, config, None)?;
         }
-        cmd.spawn()?;
     }
     result
 }
 pub fn uninstall(prefix: &Path) -> Result<()> {
     let root = root(prefix);
     let owned: Install = read_json(&root.join("install.json"))?;
-    if owned.schema != 1 {
-        return Err("Unsupported install manifest".into());
-    }
-    let _operation = lock(&root, "operation.lock", true)?;
-    let _recording = lock(&root, "recording.lock", true)?;
-    let _process = lock(&root, "process.lock", true)?;
+    validate_owned(&owned)?;
+    let _operation = exclusive_lock(&root, "operation.lock")?;
+    let _recording = exclusive_lock(&root, "recording.lock")?;
+    let _process = exclusive_lock(&root, "process.lock")?;
     for (name, hash) in &owned.files {
-        let path = prefix.join(relative(name)?);
+        let path = integration_path(prefix, name)?;
         if !path.is_symlink() && path.is_file() && digest(&path)? == *hash {
             fs::remove_file(path)?;
         }
@@ -779,6 +917,48 @@ mod tests {
         uninstall(&prefix).unwrap();
         assert_eq!(fs::read(file).unwrap(), b"science");
         assert_eq!(fs::read(launcher).unwrap(), b"custom");
+    }
+    #[test]
+    fn read_only_install_blocks_changes_but_shared_runtime_guard_still_works() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path().join("p");
+        let first = bundle(tmp.path(), "0.1.1", true);
+        install(&prefix, &first).unwrap();
+        let r = root(&prefix);
+        fs::set_permissions(&r, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(apply(&r, &first, false, None).is_err());
+        assert!(uninstall(&prefix).is_err());
+        assert!(lock(&r, "process.lock", false).is_ok());
+        assert_eq!(current(&r).unwrap(), "0.1.1");
+        fs::set_permissions(&r, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[test]
+    fn foreign_ownership_and_symlink_integrations_do_not_touch_scientific_files() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path().join("p");
+        let first = bundle(tmp.path(), "0.1.1", true);
+        install(&prefix, &first).unwrap();
+        let science = prefix.join("science.mkv");
+        fs::write(&science, b"retain").unwrap();
+        let r = root(&prefix);
+        let mut owned: Install = read_json(&r.join("install.json")).unwrap();
+        owned
+            .files
+            .insert("science.mkv".into(), digest(&science).unwrap());
+        atomic(
+            &r.join("install.json"),
+            &serde_json::to_vec(&owned).unwrap(),
+        )
+        .unwrap();
+        assert!(uninstall(&prefix).is_err());
+        assert_eq!(fs::read(&science).unwrap(), b"retain");
+        let other = tmp.path().join("other");
+        fs::create_dir_all(other.join("share")).unwrap();
+        symlink(tmp.path(), other.join("share/icons")).unwrap();
+        assert!(install(&other, &first).is_err());
+        assert_eq!(fs::read(&science).unwrap(), b"retain");
     }
     #[test]
     fn corrupted_bundle_and_unowned_launchers_are_rejected() {

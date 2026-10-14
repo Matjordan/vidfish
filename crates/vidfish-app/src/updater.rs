@@ -93,6 +93,9 @@ pub fn check(current: &str) -> Result<Option<Offer>> {
     parse_release(&bounded(response, 1024 * 1024)?, current)
 }
 pub fn parse_release(bytes: &[u8], current: &str) -> Result<Option<Offer>> {
+    if !cfg!(target_arch = "x86_64") || !cfg!(any(target_os = "linux", target_os = "windows")) {
+        return Ok(None);
+    }
     let release: Release = serde_json::from_slice(bytes)?;
     let version = release
         .tag_name
@@ -174,12 +177,21 @@ pub fn download(root: &Path, offer: &Offer, progress: impl Fn(u64, u64)) -> Resu
     let client = client(Duration::from_secs(20 * 60))?;
     let sums = client.get(&offer.checksum_url).send()?.error_for_status()?;
     let hash = checksum(&bounded(sums, 1024 * 1024)?, &offer.asset)?;
+    let response = client.get(&offer.url).send()?.error_for_status()?;
+    stage_download(root, offer, response, &hash, progress)
+}
+fn stage_download(
+    root: &Path,
+    offer: &Offer,
+    mut response: impl Read,
+    hash: &str,
+    progress: impl Fn(u64, u64),
+) -> Result<PathBuf> {
     let staging = root.join("staging");
     fs::create_dir_all(&staging)?;
     let temp = tempfile::tempdir_in(&staging)?;
     let archive = temp.path().join("download.zip");
     let mut file = File::create(&archive)?;
-    let mut response = client.get(&offer.url).send()?.error_for_status()?;
     let mut buffer = [0u8; 65536];
     let mut total = 0u64;
     loop {
@@ -322,6 +334,37 @@ mod tests {
             z.write_all(b"x").unwrap();
             z.finish().unwrap();
             assert!(extract(&p, &tmp.path().join("out")).is_err());
+        }
+    }
+    #[test]
+    fn partial_corrupt_and_invalid_downloads_leave_installation_untouched() {
+        use sha2::Digest;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("current.txt"), b"0.1.0").unwrap();
+        let mut offer = parse_release(&serde_json::to_vec(&release("0.2.0")).unwrap(), "0.1.0")
+            .unwrap()
+            .unwrap();
+        for (bytes, size, hash) in [
+            (b"abc".as_slice(), 4, "f".repeat(64)),
+            (b"abc".as_slice(), 3, "f".repeat(64)),
+            (
+                b"not a zip".as_slice(),
+                9,
+                format!("{:x}", sha2::Sha256::digest(b"not a zip")),
+            ),
+        ] {
+            offer.size = size;
+            assert!(stage_download(tmp.path(), &offer, bytes, &hash, |_, _| {}).is_err());
+            assert_eq!(
+                std::fs::read(tmp.path().join("current.txt")).unwrap(),
+                b"0.1.0"
+            );
+            assert_eq!(
+                std::fs::read_dir(tmp.path().join("staging"))
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
     }
 }
