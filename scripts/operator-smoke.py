@@ -25,6 +25,16 @@ def until(predicate, seconds=60):
     raise RuntimeError("Operator UI did not reach the expected state")
 
 
+def native_ui_size(size):
+    if os.name != "nt":
+        return size
+    api = C.windll.user32
+    api.SetProcessDPIAware()
+    width, height = map(int, size.split("x"))
+    # Leave room for native borders, title bar and the hosted desktop taskbar.
+    return f"{min(width, api.GetSystemMetrics(0) - 64)}x{min(height, api.GetSystemMetrics(1) - 80)}"
+
+
 class Mouse:
     def __init__(self):
         self.pid = None
@@ -66,7 +76,10 @@ class Mouse:
         self.api.EnumWindows(callback, 0)
         if not found:
             raise RuntimeError("Native window for the exact viewer process is unavailable")
-        return found[0]
+        window = found[0]
+        self.api.SetWindowPos.argtypes = [C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint]
+        self.api.SetWindowPos(window, None, 0, 0, 0, 0, 0x0015)  # preserve size/z-order/activation
+        return window
 
     def click(self, x, y):
         if os.name == "nt":
@@ -230,7 +243,7 @@ def main():
 
             def start(size):
                 probe.unlink(missing_ok=True)
-                env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=size)
+                env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=native_ui_size(size))
                 app = subprocess.Popen([binary, "--no-update-check", "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
                 apps.append(app)
                 mouse.pid = app.pid
