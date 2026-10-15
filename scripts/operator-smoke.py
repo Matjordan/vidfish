@@ -80,15 +80,15 @@ class Mouse:
             self.api.ClientToScreen(window, C.byref(origin))
             self.api.SetForegroundWindow.argtypes = [C.c_void_p]
             self.api.SetForegroundWindow(window)
-            # Hosted runners may have a smaller/covered desktop than the client
-            # framebuffer. Send native client messages rather than global cursor input.
-            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
-            packed = (int(x) & 0xFFFF) | ((int(y) & 0xFFFF) << 16)
-            self.api.PostMessageW(window, 0x200, 0, packed)
+            # Winit reads native cursor/button state; posting messages alone does
+            # not keep that state consistent. Use actual OS input within the
+            # client viewport reported by the application probe.
+            self.api.SetCursorPos(int(origin.x + x), int(origin.y + y))
+            self.api.mouse_event.argtypes = [C.c_uint, C.c_uint, C.c_uint, C.c_uint, C.c_size_t]
             time.sleep(0.1)
-            self.api.PostMessageW(window, 0x201, 1, packed)
+            self.api.mouse_event(0x0002, 0, 0, 0, 0)
             time.sleep(0.08)
-            self.api.PostMessageW(window, 0x202, 0, packed)
+            self.api.mouse_event(0x0004, 0, 0, 0, 0)
         else:
             # xvfb-run has no window manager: client coordinates start at the root origin.
             self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
@@ -116,6 +116,12 @@ class Mouse:
                 self.api.XSetInputFocus(self.display, child.value, 1, 0)
                 self.api.XFlush(self.display)
                 time.sleep(0.1)
+        if os.name == "nt":
+            window = self.window()
+            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+            for char in text:
+                self.api.PostMessageW(window, 0x102, ord(char), 1)  # WM_CHAR
+            return
         for char in text:
             key = self.api.XKeysymToKeycode(self.display, ord(char))
             self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
@@ -123,6 +129,21 @@ class Mouse:
         self.api.XFlush(self.display)
 
     def scroll(self, amount, x, y):
+        if os.name == "nt":
+            class Point(C.Structure):
+                _fields_ = [("x", C.c_long), ("y", C.c_long)]
+            window = self.window()
+            point = Point(int(x), int(y))
+            self.api.ClientToScreen.argtypes = [C.c_void_p, C.POINTER(Point)]
+            self.api.ClientToScreen(window, C.byref(point))
+            self.api.SetForegroundWindow.argtypes = [C.c_void_p]
+            self.api.SetForegroundWindow(window)
+            self.api.SetCursorPos(point.x, point.y)
+            self.api.mouse_event.argtypes = [C.c_uint, C.c_uint, C.c_uint, C.c_uint, C.c_size_t]
+            for _ in range(abs(amount)):
+                self.api.mouse_event(0x0800, 0, 0, C.c_uint(-120 if amount > 0 else 120).value, 0)
+            time.sleep(0.2)
+            return
         self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
         self.api.XFlush(self.display)
         for _ in range(abs(amount)):
@@ -132,7 +153,18 @@ class Mouse:
         self.api.XFlush(self.display)
         time.sleep(0.2)
 
+    def windows_key(self, key):
+        window = self.window()
+        self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+        scan = self.api.MapVirtualKeyW(key, 0)
+        self.api.PostMessageW(window, 0x100, key, 1 | (scan << 16))
+        time.sleep(0.08)
+        self.api.PostMessageW(window, 0x101, key, 0xC0000001 | (scan << 16))
+
     def library_shortcut(self):
+        if os.name == "nt":
+            self.windows_key(0x78)  # F9
+            return
         key = self.api.XKeysymToKeycode(self.display, 0xFFC6)  # F9
         self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
         self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
@@ -140,7 +172,8 @@ class Mouse:
 
     def mark_shortcut(self):
         if os.name == "nt":
-            raise RuntimeError("Windows checks are paused")
+            self.windows_key(0x75)  # F6
+            return
         key = self.api.XKeysymToKeycode(self.display, 0xFFC3)  # F6
         self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
         self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
