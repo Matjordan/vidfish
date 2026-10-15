@@ -212,7 +212,9 @@ fn open_segments_and_low_export_space_are_explicit_and_source_is_preserved() {
             .exists()
     );
     assert_eq!(std::fs::metadata(&f.segment).unwrap().len(), original);
-    let reserve = fs2::available_space(f.root.path()).unwrap() + 1;
+    // Other tests can release disk space between the query and export. Use a
+    // reserve that stays impossible regardless of concurrent filesystem work.
+    let reserve = u64::MAX;
     let report = event_export::export(&f.event, &f.root.path().join("exports"), reserve).unwrap();
     assert!(!report.complete);
     assert!(

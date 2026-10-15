@@ -1,6 +1,7 @@
 """Preserve Cargo's exit code and expose runtime test failures to the checks API."""
 from collections import deque
 import os
+import re
 import subprocess
 import sys
 
@@ -18,6 +19,9 @@ for line in process.stdout:
     tail.append(line)
 code = process.wait()
 if code and os.environ.get("GITHUB_ACTIONS") == "true":
-    message = "".join(tail).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    # GitHub truncates long annotations; retain the final assertion and strip
+    # Cargo color escapes rather than letting earlier progress consume the limit.
+    detail = re.sub(r"\x1b\[[0-9;]*m", "", "".join(tail))[-3000:]
+    message = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     print("::error title=Cargo check failed::" + message, flush=True)
 raise SystemExit(code)
