@@ -52,7 +52,7 @@ def main():
         else:run('cmd.exe','/C',prefix/'bin/vidfish.cmd','--check','--config',config,'--no-update-check')
         assert (root/'current.txt').read_text()==v and not (root/'transaction.json').exists()
         # Exercise an actual independent RTSP recording, including after its owner is gone.
-        log=(base/'fixture.log').open('w');server=subprocess.Popen([str(fixture),'--small'],stdout=subprocess.PIPE,stderr=log,text=True);recorder=None
+        log=(base/'fixture.log').open('w');server=subprocess.Popen([str(fixture),'--small'],stdout=subprocess.PIPE,stderr=log,text=True);recorder=None;recordlog=None
         try:
             uri=server.stdout.readline().strip();assert uri.startswith('rtsp://')
             target=media/'new-recording.mkv';recordlog=(base/'recording.log').open('w')
@@ -67,6 +67,7 @@ def main():
         finally:
             if recorder and recorder.poll() is None:recorder.terminate();recorder.wait(timeout=20)
             server.terminate();server.wait(timeout=15);log.close()
+            if recordlog:recordlog.close()
         # Uninstall removes only owned files. Modified and extra data are retained.
         extra=root/'operator-note.txt';extra.write_text('retained');run(maintenance,'uninstall','--prefix',prefix);assert extra.read_text()=='retained';assert not installed.exists()
         for path,content in before.items():assert pathlib.Path(path).read_bytes()==content,path
