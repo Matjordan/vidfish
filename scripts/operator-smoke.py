@@ -130,15 +130,24 @@ class Mouse:
                 self.api.XFlush(self.display)
                 time.sleep(0.1)
         if os.name == "nt":
+            window = self.window()
+            self.api.GetForegroundWindow.restype = C.c_void_p
+            self.api.SetForegroundWindow.argtypes = [C.c_void_p]
+            self.api.SetForegroundWindow(window)
+            until(lambda: self.api.GetForegroundWindow() == window, seconds=5)
+            self.api.keybd_event.argtypes = [C.c_ubyte, C.c_ubyte, C.c_uint32, C.c_size_t]
             self.api.VkKeyScanW.argtypes = [C.c_wchar]
             self.api.VkKeyScanW.restype = C.c_short
             for char in text:
                 key = self.api.VkKeyScanW(char)
                 if key == -1 or key & 0xFF00:
                     raise RuntimeError("Fixture character requires an unsupported keyboard modifier")
-                # TranslateMessage produces WM_CHAR from this key-down. A lone
-                # WM_CHAR has no pending winit key event and is discarded.
-                self.windows_key(key & 0xFF)
+                # Native input keeps translated characters ahead of key-up in
+                # the Windows queue, even when rendering delays message handling.
+                scan = self.api.MapVirtualKeyW(key & 0xFF, 0)
+                self.api.keybd_event(key & 0xFF, scan, 0, 0)
+                time.sleep(0.08)
+                self.api.keybd_event(key & 0xFF, scan, 2, 0)
             return
         for char in text:
             key = self.api.XKeysymToKeycode(self.display, ord(char))
@@ -449,6 +458,9 @@ def main():
                 summary = {key: current.get(key) for key in ("viewport", "scale", "page", "fullscreen", "camera_count", "slots", "active_workers", "peak_workers", "events", "session_id", "library")}
                 if os.name == "nt":
                     summary["host_screen"] = [C.windll.user32.GetSystemMetrics(0), C.windll.user32.GetSystemMetrics(1)]
+                if "event_root" in locals():
+                    notes = [{"kind": event["kind"], "note": event["note"]} for path in event_root().glob("*/event.json") if (event := json.loads(path.read_text()))]
+                    DIAGNOSTICS.append("Fixture event notes: " + json.dumps(notes))
                 DIAGNOSTICS.append("UI: " + json.dumps(summary))
                 print("UI diagnostic:", json.dumps(summary), flush=True)
                 print("App diagnostic:", "\n".join((root / "app.log").read_text(errors="replace").splitlines()[-20:]), flush=True)
