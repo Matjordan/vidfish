@@ -178,8 +178,8 @@ does not supply an alternative download endpoint.
 
 Windows release compilation/packaging and package readiness remain enabled.
 Windows installer/update and native UI tests are implemented behind `windows_tests`
-and are enabled for installer PR #43 at the operator's request. The general Windows
-check pause remains in place for other branches. A passed Linux test is not a
+and remain paused at the operator's request. Installer PR #43 builds and uploads
+Windows packages without test suites; the operator will test on a computer. A passed Linux test is not a
 Windows result. A physical Toughpad installation remains to be verified before deployment:
 install as a standard user, check Start Menu/version/runtime, record four streams,
 offer/defer an update and confirm streams keep progressing, explicitly stop them,

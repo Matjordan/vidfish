@@ -16,6 +16,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: 0.1.0-ci.${{ github.run_number }}
-      # One-PR exception to the general Windows-check pause, requested by the user.
+      # Package the installer branch without rerunning test suites; the user will test on Windows.
       windows: ${{ github.head_ref == 'epic/41-installers-updater' || github.ref_name == 'epic/41-installers-updater' }}
-      windows_tests: ${{ github.head_ref == 'epic/41-installers-updater' || github.ref_name == 'epic/41-installers-updater' }}
+      windows_only: ${{ github.head_ref == 'epic/41-installers-updater' || github.ref_name == 'epic/41-installers-updater' }}
+      windows_tests: false

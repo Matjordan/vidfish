@@ -10,6 +10,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
+Uninstallable=yes
 UninstallDisplayIcon={app}\share\icons\vidfish.ico
 SetupIconFile=..\assets\vidfish.ico
 OutputDir=..

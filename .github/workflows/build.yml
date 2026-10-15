@@ -9,6 +9,10 @@ on:
         description: Include Windows compilation and packaging
         type: boolean
         default: true
+      windows_only:
+        description: Build and package Windows only, without a Linux job
+        type: boolean
+        default: false
       windows_tests:
         description: Run Windows checks (paused at the user's request)
         type: boolean
@@ -22,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"windows-x86_64"}]' || inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -115,6 +119,12 @@ jobs:
           VIDFISH_SIGN_CERT_PASSWORD: ${{ secrets.VIDFISH_SIGN_CERT_PASSWORD }}
         if: runner.os == 'Windows'
         run: ./scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vidfish-${{ matrix.platform }}
+          path: vidfish-${{ inputs.version }}-${{ matrix.platform }}*
+          if-no-files-found: error
+
       - name: Check Linux installer, updater and recording guard
         if: runner.os == 'Linux'
         run: python3 scripts/installer-smoke.py --bundle dist/linux/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture --previous-binary target/debug/vidfish
@@ -129,8 +139,3 @@ jobs:
       - name: Check native Windows updates
         if: runner.os == 'Windows' && inputs.windows_tests
         run: python scripts/update-ui-smoke.py --bundle dist/windows/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vidfish-${{ matrix.platform }}
-          path: vidfish-${{ inputs.version }}-${{ matrix.platform }}*
-          if-no-files-found: error
