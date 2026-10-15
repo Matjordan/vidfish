@@ -19,9 +19,9 @@ for line in process.stdout:
     tail.append(line)
 code = process.wait()
 if code and os.environ.get("GITHUB_ACTIONS") == "true":
-    # GitHub truncates long annotations; retain the final assertion and strip
-    # Cargo color escapes rather than letting earlier progress consume the limit.
-    detail = re.sub(r"\x1b\[[0-9;]*m", "", "".join(tail))[-3000:]
-    message = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print("::error title=Cargo check failed::" + message, flush=True)
+    # Split diagnostics so GitHub does not discard large recorder state dumps.
+    detail = re.sub(r"\x1b\[[0-9;]*m", "", "".join(tail))
+    for index, offset in enumerate(range(0, len(detail), 2500), 1):
+        message = detail[offset:offset + 2500].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Cargo check failed (part {index})::" + message, flush=True)
 raise SystemExit(code)
