@@ -1,5 +1,8 @@
 //! Keyframe-aligned stream copy with a durable append-only fragment journal.
-use crate::{Codec, MediaError, Result, Source, bus_error, element, encoded_source, initialize};
+use crate::{
+    BufferProgress, Codec, MediaError, Result, Source, bus_error, element, encoded_source,
+    initialize,
+};
 use gst::prelude::*;
 use gstreamer as gst;
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,7 @@ pub struct SegmentedRecording {
     current: Option<PathBuf>,
     closed_bytes: u64,
     finalized: bool,
+    video_progress: BufferProgress,
 }
 impl SegmentedRecording {
     /// The caller owns a unique run directory. Refuse an existing directory so even
@@ -45,6 +49,7 @@ impl SegmentedRecording {
             .map_err(|_| MediaError("cannot create segment index".into()))?;
         let pipeline = gst::Pipeline::new();
         let parser = encoded_source(&pipeline, source, codec)?;
+        let video_progress = BufferProgress::attach(&parser, "src")?;
         let sink = element("splitmuxsink", "segments")?;
         sink.set_property(
             "location",
@@ -72,6 +77,7 @@ impl SegmentedRecording {
             current: None,
             closed_bytes: 0,
             finalized: false,
+            video_progress,
         };
         recording
             .pipeline
@@ -207,6 +213,9 @@ impl SegmentedRecording {
     }
     pub fn current_output(&self) -> Option<PathBuf> {
         self.current.clone()
+    }
+    pub fn video_idle(&self) -> Duration {
+        self.video_progress.idle()
     }
     pub fn bytes_written(&self) -> Result<u64> {
         Ok(self.closed_bytes

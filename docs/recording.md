@@ -106,3 +106,21 @@ runtime smoke kills the owner and recorder, checks reattachment, distinct recove
 gap history, preserved closed segments, and finalized 1080p video. Simulated test sources
 are not a claim of 16-camera throughput on the Toughpad. Check real camera GOPs, bitrate,
 filesystem, network loss, and sustained disk writes during deployment testing.
+
+
+## Silent RTSP stalls
+
+The recording worker checks encoded-video buffer progress independently of preview
+frames and file growth. After five seconds without encoded video (or the configured
+`stall_seconds` when shorter), it ends the failed run and lets the supervisor reconnect
+in a new run. The existing `stall_seconds` file-growth deadline still catches output
+stalls. A short interruption does not cause a reconnect. RTSP TCP reads remain bounded
+at five seconds; shutdown does not wait for a dead camera's TEARDOWN response.
+Recovered runs retain separate segment journals and durable gap events. No missing
+footage is synthesized, and a playing preview does not imply a healthy recording.
+
+Issue #44 was reported on H.264, 1920×1080, 30 fps, 3000 kbps, GOP 15, affecting both
+preview and recording. Loopback fault tests cover H.264/H.265 silence and missing
+keyframes plus recording recovery with an unaffected peer. Physical-camera recovery
+and comparison against Cayenne remain operator validation; cloud fixtures do not
+establish those results.

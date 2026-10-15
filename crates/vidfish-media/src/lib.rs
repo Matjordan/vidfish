@@ -6,7 +6,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -101,6 +101,41 @@ fn element(factory: &str, name: &str) -> Result<gst::Element> {
         .map_err(|_| MediaError(format!("missing or unusable GStreamer element {factory}")))
 }
 
+/// Monotonic buffer progress, independent of pipeline clock and file buffering.
+#[derive(Clone)]
+struct BufferProgress {
+    start: Instant,
+    millis: Arc<AtomicU64>,
+}
+impl BufferProgress {
+    fn attach(element: &gst::Element, pad: &str) -> Result<Self> {
+        let progress = Self {
+            start: Instant::now(),
+            millis: Arc::new(AtomicU64::new(0)),
+        };
+        let observed = progress.clone();
+        element
+            .static_pad(pad)
+            .ok_or_else(|| MediaError("progress pad unavailable".into()))?
+            .add_probe(
+                gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                move |_, _| {
+                    observed.millis.store(
+                        observed.start.elapsed().as_millis() as u64,
+                        Ordering::Relaxed,
+                    );
+                    gst::PadProbeReturn::Ok
+                },
+            );
+        Ok(progress)
+    }
+    fn idle(&self) -> Duration {
+        self.start
+            .elapsed()
+            .saturating_sub(Duration::from_millis(self.millis.load(Ordering::Relaxed)))
+    }
+}
+
 fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Result<gst::Element> {
     let parser = element(
         match codec {
@@ -133,6 +168,8 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
             rtsp.set_property_from_str("protocols", "tcp");
             rtsp.set_property("latency", 200u32);
             rtsp.set_property("tcp-timeout", 5_000_000u64);
+            // A dead camera must not delay watchdog recovery waiting for TEARDOWN.
+            rtsp.set_property("teardown-timeout", 0u64);
             let depay = element(
                 match codec {
                     Codec::H264 => "rtph264depay",
@@ -361,28 +398,85 @@ pub struct Preview {
     pub frames: tokio::sync::watch::Receiver<Option<Arc<Frame>>>,
     pub status: tokio::sync::watch::Receiver<String>,
     stopping: Arc<AtomicBool>,
+    retry: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Preview {
     pub fn start(source: Source, codec: Codec) -> Self {
+        let seconds = std::env::var("VIDFISH_PREVIEW_STALL_SECONDS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|s| (1..=60).contains(s))
+            .unwrap_or(5);
+        Self::start_with_stall_timeout(source, codec, Duration::from_secs(seconds))
+    }
+    /// Configure the decoded-frame watchdog independently of recording policy.
+    pub fn start_with_stall_timeout(source: Source, codec: Codec, timeout: Duration) -> Self {
+        let timeout = timeout.clamp(Duration::from_millis(100), Duration::from_secs(60));
         let (frames_tx, frames) = tokio::sync::watch::channel(None);
         let (status_tx, status) = tokio::sync::watch::channel("Connecting".into());
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = stopping.clone();
+        let retry = Arc::new(AtomicBool::new(false));
+        let retry_worker = retry.clone();
         let worker = std::thread::spawn(move || {
             let _active = PreviewGuard::enter();
-            let result = preview_worker(source, codec, stop, frames_tx, &status_tx, None);
-            status_tx.send_replace(match result {
-                Ok(()) => "Stopped".into(),
-                Err(error) => error.to_string(),
-            });
+            let recovery = PreviewRecovery {
+                timeout,
+                retry: retry_worker,
+                healthy: Arc::new(AtomicBool::new(false)),
+            };
+            let mut failures = 0u32;
+            while !stop.load(Ordering::Acquire) {
+                recovery.retry.store(false, Ordering::Release);
+                recovery.healthy.store(false, Ordering::Release);
+                let result = preview_worker(
+                    source.clone(),
+                    codec,
+                    stop.clone(),
+                    frames_tx.clone(),
+                    &status_tx,
+                    None,
+                    Some(&recovery),
+                );
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if recovery.healthy.load(Ordering::Acquire) {
+                    failures = 0;
+                }
+                let reason = result
+                    .err()
+                    .map_or_else(|| "stream ended".into(), |e| e.to_string());
+                tracing::warn!(%reason, retry = failures.saturating_add(1), "preview reconnecting");
+                status_tx.send_replace(format!("Reconnecting · {reason}"));
+                let jitter = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_millis() as u64
+                    % 251;
+                let until =
+                    Instant::now() + Duration::from_millis((250u64 << failures.min(4)) + jitter);
+                failures = failures.saturating_add(1);
+                while Instant::now() < until && !stop.load(Ordering::Acquire) {
+                    if recovery.retry.swap(false, Ordering::AcqRel) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            status_tx.send_replace("Stopped".into());
         });
         Self {
             frames,
             status,
             stopping,
+            retry,
             worker: Some(worker),
         }
+    }
+    pub fn retry_now(&self) {
+        self.retry.store(true, Ordering::Release);
     }
     pub fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
@@ -412,10 +506,17 @@ pub fn snapshot(source: Source, codec: Codec, timeout: Duration) -> Result<Arc<F
         sender,
         &status,
         Some(Instant::now() + timeout),
+        None,
     )?;
     let result = frames.borrow().clone();
     result.ok_or_else(|| MediaError("Snapshot deadline reached without a frame".into()))
 }
+struct PreviewRecovery {
+    timeout: Duration,
+    retry: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+}
+
 fn preview_worker(
     source: Source,
     codec: Codec,
@@ -423,10 +524,24 @@ fn preview_worker(
     frames: tokio::sync::watch::Sender<Option<Arc<Frame>>>,
     status: &tokio::sync::watch::Sender<String>,
     deadline: Option<Instant>,
+    recovery: Option<&PreviewRecovery>,
 ) -> Result<()> {
     initialize()?;
     let pipeline = gst::Pipeline::new();
     let parser = encoded_source(&pipeline, &source, codec)?;
+    // These policies are preview-only: recording stays a separate stream-copy pipeline.
+    if let Some(depay) = pipeline.by_name("depay") {
+        for property in ["request-keyframe", "wait-for-keyframe"] {
+            if depay.find_property(property).is_some() {
+                depay.set_property(property, true);
+            }
+        }
+    }
+    let encoded = BufferProgress::attach(&parser, "src")?;
+    let ingress = pipeline
+        .by_name("depay")
+        .map(|p| BufferProgress::attach(&p, "sink"))
+        .transpose()?;
     let decoder = element("decodebin", "decoder")?;
     decoder
         .clone()
@@ -470,7 +585,11 @@ fn preview_worker(
             let _ = source_pad.link(&pad);
         }
     });
-    let mut number = 0u64;
+    let mut number = frames.borrow().as_ref().map_or(0, |f| f.number);
+    let mut first_frame = None;
+    let healthy = recovery.map(|r| r.healthy.clone());
+    let observed = frames.clone();
+    let started = Instant::now();
     let frame_status = status.clone();
     let sample_stop = stop.clone();
     sink.set_callbacks(
@@ -489,7 +608,8 @@ fn preview_worker(
                 let width = info.width() as usize;
                 let height = info.height() as usize;
                 let rgb = pack_rgb(data, width, height, mapped.plane_stride()[0])?;
-                if number == 0 {
+                if first_frame.is_none() {
+                    first_frame = Some(Instant::now());
                     let rate = info.fps();
                     tracing::info!(
                         width,
@@ -498,6 +618,11 @@ fn preview_worker(
                         "preview negotiated"
                     );
                     frame_status.send_replace("Playing".into());
+                }
+                if first_frame.is_some_and(|t| t.elapsed() >= Duration::from_secs(10))
+                    && let Some(healthy) = &healthy
+                {
+                    healthy.store(true, Ordering::Release);
                 }
                 number += 1;
                 frames.send_replace(Some(Arc::new(Frame {
@@ -515,18 +640,55 @@ fn preview_worker(
             .build(),
     );
     status.send_replace("Waiting for frames".into());
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|_| MediaError("cannot start preview".into()))?;
+    if pipeline.set_state(gst::State::Playing).is_err() {
+        let _ = pipeline.set_state(gst::State::Null);
+        return Err(MediaError("cannot start preview".into()));
+    }
     let bus = pipeline
         .bus()
         .ok_or_else(|| MediaError("preview bus unavailable".into()))?;
     let mut result = Ok(());
     while !stop.load(Ordering::Acquire) && deadline.is_none_or(|d| Instant::now() < d) {
+        if let Some(recovery) = recovery {
+            if recovery.retry.load(Ordering::Acquire) {
+                break;
+            }
+            let last = observed
+                .borrow()
+                .as_ref()
+                .map(|f| f.received_at)
+                .filter(|t| *t >= started);
+            let stalled = last.map_or_else(
+                || started.elapsed() >= (recovery.timeout * 3).max(Duration::from_secs(3)),
+                |last| last.elapsed() >= recovery.timeout,
+            );
+            if stalled {
+                tracing::warn!(
+                    decoded_idle_ms = last.map(|t| t.elapsed().as_millis() as u64),
+                    attempt_ms = started.elapsed().as_millis() as u64,
+                    encoded_idle_ms = encoded.idle().as_millis() as u64,
+                    rtp_idle_ms = ingress.as_ref().map(|p| p.idle().as_millis() as u64),
+                    "decoded-frame watchdog expired"
+                );
+                result = Err(MediaError(
+                    "decoded frames stalled; rebuilding preview".into(),
+                ));
+                break;
+            }
+        }
         if let Some(message) = bus.timed_pop_filtered(
             gst::ClockTime::from_mseconds(100),
-            &[gst::MessageType::Error, gst::MessageType::Eos],
+            &[
+                gst::MessageType::Error,
+                gst::MessageType::Eos,
+                gst::MessageType::Warning,
+            ],
         ) {
+            if message.type_() == gst::MessageType::Warning {
+                // GStreamer error/debug strings can contain authenticated camera URIs.
+                tracing::warn!(stage = %message.src().map(|s| s.name().to_string()).unwrap_or_default(), "preview pipeline warning (details redacted)");
+                continue;
+            }
             if message.type_() == gst::MessageType::Error {
                 result = Err(bus_error(&message));
             }

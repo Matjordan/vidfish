@@ -318,7 +318,8 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
     let config = AppConfig {
         output_directory: directory.path().join("media"),
         segment_seconds: 2,
-        stall_seconds: 3,
+        // Exercise the encoded-video watchdog rather than the longer file deadline.
+        stall_seconds: 30,
         ..Default::default()
     };
     config.save(&config_path).unwrap();
@@ -364,6 +365,20 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
         vidfish_media::Source::Rtsp(healthy.uri.clone()),
         vidfish_media::Codec::H264,
     );
+    let affected_preview = vidfish_media::Preview::start_with_stall_timeout(
+        vidfish_media::Source::Rtsp(troubled.uri.clone()),
+        vidfish_media::Codec::H264,
+        Duration::from_secs(1),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while affected_preview.frames.borrow().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "affected preview failed to start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let old_frame = affected_preview.frames.borrow().as_ref().unwrap().number;
     troubled.set_paused(true);
     // Durable failure history survives a fast retry transition.
     let events_path = directory
@@ -398,6 +413,17 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
                 && c.bytes_written > 0
         })
     });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while affected_preview.frames.borrow().as_ref().is_none_or(|f| {
+        f.number <= old_frame || f.received_at.elapsed() > Duration::from_millis(500)
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "affected preview failed to recover"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    affected_preview.join();
     preview.request_stop();
     preview.join();
     let switched = vidfish_media::Preview::start(

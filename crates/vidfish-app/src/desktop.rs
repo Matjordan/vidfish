@@ -236,6 +236,7 @@ struct Slot {
     number: u64,
     displayed: u64,
     last_frame: Option<Instant>,
+    last_texture_upload: Option<Instant>,
 }
 impl Slot {
     fn new(preview: Preview, label: String) -> Self {
@@ -425,6 +426,7 @@ impl eframe::App for Desktop {
                     ));
                 }
                 slot.last_frame = Some(frame.received_at);
+                slot.last_texture_upload = Some(Instant::now());
                 slot.number = frame.number;
                 slot.displayed += 1;
             }
@@ -615,6 +617,7 @@ impl Desktop {
         let slot = &mut self.slots[self.selected_slot];
         let old = slot.preview.take();
         slot.last_frame = None;
+        slot.last_texture_upload = None;
         slot.texture = None;
         slot.number = 0;
         slot.displayed = 0;

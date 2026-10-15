@@ -489,7 +489,14 @@ impl Desktop {
         if let Some(frame) = slot.last_frame
             && frame.elapsed() > Duration::from_secs(5)
         {
-            return format!("STALE · last frame {}s ago", frame.elapsed().as_secs());
+            return format!(
+                "STALE · last frame {}s ago · {}",
+                frame.elapsed().as_secs(),
+                slot.preview
+                    .as_ref()
+                    .map(|p| p.status.borrow().clone())
+                    .unwrap_or_default()
+            );
         }
         slot.preview
             .as_ref()
@@ -588,7 +595,7 @@ impl Desktop {
                                     )
                                     .on_hover_text(state);
                                 });
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     if touch(
                                         ui,
                                         if self.selected_slot == index {
@@ -603,6 +610,11 @@ impl Desktop {
                                     }
                                     if self.fullscreen.is_none() && touch(ui, "Max").clicked() {
                                         maximize = Some(index);
+                                    }
+                                    if touch(ui, "Retry now").clicked()
+                                        && let Some(preview) = &self.slots[index].preview
+                                    {
+                                        preview.retry_now();
                                     }
                                     if touch(ui, "Close").clicked() {
                                         close = Some(index);

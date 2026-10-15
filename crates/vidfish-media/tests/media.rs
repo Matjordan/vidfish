@@ -181,3 +181,116 @@ fn saved_rtsp_credentials_support_preview_and_stream_copy_without_uri_passwords(
     let info = vidfish_media::inspect_recording(&output).unwrap();
     assert_eq!((info.width, info.height), (320, 240));
 }
+
+#[cfg(feature = "fixtures")]
+fn wait_frame(preview: &Preview, after: u64) -> u64 {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(frame) = preview.frames.borrow().as_ref()
+            && frame.number > after
+            && frame.received_at.elapsed() < Duration::from_millis(500)
+        {
+            return frame.number;
+        }
+        assert!(
+            Instant::now() < until,
+            "no fresh frame: {}",
+            *preview.status.borrow()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn silent_rtsp_stalls_recover_without_restarting_peer_or_resetting_frame_numbers() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let healthy = vidfish_media::fixtures::RtspFixture::start(320, 240).unwrap();
+        let preview = Preview::start_with_stall_timeout(
+            Source::Rtsp(camera.uri.clone()),
+            codec,
+            Duration::from_secs(1),
+        );
+        let peer = Preview::start(Source::Rtsp(healthy.uri.clone()), Codec::H264);
+        let before = wait_frame(&preview, 0);
+        let peer_before = wait_frame(&peer, 0);
+        camera.set_paused(true);
+        std::thread::sleep(Duration::from_millis(150));
+        camera.set_paused(false);
+        let resumed = wait_frame(&preview, before);
+        assert!(!preview.status.borrow().starts_with("Reconnecting"));
+        camera.set_paused(true);
+        let until = Instant::now() + Duration::from_secs(10);
+        while !preview.status.borrow().starts_with("Reconnecting") {
+            assert!(Instant::now() < until, "watchdog did not reconnect");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let stale = preview.frames.borrow().as_ref().unwrap().number;
+        assert!(stale >= resumed);
+        camera.set_paused(false);
+        preview.retry_now();
+        assert!(wait_frame(&preview, stale) > stale);
+        assert!(wait_frame(&peer, peer_before) > peer_before);
+        preview.join();
+        peer.join();
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn missing_keyframes_recover_after_idr_delivery_resumes() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let source = Source::Rtsp(camera.uri.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &source,
+            codec,
+            &directory.path().join("run"),
+            2,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        camera.set_drop_keyframes(true);
+        // Keep the shared server producing interframes, then join without an IDR.
+        std::thread::sleep(Duration::from_millis(200));
+        let preview = Preview::start_with_stall_timeout(source, codec, Duration::from_secs(1));
+        let until = Instant::now() + Duration::from_secs(12);
+        while !preview.status.borrow().starts_with("Reconnecting") {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert!(
+                Instant::now() < until,
+                "missing IDR did not trigger recovery: {}",
+                *preview.status.borrow()
+            );
+        }
+        camera.set_drop_keyframes(false);
+        wait_frame(&preview, 0);
+        preview.join();
+        recording.finish().unwrap();
+    }
+}
+
+#[test]
+fn closing_preview_cancels_reconnect_backoff() {
+    // Reserve a loopback port number without accepting TCP connections.
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let preview = Preview::start(
+        Source::Rtsp(format!("rtsp://127.0.0.1:{port}/camera")),
+        Codec::H264,
+    );
+    let until = Instant::now() + Duration::from_secs(8);
+    while !preview.status.borrow().starts_with("Reconnecting") {
+        assert!(Instant::now() < until, "connection failure was not retried");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let start = Instant::now();
+    preview.join();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "stop waited for reconnect backoff"
+    );
+    drop(socket);
+}
