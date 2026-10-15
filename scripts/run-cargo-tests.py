@@ -5,8 +5,13 @@ import re
 import subprocess
 import sys
 
+arguments = sys.argv[1:] or ["test", "--locked", "--workspace", "--all-features"]
+if not sys.argv[1:] and os.name == "nt":
+    # Each capacity test already creates up to sixteen concurrent recorders.
+    # Avoid running several such independent workloads on the same hosted runner.
+    arguments += ["--", "--test-threads=1"]
 process = subprocess.Popen(
-    ["cargo", *(sys.argv[1:] or ["test", "--locked", "--workspace", "--all-features"])],
+    ["cargo", *arguments],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,
