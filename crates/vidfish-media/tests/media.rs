@@ -256,17 +256,37 @@ fn missing_keyframes_recover_after_idr_delivery_resumes() {
         // Keep the shared server producing interframes, then join without an IDR.
         std::thread::sleep(Duration::from_millis(200));
         let preview = Preview::start_with_stall_timeout(source, codec, Duration::from_secs(1));
-        let until = Instant::now() + Duration::from_secs(12);
-        while !preview.status.borrow().starts_with("Reconnecting") {
+        let started = Instant::now();
+        while camera.dropped_keyframes() < 2 || started.elapsed() < Duration::from_secs(4) {
             recording.poll(Duration::from_millis(20)).unwrap();
             assert!(
+                started.elapsed() < Duration::from_secs(12),
+                "fixture did not drop keyframes"
+            );
+        }
+        // Some decoders conceal missing references and continue producing frames.
+        // That is valid: only an actual decoded-frame stall should reconnect.
+        // The separate silence test requires the watchdog to fire on a real stall.
+        let before = preview.frames.borrow().as_ref().map_or(0, |f| f.number);
+        let resumed = Instant::now();
+        camera.set_drop_keyframes(false);
+        let until = resumed + Duration::from_secs(15);
+        loop {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            if preview
+                .frames
+                .borrow()
+                .as_ref()
+                .is_some_and(|f| f.number > before && f.received_at >= resumed)
+            {
+                break;
+            }
+            assert!(
                 Instant::now() < until,
-                "missing IDR did not trigger recovery: {}",
+                "no fresh video after keyframes resumed: {}",
                 *preview.status.borrow()
             );
         }
-        camera.set_drop_keyframes(false);
-        wait_frame(&preview, 0);
         preview.join();
         recording.finish().unwrap();
     }

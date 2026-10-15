@@ -7,7 +7,7 @@ pub use onvif::OnvifFixture;
 use rtsp::prelude::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 
@@ -16,6 +16,7 @@ pub struct RtspFixture {
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     drop_keyframes: Arc<AtomicBool>,
+    dropped_keyframes: Arc<AtomicU64>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -27,6 +28,9 @@ impl RtspFixture {
     /// Lose IDR buffers while continuing to deliver interframes.
     pub fn set_drop_keyframes(&self, drop: bool) {
         self.drop_keyframes.store(drop, Ordering::Release);
+    }
+    pub fn dropped_keyframes(&self) -> u64 {
+        self.dropped_keyframes.load(Ordering::Acquire)
     }
     pub fn start(width: u32, height: u32) -> Result<Self> {
         Self::start_codec(width, height, crate::Codec::H264)
@@ -60,6 +64,8 @@ impl RtspFixture {
         let pausing = paused.clone();
         let drop_keyframes = Arc::new(AtomicBool::new(false));
         let dropping = drop_keyframes.clone();
+        let dropped_keyframes = Arc::new(AtomicU64::new(0));
+        let dropped = dropped_keyframes.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
         let worker = std::thread::spawn(move || {
             let context = gst::glib::MainContext::new();
@@ -78,8 +84,10 @@ impl RtspFixture {
                     let Ok(bin) = media.element().downcast::<gst::Bin>() else { return };
                     if let Some(pad) = bin.by_name("fixture-encoder").and_then(|e| e.static_pad("src")) {
                         let dropping = dropping.clone();
+                        let dropped = dropped.clone();
                         pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
                             if dropping.load(Ordering::Acquire) && info.buffer().is_some_and(|b| !b.flags().contains(gst::BufferFlags::DELTA_UNIT)) {
+                                dropped.fetch_add(1, Ordering::Release);
                                 gst::PadProbeReturn::Drop
                             } else { gst::PadProbeReturn::Ok }
                         });
@@ -123,6 +131,7 @@ impl RtspFixture {
                 stop,
                 paused,
                 drop_keyframes,
+                dropped_keyframes,
                 worker: Some(worker),
             }),
             _ => {
