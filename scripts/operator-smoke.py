@@ -130,10 +130,18 @@ class Mouse:
                 self.api.XFlush(self.display)
                 time.sleep(0.1)
         if os.name == "nt":
-            window = self.window()
-            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+            self.api.VkKeyScanW.argtypes = [C.c_wchar]
+            self.api.VkKeyScanW.restype = C.c_short
             for char in text:
-                self.api.PostMessageW(window, 0x102, ord(char), 1)  # WM_CHAR
+                key = self.api.VkKeyScanW(char)
+                if key == -1 or key & 0x0600:
+                    raise RuntimeError("Fixture character unavailable on the native keyboard layout")
+                shifted = bool(key & 0x0100)
+                if shifted:
+                    self.api.keybd_event(0x10, 0x2A, 0, 0)
+                self.windows_key(key & 0xFF)
+                if shifted:
+                    self.api.keybd_event(0x10, 0x2A, 2, 0)
             return
         for char in text:
             key = self.api.XKeysymToKeycode(self.display, ord(char))
@@ -168,11 +176,13 @@ class Mouse:
 
     def windows_key(self, key):
         window = self.window()
-        self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+        self.api.SetForegroundWindow.argtypes = [C.c_void_p]
+        self.api.SetForegroundWindow(window)
+        self.api.keybd_event.argtypes = [C.c_ubyte, C.c_ubyte, C.c_uint32, C.c_size_t]
         scan = self.api.MapVirtualKeyW(key, 0)
-        self.api.PostMessageW(window, 0x100, key, 1 | (scan << 16))
+        self.api.keybd_event(key, scan, 0, 0)
         time.sleep(0.08)
-        self.api.PostMessageW(window, 0x101, key, 0xC0000001 | (scan << 16))
+        self.api.keybd_event(key, scan, 2, 0)
 
     def library_shortcut(self):
         if os.name == "nt":
