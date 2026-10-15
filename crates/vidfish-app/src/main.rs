@@ -13,6 +13,11 @@ mod desktop;
 #[command(group(clap::ArgGroup::new("mode").args(["service", "record", "check", "media_check", "demo", "preview", "inspect", "discover", "onvif", "record_camera"])))]
 #[command(group(clap::ArgGroup::new("desktop_input").args(["demo", "preview"])))]
 struct Args {
+    /// Disable startup release checks for offline rigs (manual checks remain available).
+    #[arg(long)]
+    no_update_check: bool,
+    #[arg(long, hide = true)]
+    update_startup_health: Option<PathBuf>,
     /// Record a saved camera independently, using its saved login and recording policy.
     #[arg(long)]
     record_camera: Option<String>,
@@ -82,6 +87,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
+    let _process_lease = if !(std::env::var_os("VIDFISH_INSTALL_HEALTH").is_some()
+        && (args.check || args.media_check))
+    {
+        vidfish::installation::process_lease().map_err(|e| e as Box<dyn std::error::Error>)?
+    } else {
+        None
+    };
+    if let Some(probe) = &args.update_startup_health {
+        let root = vidfish::installation::installed_root()
+            .ok_or("Startup confirmation requires a managed install")?;
+        let canonical_root = root.canonicalize()?;
+        if probe
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .as_deref()
+            != Some(canonical_root.as_path())
+            || probe.is_symlink()
+            || !probe
+                .file_name()
+                .is_some_and(|p| p.to_string_lossy().starts_with(".tmp"))
+            || std::fs::metadata(probe)?.len() != 0
+            || !root.join("transaction.json").exists()
+        {
+            return Err("Invalid update startup confirmation file".into());
+        }
+    }
     if let Some(command) = args.command {
         if args.discover
             || args.onvif.is_some()
@@ -178,6 +209,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(uri) = args.record {
+        let _recording_lease = vidfish::installation::recording_lease()
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
         let output = args.output.ok_or("recording needs --output")?;
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
         let seconds = args.seconds;
@@ -267,7 +300,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sources,
             codec,
             args.desktop_seconds,
-            args.opengl,
+            desktop::LaunchOptions {
+                force_opengl: args.opengl,
+                no_update_check: args.no_update_check,
+                startup_health: args.update_startup_health,
+            },
         )?;
     }
     #[cfg(not(feature = "desktop"))]

@@ -493,6 +493,8 @@ pub fn record_camera(
     run_id: &str,
     interrupted: &AtomicBool,
 ) -> Result<()> {
+    let _update_lease =
+        crate::installation::recording_lease().map_err(|e| e as Box<dyn std::error::Error>)?;
     uuid::Uuid::parse_str(id)?;
     uuid::Uuid::parse_str(run_id)?;
     // A second desktop or restart cannot create a duplicate recorder for this camera.

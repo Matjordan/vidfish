@@ -9,6 +9,10 @@ on:
         description: Include Windows compilation and packaging
         type: boolean
         default: true
+      windows_only:
+        description: Build and package Windows only, without a Linux job
+        type: boolean
+        default: false
       windows_tests:
         description: Run Windows checks (paused at the user's request)
         type: boolean
@@ -22,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"windows-x86_64"}]' || inputs.windows && '[{"os":"ubuntu-22.04","platform":"linux-x86_64"},{"os":"windows-latest","platform":"windows-x86_64"}]' || '[{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -60,7 +64,7 @@ jobs:
       - if: runner.os != 'Windows' || inputs.windows_tests
         run: cargo fmt --all --check
       - if: runner.os != 'Windows' || inputs.windows_tests
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: python scripts/run-cargo-tests.py clippy --locked --workspace --all-targets --all-features -- -D warnings
       - if: runner.os != 'Windows' || inputs.windows_tests
         run: python scripts/run-cargo-tests.py
       - run: cargo build --locked --release -p vidfish
@@ -74,7 +78,7 @@ jobs:
           ./target/release/vidfish --check
           ./target/release/vidfish --media-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/media-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --desktop
-          xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5
+          xvfb-run -a -s '-screen 0 1280x800x24' ./target/release/vidfish --demo --desktop-seconds 5 --no-update-check
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/operator-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/camera-cleanup-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture --size 800x600
           python3 scripts/acquisition-smoke.py --binary target/release/vidfish --fixture target/debug/examples/camera-fixture
@@ -92,7 +96,7 @@ jobs:
       - name: Check Windows desktop launch
         if: runner.os == 'Windows' && inputs.windows_tests
         run: |
-          $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 2>&1
+          $output = & ./target/release/vidfish.exe --demo --desktop-seconds 5 --no-update-check 2>&1
           $output | Write-Output
           if ($LASTEXITCODE -ne 0) {
             $message = ($output -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
@@ -101,14 +105,37 @@ jobs:
           }
           python scripts/operator-smoke.py --binary target/release/vidfish.exe --fixture target/debug/examples/camera-fixture.exe
           if ($LASTEXITCODE -ne 0) { throw 'Operator interaction smoke failed' }
+      - name: Build previous-version upgrade fixture
+        if: runner.os != 'Windows' || inputs.windows_tests
+        env:
+          VIDFISH_VERSION: 0.0.1
+        run: cargo build --locked -p vidfish --bin vidfish
       - name: Package Linux runtime
         if: runner.os == 'Linux'
         run: bash scripts/package-linux.sh
       - name: Package Windows runtime
+        env:
+          VIDFISH_SIGN_CERT_BASE64: ${{ secrets.VIDFISH_SIGN_CERT_BASE64 }}
+          VIDFISH_SIGN_CERT_PASSWORD: ${{ secrets.VIDFISH_SIGN_CERT_PASSWORD }}
         if: runner.os == 'Windows'
         run: ./scripts/package-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: vidfish-${{ matrix.platform }}
-          path: vidfish-${{ inputs.version }}-${{ matrix.platform }}.*
+          path: vidfish-${{ inputs.version }}-${{ matrix.platform }}*
           if-no-files-found: error
+
+      - name: Check Linux installer, updater and recording guard
+        if: runner.os == 'Linux'
+        run: python3 scripts/installer-smoke.py --bundle dist/linux/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture --previous-binary target/debug/vidfish
+      - name: Check native Linux update prompt and restart
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/update-ui-smoke.py --bundle dist/linux/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture
+      - name: Check Windows installer and rollback
+        if: runner.os == 'Windows' && inputs.windows_tests
+        run: python scripts/installer-smoke.py --bundle dist/windows/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture.exe --previous-binary target/debug/vidfish.exe --native-installer vidfish-${{ inputs.version }}-windows-x86_64-setup.exe
+      - name: Check native Windows updates
+        if: runner.os == 'Windows' && inputs.windows_tests
+        run: python scripts/update-ui-smoke.py --bundle dist/windows/vidfish-${{ inputs.version }} --fixture target/debug/examples/camera-fixture.exe

@@ -54,7 +54,7 @@ def main():
 
             def start():
                 probe.unlink(missing_ok=True)
-                process = subprocess.Popen([binary, "--config", str(config)], env=dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=args.size), stdout=log, stderr=log)
+                process = subprocess.Popen([binary, "--no-update-check", "--config", str(config)], env=dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=args.size), stdout=log, stderr=log)
                 mouse.pid = process.pid
                 try:
                     operator.until(lambda: len(state().get("slots", [])) == 4 and all(slot["frame"] > 0 for slot in state()["slots"]))

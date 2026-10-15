@@ -25,6 +25,16 @@ def until(predicate, seconds=60):
     raise RuntimeError("Operator UI did not reach the expected state")
 
 
+def native_ui_size(size):
+    if os.name != "nt":
+        return size
+    api = C.windll.user32
+    api.SetProcessDPIAware()
+    width, height = map(int, size.split("x"))
+    # Leave room for native borders, title bar and the hosted desktop taskbar.
+    return f"{min(width, api.GetSystemMetrics(0) - 64)}x{min(height, api.GetSystemMetrics(1) - 80)}"
+
+
 class Mouse:
     def __init__(self):
         self.pid = None
@@ -66,7 +76,10 @@ class Mouse:
         self.api.EnumWindows(callback, 0)
         if not found:
             raise RuntimeError("Native window for the exact viewer process is unavailable")
-        return found[0]
+        window = found[0]
+        self.api.SetWindowPos.argtypes = [C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint]
+        self.api.SetWindowPos(window, None, 0, 0, 0, 0, 0x0015)  # preserve size/z-order/activation
+        return window
 
     def click(self, x, y):
         if os.name == "nt":
@@ -80,15 +93,15 @@ class Mouse:
             self.api.ClientToScreen(window, C.byref(origin))
             self.api.SetForegroundWindow.argtypes = [C.c_void_p]
             self.api.SetForegroundWindow(window)
-            # Hosted runners may have a smaller/covered desktop than the client
-            # framebuffer. Send native client messages rather than global cursor input.
-            self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
-            packed = (int(x) & 0xFFFF) | ((int(y) & 0xFFFF) << 16)
-            self.api.PostMessageW(window, 0x200, 0, packed)
+            # Winit reads native cursor/button state; posting messages alone does
+            # not keep that state consistent. Use actual OS input within the
+            # client viewport reported by the application probe.
+            self.api.SetCursorPos(int(origin.x + x), int(origin.y + y))
+            self.api.mouse_event.argtypes = [C.c_uint, C.c_uint, C.c_uint, C.c_uint, C.c_size_t]
             time.sleep(0.1)
-            self.api.PostMessageW(window, 0x201, 1, packed)
+            self.api.mouse_event(0x0002, 0, 0, 0, 0)
             time.sleep(0.08)
-            self.api.PostMessageW(window, 0x202, 0, packed)
+            self.api.mouse_event(0x0004, 0, 0, 0, 0)
         else:
             # xvfb-run has no window manager: client coordinates start at the root origin.
             self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
@@ -116,6 +129,26 @@ class Mouse:
                 self.api.XSetInputFocus(self.display, child.value, 1, 0)
                 self.api.XFlush(self.display)
                 time.sleep(0.1)
+        if os.name == "nt":
+            window = self.window()
+            self.api.GetForegroundWindow.restype = C.c_void_p
+            self.api.SetForegroundWindow.argtypes = [C.c_void_p]
+            self.api.SetForegroundWindow(window)
+            until(lambda: self.api.GetForegroundWindow() == window, seconds=5)
+            self.api.keybd_event.argtypes = [C.c_ubyte, C.c_ubyte, C.c_uint32, C.c_size_t]
+            self.api.VkKeyScanW.argtypes = [C.c_wchar]
+            self.api.VkKeyScanW.restype = C.c_short
+            for char in text:
+                key = self.api.VkKeyScanW(char)
+                if key == -1 or key & 0xFF00:
+                    raise RuntimeError("Fixture character requires an unsupported keyboard modifier")
+                # Native input keeps translated characters ahead of key-up in
+                # the Windows queue, even when rendering delays message handling.
+                scan = self.api.MapVirtualKeyW(key & 0xFF, 0)
+                self.api.keybd_event(key & 0xFF, scan, 0, 0)
+                time.sleep(0.08)
+                self.api.keybd_event(key & 0xFF, scan, 2, 0)
+            return
         for char in text:
             key = self.api.XKeysymToKeycode(self.display, ord(char))
             self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
@@ -123,6 +156,21 @@ class Mouse:
         self.api.XFlush(self.display)
 
     def scroll(self, amount, x, y):
+        if os.name == "nt":
+            class Point(C.Structure):
+                _fields_ = [("x", C.c_long), ("y", C.c_long)]
+            window = self.window()
+            point = Point(int(x), int(y))
+            self.api.ClientToScreen.argtypes = [C.c_void_p, C.POINTER(Point)]
+            self.api.ClientToScreen(window, C.byref(point))
+            self.api.SetForegroundWindow.argtypes = [C.c_void_p]
+            self.api.SetForegroundWindow(window)
+            self.api.SetCursorPos(point.x, point.y)
+            self.api.mouse_event.argtypes = [C.c_uint, C.c_uint, C.c_uint, C.c_uint, C.c_size_t]
+            for _ in range(abs(amount)):
+                self.api.mouse_event(0x0800, 0, 0, C.c_uint(-120 if amount > 0 else 120).value, 0)
+            time.sleep(0.2)
+            return
         self.test.XTestFakeMotionEvent(self.display, -1, int(x), int(y), 0)
         self.api.XFlush(self.display)
         for _ in range(abs(amount)):
@@ -132,7 +180,18 @@ class Mouse:
         self.api.XFlush(self.display)
         time.sleep(0.2)
 
+    def windows_key(self, key):
+        window = self.window()
+        self.api.PostMessageW.argtypes = [C.c_void_p, C.c_uint, C.c_size_t, C.c_ssize_t]
+        scan = self.api.MapVirtualKeyW(key, 0)
+        self.api.PostMessageW(window, 0x100, key, 1 | (scan << 16))
+        time.sleep(0.16)
+        self.api.PostMessageW(window, 0x101, key, 0xC0000001 | (scan << 16))
+
     def library_shortcut(self):
+        if os.name == "nt":
+            self.windows_key(0x78)  # F9
+            return
         key = self.api.XKeysymToKeycode(self.display, 0xFFC6)  # F9
         self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
         self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
@@ -140,7 +199,8 @@ class Mouse:
 
     def mark_shortcut(self):
         if os.name == "nt":
-            raise RuntimeError("Windows checks are paused")
+            self.windows_key(0x75)  # F6
+            return
         key = self.api.XKeysymToKeycode(self.display, 0xFFC3)  # F6
         self.test.XTestFakeKeyEvent(self.display, key, 1, 0)
         self.test.XTestFakeKeyEvent(self.display, key, 0, 0)
@@ -197,8 +257,8 @@ def main():
 
             def start(size):
                 probe.unlink(missing_ok=True)
-                env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=size)
-                app = subprocess.Popen([binary, "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
+                env = dict(os.environ, VIDFISH_UI_PROBE=str(probe), VIDFISH_UI_SIZE=native_ui_size(size))
+                app = subprocess.Popen([binary, "--no-update-check", "--config", str(config)], env=env, stdout=app_log, stderr=app_log)
                 apps.append(app)
                 mouse.pid = app.pid
                 return app
@@ -398,6 +458,9 @@ def main():
                 summary = {key: current.get(key) for key in ("viewport", "scale", "page", "fullscreen", "camera_count", "slots", "active_workers", "peak_workers", "events", "session_id", "library")}
                 if os.name == "nt":
                     summary["host_screen"] = [C.windll.user32.GetSystemMetrics(0), C.windll.user32.GetSystemMetrics(1)]
+                if "event_root" in locals():
+                    notes = [{"kind": event["kind"], "note": event["note"]} for path in event_root().glob("*/event.json") if (event := json.loads(path.read_text()))]
+                    DIAGNOSTICS.append("Fixture event notes: " + json.dumps(notes))
                 DIAGNOSTICS.append("UI: " + json.dumps(summary))
                 print("UI diagnostic:", json.dumps(summary), flush=True)
                 print("App diagnostic:", "\n".join((root / "app.log").read_text(errors="replace").splitlines()[-20:]), flush=True)

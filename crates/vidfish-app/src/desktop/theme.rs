@@ -40,7 +40,10 @@ pub(super) fn apply(ctx: &egui::Context) {
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(29, 91, 145);
     style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
-    ctx.set_style(style);
+    // Native system-theme events can switch egui styles after startup. Keep
+    // operator typography and touch targets consistent for either theme.
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 pub(super) fn camera_state(state: vidfish_onvif::manager::State) -> (&'static str, egui::Color32) {
     use vidfish_onvif::manager::State;

@@ -34,7 +34,7 @@ def main():
                 children.append(recorder)
                 if args.desktop:
                     with (root / "crash-preview.log").open("w") as preview_logs:
-                        preview = subprocess.Popen([binary, "--preview", uri], stdout=preview_logs, stderr=preview_logs, env=env)
+                        preview = subprocess.Popen([binary, "--no-update-check", "--preview", uri], stdout=preview_logs, stderr=preview_logs, env=env)
                         children.append(preview)
                         time.sleep(3)
                         if preview.poll() is not None:
@@ -46,7 +46,7 @@ def main():
                     # Cold decoder/keyframe startup can exceed three seconds on
                     # two-core software-rendered runners. Keep a bounded readiness
                     # window while requiring an actual displayed frame.
-                    resumed = subprocess.run([binary, "--preview", uri, "--desktop-seconds", "10"], capture_output=True, text=True, env=env, timeout=40)
+                    resumed = subprocess.run([binary, "--no-update-check", "--preview", uri, "--desktop-seconds", "10"], capture_output=True, text=True, env=env, timeout=40)
                     if resumed.returncode:
                         raise RuntimeError("preview restart failed: " + resumed.stdout + resumed.stderr)
                     if recorder.poll() is not None:

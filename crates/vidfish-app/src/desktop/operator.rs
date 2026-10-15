@@ -55,6 +55,10 @@ impl Desktop {
         }
     }
     fn record_command(&mut self, command: Control) {
+        if self.startup_health.is_some() {
+            self.message="Waiting for the updater to confirm desktop startup; recording controls will resume afterward.".into();
+            return;
+        }
         if let Err(e) = self.record_control.command(command) {
             self.message = e.into();
         }
@@ -636,12 +640,18 @@ impl Desktop {
     }
     fn settings(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
+        let mut check_updates = false;
         let retention_draft = self
             .library
             .draft_retention
             .get_or_insert(self.config.retention_days);
         egui::Window::new("Settings").open(&mut open).vscroll(true).default_size([420.0,400.0]).show(ctx,|ui|{
             ui.label(format!("Manager: {:?}",*self.status.borrow()));
+            ui.heading("Application updates");
+            ui.label(format!("Version {}",vidfish::installation::VERSION));
+            if ui.checkbox(&mut self.updates.automatic_checks,"Automatically check for stable updates at startup").changed(){self.updates.preferences_dirty=true;}
+            ui.label("This choice is saved automatically, separately from camera settings. --no-update-check suppresses startup checks for offline rigs.");
+            if touch(ui,"Check for updates").clicked(){check_updates = true;}
             ui.heading("Camera network and login");
             ui.label("Shared defaults are saved separately from settings and session exports.");
             ui.horizontal_wrapped(|ui|{
@@ -663,6 +673,9 @@ impl Desktop {
                 self.config.retention_days = *retention_draft;self.config.camera_interface=self.interface.trim().parse().ok();let config=self.config.clone();let path=self.path.clone();let (sender,receiver)=tokio::sync::oneshot::channel();self.runtime.spawn_blocking(move||{let _=sender.send(config.save(&path));});self.saving=Some(receiver);
             }
         });
+        if check_updates {
+            self.check_updates();
+        }
         self.show_settings = open;
     }
     fn event_panel(&mut self, ctx: &egui::Context) {

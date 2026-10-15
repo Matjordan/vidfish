@@ -149,6 +149,9 @@ fn serve(
     jpeg: &[u8],
     serial: &str,
 ) -> std::io::Result<()> {
+    // Accepted sockets inherit nonblocking mode on Windows. Request handling
+    // uses bounded blocking reads on every platform.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(1)))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
     let mut request = Vec::new();

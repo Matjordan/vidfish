@@ -3,6 +3,7 @@ mod library;
 mod operator;
 mod probe;
 mod theme;
+mod updates;
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -16,6 +17,11 @@ use vidfish_core::{config::AppConfig, engine::Engine};
 use vidfish_media::{Codec, Preview, Source};
 use zeroize::Zeroize;
 
+pub struct LaunchOptions {
+    pub force_opengl: bool,
+    pub no_update_check: bool,
+    pub startup_health: Option<PathBuf>,
+}
 pub fn run(
     path: PathBuf,
     config: AppConfig,
@@ -23,8 +29,13 @@ pub fn run(
     sources: Vec<Source>,
     codec: Codec,
     seconds: Option<u64>,
-    force_opengl: bool,
+    options: LaunchOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let LaunchOptions {
+        force_opengl,
+        no_update_check,
+        startup_health,
+    } = options;
     let probe_path = std::env::var_os("VIDFISH_UI_PROBE").map(PathBuf::from);
     let window_size = std::env::var("VIDFISH_UI_SIZE")
         .ok()
@@ -35,6 +46,8 @@ pub fn run(
         .and_then(|(w, h)| Some([w? as f32, h? as f32]))
         .filter(|s| s[0] >= 800.0 && s[1] >= 600.0 && s[0] <= 3840.0 && s[1] <= 2160.0)
         .unwrap_or([1280.0, 800.0]);
+    let update_preferences =
+        vidfish::updater::Preferences::load(&path.with_file_name("updates.json"));
     let views = vidfish_core::views::Views::load(&path.with_file_name("views.json"))?;
     let engine = {
         let _guard = runtime.enter();
@@ -46,8 +59,15 @@ pub fn run(
         path.with_file_name("cameras.json"),
         config.camera_interface,
     ))?;
-    let recordings =
-        vidfish::acquisition::Supervisor::start(path.clone(), config.clone(), cameras.snapshot())?;
+    let mut recording_config = config.clone();
+    if startup_health.is_some() {
+        recording_config.auto_record = false;
+    }
+    let recordings = vidfish::acquisition::Supervisor::start(
+        path.clone(),
+        recording_config,
+        cameras.snapshot(),
+    )?;
     let record_snapshot = recordings.snapshot();
     let record_control = recordings.controller();
     let camera_snapshot = cameras.snapshot();
@@ -83,11 +103,19 @@ pub fn run(
         let _ = force_opengl;
         eframe::Renderer::Glow
     };
+    let icon_image =
+        image::load_from_memory(include_bytes!("../../../assets/vidfish.png"))?.into_rgba8();
+    let icon = egui::IconData {
+        width: icon_image.width(),
+        height: icon_image.height(),
+        rgba: icon_image.into_raw(),
+    };
     let result = eframe::run_native(
         "Vidfish",
         eframe::NativeOptions {
             renderer,
             viewport: egui::ViewportBuilder::default()
+                .with_icon(Arc::new(icon))
                 .with_inner_size(window_size)
                 .with_min_inner_size([800.0, 600.0]),
             ..Default::default()
@@ -108,6 +136,7 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
+                force_opengl,
                 interface: config
                     .camera_interface
                     .map(|ip| ip.to_string())
@@ -130,6 +159,8 @@ pub fn run(
                 new_h265: false,
                 config,
                 path,
+                startup_health,
+                startup_frames: 0,
                 status,
                 message: String::new(),
                 runtime: handle,
@@ -143,6 +174,13 @@ pub fn run(
                 fullscreen: None,
                 page: 0,
                 show_settings: false,
+                updates: updates::Updates {
+                    disabled: no_update_check,
+                    automatic_checks: update_preferences.as_ref().is_ok_and(|p|p.automatic_checks),
+                    status: update_preferences.as_ref().err().map(|e|format!("Update preferences could not be loaded: {e}. Automatic checks are disabled; camera settings are unchanged.")).unwrap_or_default(),
+                    open: update_preferences.is_err(),
+                    ..Default::default()
+                },
                 library: library::Library::default(),
                 note: String::new(),
                 event_job: None,
@@ -209,6 +247,7 @@ impl Slot {
     }
 }
 struct Desktop {
+    force_opengl: bool,
     adding_camera: bool,
     new_alias: String,
     new_address: String,
@@ -228,6 +267,8 @@ struct Desktop {
     login_password: zeroize::Zeroizing<String>,
     config: AppConfig,
     path: PathBuf,
+    startup_health: Option<PathBuf>,
+    startup_frames: u32,
     status: tokio::sync::watch::Receiver<vidfish_core::engine::EngineStatus>,
     message: String,
     runtime: tokio::runtime::Handle,
@@ -241,6 +282,7 @@ struct Desktop {
     fullscreen: Option<usize>,
     page: usize,
     show_settings: bool,
+    updates: updates::Updates,
     library: library::Library,
     note: String,
     event_job:
@@ -408,6 +450,8 @@ impl eframe::App for Desktop {
             )
         });
         self.draw_operator(ctx);
+        self.poll_startup_health();
+        self.poll_updates(ctx);
         self.camera_cleanup_dialog(ctx);
         self.write_probe(ctx);
         if self.adding_camera {

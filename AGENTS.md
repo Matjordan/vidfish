@@ -2,7 +2,7 @@
 
 - Work on an epic branch, never directly on `main`.
 - Commit each coherent change after its relevant checks pass; do not leave completed changes uncommitted.
-- Maintain one PR per epic (#1–#6). Reuse its existing branch and PR as implementation progresses.
+- Maintain one PR per epic. Reuse its existing branch and PR as implementation progresses.
 - Draft PRs may contain implementation plans; clearly distinguish plans from implemented acceptance criteria.
 - Do not close an epic until its child issues and required platform checks are complete.
 - Windows checks are paused at the user's request, including ready PRs and manual runs. Run Linux CI only; do not resume Windows testing without user direction. Releases still compile and package Windows, with only the package version/launch sanity check; Windows test suites and GUI smoke are skipped. The reusable workflow has a `windows_tests` switch for future restoration.
@@ -45,3 +45,17 @@ this behavior and the continued Windows-check pause.
 Issue #36 uses `feat/36-camera-list-cleanup` for persistent roster hiding/restoration,
 confirmed offline hiding, and recorder-lock-guarded inventory forgetting. Never remove
 scientific files during camera cleanup or turn hiding into a discovery/recording policy.
+
+Epic #41 (#37–#40) uses `epic/41-installers-updater` for per-user installers,
+owned immutable version bundles, official stable-release update prompts and
+recording-safe maintenance. Preserve the exclusive recording gate across runtime
+checks and desktop startup confirmation; do not send Stop All or mutate operator
+settings during update. Install/uninstall ownership manifests must never claim
+scientific files or follow symlinks. Windows installer/native update smoke checks
+are implemented under `windows_tests`. The user subsequently stopped automated
+Windows testing and will test on a computer. PR #43 now runs Windows compilation
+and installer packaging only (`windows_only: true`, `windows_tests: false`), with
+artifacts uploaded before optional smoke tests. Do not resume test suites without
+user direction. The general Windows-check pause remains in place. Physical Toughpad installer
+verification is pending; do not close this epic until its required platform checks
+are actually complete or the user explicitly changes those acceptance criteria.

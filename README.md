@@ -149,3 +149,5 @@ Scientific events (Epic 5): [all-camera grabs, recording references, notes and J
 Sessions (Epic 6): [named acquisitions, media library, portable export and opt-in retention](docs/sessions.md). All six epics are implemented; platform and timing limitations are documented.
 
 Follow-ups #32–#34 add operator visual polish, automatic all-adapter IPv4 discovery and shared camera login defaults with isolated authentication recovery.
+
+For per-user Windows/Linux installers, safe in-app updates, rollback and data-preserving uninstall, see [installation instructions](docs/installing.md). Portable releases remain available.

@@ -1,5 +1,6 @@
 [package]
 name = "vidfish"
+default-run = "vidfish"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +11,10 @@ desktop = ["dep:eframe", "dep:wgpu"]
 wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 
 [dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+sha2 = "0.10"
+semver = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 png = "0.18"
 time = { version = "0.3", features = ["formatting"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -36,3 +41,6 @@ wgpu = { version = "27.0.1", optional = true, default-features = false, features
 
 [dev-dependencies]
 vidfish-media = { path = "../vidfish-media", features = ["fixtures"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
