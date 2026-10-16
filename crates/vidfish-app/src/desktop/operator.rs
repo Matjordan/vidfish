@@ -489,7 +489,14 @@ impl Desktop {
         if let Some(frame) = slot.last_frame
             && frame.elapsed() > Duration::from_secs(5)
         {
-            return format!("STALE · last frame {}s ago", frame.elapsed().as_secs());
+            return format!(
+                "STALE · last frame {}s ago · {}",
+                frame.elapsed().as_secs(),
+                slot.preview
+                    .as_ref()
+                    .map(|p| p.status.borrow().clone())
+                    .unwrap_or_default()
+            );
         }
         slot.preview
             .as_ref()
@@ -588,7 +595,7 @@ impl Desktop {
                                     )
                                     .on_hover_text(state);
                                 });
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     if touch(
                                         ui,
                                         if self.selected_slot == index {
@@ -603,6 +610,11 @@ impl Desktop {
                                     }
                                     if self.fullscreen.is_none() && touch(ui, "Max").clicked() {
                                         maximize = Some(index);
+                                    }
+                                    if touch(ui, "Retry now").clicked()
+                                        && let Some(preview) = &self.slots[index].preview
+                                    {
+                                        preview.retry_now();
                                     }
                                     if touch(ui, "Close").clicked() {
                                         close = Some(index);
@@ -833,7 +845,7 @@ impl Desktop {
                     self.views_dirty = true;
                 }
             });
-            ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · captures all cameras asynchronously");
+            ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · Mark + Grab saves displayed frames; Grab All captures all cameras");
             if self.event_job.is_some(){ui.label("Saving / capturing cameras… recording continues independently");}
             if self.views.events_expanded {
                 ui.label(
@@ -874,7 +886,13 @@ impl Desktop {
                     input: vidfish::operator_events::Input {
                         camera: camera.camera.id.clone(),
                         label: camera.camera.alias.clone(),
-                        frame: None,
+                        frame: self
+                            .slots
+                            .iter()
+                            .find(|slot| {
+                                slot.camera_id.as_deref() == Some(camera.camera.id.as_str())
+                            })
+                            .and_then(|slot| slot.displayed_frame.clone()),
                     },
                     camera: Some(camera.camera.clone()),
                     profile: camera.profiles.first().cloned(),

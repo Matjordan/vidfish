@@ -335,8 +335,16 @@ def main():
                 raise RuntimeError("Mark unexpectedly captured images")
             stalled_fixture.stdin.write("resume\n")
             stalled_fixture.stdin.flush()
-            click("Show this group")
+            # Recovery must happen without reselecting cameras or replacing slots.
             until(ready)
+            recovered_slots = state()["slots"]
+            retried_camera = recovered_slots[0]["camera"]
+            retried_frame = recovered_slots[0]["frame"]
+            click("Retry now")
+            until(lambda: any(s["camera"] == retried_camera and s["frame"] > retried_frame
+                              and s["state"] == "Playing" for s in state()["slots"]))
+            if [s["camera"] for s in state()["slots"]] != [s["camera"] for s in recovered_slots]:
+                raise RuntimeError("Retry changed selected cameras")
             click("Mark + Grab All")
             mouse.mark_shortcut()
             def complete_events(kind):

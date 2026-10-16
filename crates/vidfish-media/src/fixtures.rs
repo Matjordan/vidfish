@@ -7,7 +7,7 @@ pub use onvif::OnvifFixture;
 use rtsp::prelude::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 
@@ -15,6 +15,10 @@ pub struct RtspFixture {
     pub uri: String,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    drop_keyframes: Arc<AtomicBool>,
+    dropped_keyframes: Arc<AtomicU64>,
+    teardown_requests: Arc<AtomicU64>,
+    clients: Arc<std::sync::Mutex<Vec<rtsp::RTSPClient>>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -22,6 +26,25 @@ impl RtspFixture {
     /// Simulate a silent transport stall while leaving the RTSP session alive.
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Release);
+    }
+    /// Lose IDR buffers while continuing to deliver interframes.
+    pub fn set_drop_keyframes(&self, drop: bool) {
+        self.drop_keyframes.store(drop, Ordering::Release);
+    }
+    pub fn dropped_keyframes(&self) -> u64 {
+        self.dropped_keyframes.load(Ordering::Acquire)
+    }
+    pub fn teardown_requests(&self) -> u64 {
+        self.teardown_requests.load(Ordering::Acquire)
+    }
+    /// Break an established TCP session without stopping the camera server.
+    pub fn disconnect_client(&self, index: usize) {
+        if let Some(client) = self.clients.lock().unwrap().get(index).cloned() {
+            client.close();
+        }
+    }
+    pub fn client_count(&self) -> usize {
+        self.clients.lock().unwrap().len()
     }
     pub fn start(width: u32, height: u32) -> Result<Self> {
         Self::start_codec(width, height, crate::Codec::H264)
@@ -53,11 +76,26 @@ impl RtspFixture {
         let stopping = stop.clone();
         let paused = Arc::new(AtomicBool::new(false));
         let pausing = paused.clone();
+        let drop_keyframes = Arc::new(AtomicBool::new(false));
+        let dropping = drop_keyframes.clone();
+        let dropped_keyframes = Arc::new(AtomicU64::new(0));
+        let dropped = dropped_keyframes.clone();
+        let teardown_requests = Arc::new(AtomicU64::new(0));
+        let teardowns = teardown_requests.clone();
+        let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connected = clients.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
         let worker = std::thread::spawn(move || {
             let context = gst::glib::MainContext::new();
             let result = context.with_thread_default(|| {
                 let server = rtsp::RTSPServer::new();
+                server.connect_client_connected(move |_, client| {
+                    connected.lock().unwrap().push(client.clone());
+                    let teardowns = teardowns.clone();
+                    client.connect_teardown_request(move |_, _| {
+                        teardowns.fetch_add(1, Ordering::Release);
+                    });
+                });
                 server.set_address("127.0.0.1");
                 server.set_service("0");
                 let factory = rtsp::RTSPMediaFactory::new();
@@ -65,10 +103,20 @@ impl RtspFixture {
                     crate::Codec::H264 => ("x264enc", "rtph264pay", ""),
                     crate::Codec::H265 => ("x265enc", "rtph265pay", "option-string=pools=1:frame-threads=1"),
                 };
-                factory.set_launch(&format!("( videotestsrc name=fixture-source is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
+                factory.set_launch(&format!("( videotestsrc name=fixture-source is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} name=fixture-encoder tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
                 factory.set_shared(true);
                 factory.connect_media_configure(move |_, media| {
                     let Ok(bin) = media.element().downcast::<gst::Bin>() else { return };
+                    if let Some(pad) = bin.by_name("fixture-encoder").and_then(|e| e.static_pad("src")) {
+                        let dropping = dropping.clone();
+                        let dropped = dropped.clone();
+                        pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+                            if dropping.load(Ordering::Acquire) && info.buffer().is_some_and(|b| !b.flags().contains(gst::BufferFlags::DELTA_UNIT)) {
+                                dropped.fetch_add(1, Ordering::Release);
+                                gst::PadProbeReturn::Drop
+                            } else { gst::PadProbeReturn::Ok }
+                        });
+                    }
                     let Some(source) = bin.by_name("fixture-source") else { return };
                     let Some(pad) = source.static_pad("src") else { return };
                     let pausing = pausing.clone();
@@ -107,6 +155,10 @@ impl RtspFixture {
                 uri,
                 stop,
                 paused,
+                drop_keyframes,
+                dropped_keyframes,
+                teardown_requests,
+                clients,
                 worker: Some(worker),
             }),
             _ => {

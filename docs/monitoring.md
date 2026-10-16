@@ -31,6 +31,28 @@ persist in the inventory and update displayed names without restarting a recordi
 or preview. `views.json` and inventory writes happen off the UI thread. Corrupt view
 preferences produce a startup error rather than being silently overwritten.
 
+## One camera connection
+
+While a camera is recording, the recording worker owns its only RTSP connection.
+The viewer and fresh event captures use the same encoded video through a local
+loopback feed; opening, closing or retrying a preview adds no camera/network stream.
+The viewer can display a frame before the writer finishes accepting it; viewing
+never waits for disk writes. Recording continues when the desktop closes or a viewer
+falls behind. Slow viewer clients discard their own backlog until a keyframe;
+recording data is not dropped to keep a viewer current.
+
+Stop existing recordings before installing this build. Older recording workers do not
+publish the local feed; if an older worker remains running, the viewer asks for a
+recording restart instead of adding another camera connection.
+
+The desktop automatically switches existing viewers to the recording feed when
+recording starts. While that feed connects, viewers wait instead of opening another
+camera connection. After recording stops, viewed cameras return to standalone RTSP
+access. Unrecorded cameras still use direct RTSP for viewing/captures. Sharing removes
+duplicate camera traffic; it does not remove the cameras' own bitrate requirements
+or decoder/GPU load. The optional `scripts/shared-stream-smoke.py` exercises the real
+native start/stop/view/capture transitions and counts camera connections.
+
 ## Recording confidence
 
 Camera availability, preview state, and recording state are independent. Each feed
@@ -49,9 +71,22 @@ scientific event timestamps and recording references are documented in events.md
 
 A frame older than five seconds is conspicuously **STALE**, including its age.
 The last image remains visible for context. Error/stalled feeds do not block controls
-or peer feeds. **Focus feed**, or reselecting the group, retries the preview after
-connectivity returns. Recording has its own stall deadline and bounded recovery
-policy; preview health never clears a recording failure.
+or peer feeds. Each persistent preview automatically rebuilds after five seconds
+without decoded frames, or after a pipeline error/end of stream. Initial connection
+has a fifteen-second frame deadline. Retry delays grow from 250 ms to four seconds
+plus up to 250 ms jitter, and reset after ten seconds of healthy frames. **Retry now**
+on a feed bypasses the delay and rebuilds that preview only. Closing a slot cancels
+retries. The last image stays visible with its stale age and current recovery status.
+
+`VIDFISH_PREVIEW_STALL_SECONDS` tunes the preview watchdog (integer 1–60, default 5);
+the initial-frame deadline is three times that setting. Keyframe requests and waiting
+for a clean keyframe are enabled when supported by the installed depayloader. Logs
+report encoded-buffer and RTP-buffer idle ages when the decoded-frame watchdog fires,
+without including camera URLs or credentials. The optional UI probe records decoded-frame
+age and texture-upload age separately (an upload is not proof of physical display
+presentation). Recording has its own encoded-video
+and file-progress watchdogs and recovery policy; preview health never clears a
+recording failure.
 
 ## Scientific event controls
 
@@ -89,9 +124,13 @@ choices, nonblocking Mark during stalls, all-camera captures, note edits, restor
 history, event-panel collapse, and a reduced one-worker limit.
 The same recorder run IDs continue growing across these actions in the passing Linux
 Xvfb check. Windows operator input automation remains unverified; Windows checks
-are paused at the user's request. PR and manual CI run Linux only. Versioned releases
-still compile/package Windows and check the bundled launcher, but skip Windows
-test suites and GUI/runtime smoke. Existing acquisition checks cover 16 simultaneous
+are paused at the user's request. GitHub PR and manual CI compile and package Linux/Windows executables and installers
+as downloadable artifacts. Automatic lint, tests, native smoke and package-launch
+checks are disabled.
+Versioned releases still compile and package Linux/Windows installers and uninstallers,
+but skip optional check suites on both platforms. Focused checks run locally during
+development. The reusable workflow retains opt-in `checks` and `windows_tests` switches;
+leave them off unless the operator explicitly requests checks. Existing acquisition checks cover 16 simultaneous
 recorder processes separately.
 
 The operator observed that the earlier four-stream build looked fine. Numerical

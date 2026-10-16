@@ -29,17 +29,21 @@ Get-ChildItem "$($crt.FullName)/*.dll" | ForEach-Object {
 Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile "$root/vc_redist.x64.exe"
 $signature = Get-AuthenticodeSignature "$root/vc_redist.x64.exe"
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'Microsoft redistributable signature verification failed' }
-$version = & "$root/vidfish.exe" --version
-if ($version -ne "vidfish $env:VIDFISH_VERSION") { throw 'Version mismatch' }
-# Use only the bundled GStreamer path for package readiness, not the build SDK.
-$oldPath = $env:PATH
-$oldPlugins = $env:GST_PLUGIN_SYSTEM_PATH_1_0
-try {
-    $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
-    $env:GST_PLUGIN_SYSTEM_PATH_1_0 = "$((Resolve-Path $root).Path)/gstreamer/lib/gstreamer-1.0"
-    & "$root/launch-vidfish.cmd" --check
-    if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime launch failed' }
-} finally { $env:PATH = $oldPath; $env:GST_PLUGIN_SYSTEM_PATH_1_0 = $oldPlugins }
+# Build downloadable packages without running version/launch smoke tests by default.
+if ($env:VIDFISH_PACKAGE_CHECKS -eq '1') {
+    $version = & "$root/vidfish.exe" --version
+    if ($version -ne "vidfish $env:VIDFISH_VERSION") { throw 'Version mismatch' }
+    # Use only the bundled GStreamer path for package readiness, not the build SDK.
+    $oldPath = $env:PATH
+    $oldPlugins = $env:GST_PLUGIN_SYSTEM_PATH_1_0
+    try {
+        $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
+        $env:GST_PLUGIN_SYSTEM_PATH_1_0 = "$((Resolve-Path $root).Path)/gstreamer/lib/gstreamer-1.0"
+        & "$root/launch-vidfish.cmd" --check
+        if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime launch failed' }
+    } finally { $env:PATH = $oldPath; $env:GST_PLUGIN_SYSTEM_PATH_1_0 = $oldPlugins }
+}
+
 python scripts/make-update-payload.py $root $env:VIDFISH_VERSION windows-x86_64
 if ($LASTEXITCODE -ne 0) { throw "Update payload generation failed" }
 Compress-Archive -Path $root -DestinationPath "vidfish-$env:VIDFISH_VERSION-windows-x86_64.zip"

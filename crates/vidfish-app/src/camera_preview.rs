@@ -8,6 +8,41 @@ pub fn source(
     profile: Option<&vidfish_onvif::Profile>,
     inventory: &Path,
 ) -> Result<(Source, Codec), String> {
+    if let Some(status) = crate::acquisition::read_status(inventory, &camera.id)
+        && status.state.active()
+        && (status.state == crate::acquisition::State::Starting
+            || crate::acquisition::active(inventory, &camera.id))
+    {
+        return status
+            .shared_feed
+            .map(|feed| {
+                let codec = feed.codec;
+                (Source::Shared(feed), codec)
+            })
+            .ok_or_else(|| if status.state == crate::acquisition::State::Recording {
+                "This recorder uses an older build. Stop and restart recording to enable shared viewing".into()
+            } else { "Waiting for the recording stream to connect".into() });
+    }
+    standalone_source(camera, profile, inventory)
+}
+
+pub fn standalone_source(
+    camera: &CameraRecord,
+    profile: Option<&vidfish_onvif::Profile>,
+    inventory: &Path,
+) -> Result<(Source, Codec), String> {
+    if crate::acquisition::active(inventory, &camera.id) {
+        return Err("Waiting for recording status before opening the shared feed".into());
+    }
+    direct_source(camera, profile, inventory)
+}
+
+/// The recording owner is the only path that may bypass its shared feed.
+pub fn direct_source(
+    camera: &CameraRecord,
+    profile: Option<&vidfish_onvif::Profile>,
+    inventory: &Path,
+) -> Result<(Source, Codec), String> {
     let (uri, codec) = if let Some(uri) = &camera.manual_rtsp {
         (
             uri.clone(),

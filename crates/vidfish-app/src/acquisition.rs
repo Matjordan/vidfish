@@ -56,6 +56,8 @@ pub struct Status {
     pub media_running_time_ns: Option<u64>,
     #[serde(default)]
     pub media_observed_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_feed: Option<vidfish_media::SharedFeed>,
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
@@ -375,6 +377,7 @@ fn supervise(
                 started_unix_ms: 0,
                 media_running_time_ns: None,
                 media_observed_unix_ms: 0,
+                shared_feed: None,
                 session_id: None,
                 session_directory: None,
             };
@@ -513,6 +516,7 @@ pub fn record_camera(
         started_unix_ms: 0,
         media_running_time_ns: None,
         media_observed_unix_ms: 0,
+        shared_feed: None,
         session_id: None,
         session_directory: None,
     };
@@ -555,7 +559,7 @@ pub fn record_camera(
                     .into(),
             );
         }
-        let (source, codec) = crate::camera_preview::source(
+        let (source, codec) = crate::camera_preview::direct_source(
             &camera,
             resolved.as_ref().and_then(|c| c.profiles.first()),
             &inventory,
@@ -592,6 +596,9 @@ pub fn record_camera(
             &run_directory,
             config.segment_seconds,
         )?;
+        status.shared_feed = Some(recording.shared_feed());
+        status.heartbeat_unix_ms = now();
+        write_status(config_path, &status)?;
         recording.wait_started(Duration::from_secs(15))?;
         status.output = recording.current_output();
         status.state = State::Recording;
@@ -611,6 +618,15 @@ pub fn record_camera(
                 .is_ok_and(|request| request.trim() == run_id)
         {
             recording.poll(Duration::from_millis(100))?;
+            if recording.video_idle() >= vidfish_media::segmented::STREAM_LOSS_TIMEOUT {
+                tracing::warn!(
+                    camera_id = id,
+                    encoded_idle_ms = recording.video_idle().as_millis() as u64,
+                    file_idle_ms = progress.elapsed().as_millis() as u64,
+                    "recording watchdog expired"
+                );
+                return Err("Encoded camera video stalled; reconnecting recording in a new run with a recorded gap".into());
+            }
             if heartbeat.elapsed() >= Duration::from_secs(1) {
                 let size = recording.bytes_written()?;
                 if let Some(output) = recording.current_output() {
@@ -629,7 +645,7 @@ pub fn record_camera(
                 if size > status.bytes_written {
                     progress = Instant::now();
                 }
-                if progress.elapsed() > Duration::from_secs(config.stall_seconds) {
+                if progress.elapsed() > Duration::from_secs(config.stall_seconds.max(2)) {
                     return Err("Recording file made no progress before the configured stall deadline; stream may be stalled".into());
                 }
                 status.media_running_time_ns = recording.running_time_ns();
@@ -700,9 +716,12 @@ fn record_event(config: &Path, status: &Status, event: &str) -> Result<()> {
             root.join("logs")
                 .join(format!("{}-{}.jsonl", status.camera_id, status.run_id)),
         )?;
+        // Feed credentials are transient process IPC, never scientific log metadata.
+        let mut logged_status = status.clone();
+        logged_status.shared_feed = None;
         serde_json::to_writer(
             &mut log,
-            &serde_json::json!({"unix_ms":now(),"event":event,"status":status}),
+            &serde_json::json!({"unix_ms":now(),"event":event,"status":logged_status}),
         )?;
         log.write_all(b"\n")?;
         log.sync_data()?;

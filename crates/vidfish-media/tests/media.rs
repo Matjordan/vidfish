@@ -81,7 +81,7 @@ fn rtsp_recording_survives_preview_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("camera.mkv");
     let recording = vidfish_media::Recording::start(&source, Codec::H264, &path).unwrap();
-    for _ in 0..2 {
+    for attempt in 1..=3 {
         let preview = Preview::start(source.clone(), Codec::H264);
         let start = Instant::now();
         while preview.frames.borrow().is_none() {
@@ -93,6 +93,14 @@ fn rtsp_recording_survives_preview_restart() {
             );
         }
         preview.join();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while camera.teardown_requests() < attempt {
+            assert!(
+                Instant::now() < deadline,
+                "preview closed without RTSP TEARDOWN"
+            );
+            recording.poll_error(Duration::from_millis(20)).unwrap();
+        }
         recording.poll_error(Duration::from_millis(250)).unwrap();
     }
     recording.finish().unwrap();
@@ -180,4 +188,233 @@ fn saved_rtsp_credentials_support_preview_and_stream_copy_without_uri_passwords(
     recording.finish().unwrap();
     let info = vidfish_media::inspect_recording(&output).unwrap();
     assert_eq!((info.width, info.height), (320, 240));
+}
+
+#[cfg(feature = "fixtures")]
+fn wait_frame(preview: &Preview, after: u64) -> u64 {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(frame) = preview.frames.borrow().as_ref()
+            && frame.number > after
+            && frame.received_at.elapsed() < Duration::from_millis(500)
+        {
+            return frame.number;
+        }
+        assert!(
+            Instant::now() < until,
+            "no fresh frame: {}",
+            *preview.status.borrow()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn silent_rtsp_stalls_recover_without_restarting_peer_or_resetting_frame_numbers() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let healthy = vidfish_media::fixtures::RtspFixture::start(320, 240).unwrap();
+        let preview = Preview::start_with_stall_timeout(
+            Source::Rtsp(camera.uri.clone()),
+            codec,
+            Duration::from_secs(1),
+        );
+        let peer = Preview::start(Source::Rtsp(healthy.uri.clone()), Codec::H264);
+        let before = wait_frame(&preview, 0);
+        let peer_before = wait_frame(&peer, 0);
+        camera.set_paused(true);
+        std::thread::sleep(Duration::from_millis(150));
+        camera.set_paused(false);
+        let resumed = wait_frame(&preview, before);
+        assert!(!preview.status.borrow().starts_with("Reconnecting"));
+        camera.set_paused(true);
+        let until = Instant::now() + Duration::from_secs(10);
+        while !preview.status.borrow().starts_with("Reconnecting") {
+            assert!(Instant::now() < until, "watchdog did not reconnect");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let stale = preview.frames.borrow().as_ref().unwrap().number;
+        assert!(stale >= resumed);
+        camera.set_paused(false);
+        preview.retry_now();
+        assert!(wait_frame(&preview, stale) > stale);
+        assert!(wait_frame(&peer, peer_before) > peer_before);
+        preview.join();
+        peer.join();
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn missing_keyframes_recover_after_idr_delivery_resumes() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let source = Source::Rtsp(camera.uri.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &source,
+            codec,
+            &directory.path().join("run"),
+            2,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        camera.set_drop_keyframes(true);
+        // Keep the shared server producing interframes, then join without an IDR.
+        std::thread::sleep(Duration::from_millis(200));
+        let preview = Preview::start_with_stall_timeout(source, codec, Duration::from_secs(1));
+        let started = Instant::now();
+        while camera.dropped_keyframes() < 2 || started.elapsed() < Duration::from_secs(4) {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(12),
+                "fixture did not drop keyframes"
+            );
+        }
+        // Some decoders conceal missing references and continue producing frames.
+        // That is valid: only an actual decoded-frame stall should reconnect.
+        // The separate silence test requires the watchdog to fire on a real stall.
+        let before = preview.frames.borrow().as_ref().map_or(0, |f| f.number);
+        let resumed = Instant::now();
+        camera.set_drop_keyframes(false);
+        let until = resumed + Duration::from_secs(15);
+        loop {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            if preview
+                .frames
+                .borrow()
+                .as_ref()
+                .is_some_and(|f| f.number > before && f.received_at >= resumed)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "no fresh video after keyframes resumed: {}",
+                *preview.status.borrow()
+            );
+        }
+        preview.join();
+        recording.finish().unwrap();
+    }
+}
+
+#[test]
+fn closing_preview_cancels_reconnect_backoff() {
+    // Reserve a loopback port number without accepting TCP connections.
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let preview = Preview::start(
+        Source::Rtsp(format!("rtsp://127.0.0.1:{port}/camera")),
+        Codec::H264,
+    );
+    let until = Instant::now() + Duration::from_secs(8);
+    while !preview.status.borrow().starts_with("Reconnecting") {
+        assert!(Instant::now() < until, "connection failure was not retried");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let start = Instant::now();
+    preview.join();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "stop waited for reconnect backoff"
+    );
+    drop(socket);
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn real_rtsp_disconnects_reconnect_into_the_same_playable_recording_file() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("run");
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            codec,
+            &run,
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output().unwrap();
+        // The camera recreates its live media with a fresh RTP timestamp epoch.
+        // Repeated real TCP breaks must not reset the writer clock or rotate files.
+        for connection in 0..3 {
+            camera.disconnect_client(connection);
+            let start = Instant::now();
+            loop {
+                recording.poll(Duration::from_millis(20)).unwrap();
+                assert_eq!(recording.current_output().as_ref(), Some(&original));
+                assert!(
+                    start.elapsed() < Duration::from_secs(2),
+                    "input did not reconnect inside file grace"
+                );
+                if camera.client_count() > connection + 1
+                    && recording.video_idle() < Duration::from_millis(100)
+                {
+                    // Require a frame after the old session was broken.
+                    if start.elapsed() > Duration::from_millis(300) {
+                        break;
+                    }
+                }
+            }
+        }
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            recording.poll(Duration::from_millis(20)).unwrap();
+        }
+        recording.finish().unwrap();
+        let info = vidfish_media::inspect_recording(&original).unwrap();
+        assert_eq!((info.width, info.height), (320, 240));
+        assert!(
+            info.duration_seconds > 1.0 && info.duration_seconds < 15.0,
+            "reconnect reset recording timestamps"
+        );
+        let events = std::fs::read_to_string(run.join("segments.jsonl")).unwrap();
+        assert_eq!(events.matches("\"opened\"").count(), 1);
+        assert_eq!(events.matches("\"closed\"").count(), 1);
+        let recovery = std::fs::read_to_string(run.join("input-recovery.jsonl")).unwrap();
+        assert_eq!(recovery.matches("\"input_lost\"").count(), 3);
+        assert_eq!(recovery.matches("\"input_recovered\"").count(), 3);
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn recording_viewers_and_snapshots_share_one_camera_connection() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            codec,
+            &root.path().join("run"),
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output();
+        for _ in 0..2 {
+            let preview = Preview::start(Source::Shared(recording.shared_feed()), codec);
+            wait_frame(&preview, 0);
+            let capture = vidfish_media::snapshot(
+                Source::Shared(recording.shared_feed()),
+                codec,
+                Duration::from_secs(3),
+            )
+            .unwrap();
+            assert_eq!((capture.width, capture.height), (320, 240));
+            preview.join();
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert_eq!(
+                camera.client_count(),
+                1,
+                "viewing/capture opened another camera session"
+            );
+            assert_eq!(recording.current_output(), original);
+        }
+        recording.finish().unwrap();
+    }
 }

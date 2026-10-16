@@ -317,8 +317,9 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
     let config_path = directory.path().join("config.json");
     let config = AppConfig {
         output_directory: directory.path().join("media"),
-        segment_seconds: 2,
-        stall_seconds: 3,
+        segment_seconds: 60,
+        // File-output health is separate from the two-second stream-loss policy.
+        stall_seconds: 30,
         ..Default::default()
     };
     config.save(&config_path).unwrap();
@@ -364,7 +365,80 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
         vidfish_media::Source::Rtsp(healthy.uri.clone()),
         vidfish_media::Codec::H264,
     );
+    let affected_preview = vidfish_media::Preview::start_with_stall_timeout(
+        vidfish_media::Source::Rtsp(troubled.uri.clone()),
+        vidfish_media::Codec::H264,
+        Duration::from_millis(400),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while affected_preview.frames.borrow().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "affected preview failed to start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let old_frame = affected_preview.frames.borrow().as_ref().unwrap().number;
+    let original_file = supervisor
+        .snapshot()
+        .borrow()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == bad_id)
+        .unwrap()
+        .output
+        .clone();
     troubled.set_paused(true);
+    // A preview's short watchdog must not shorten the recording's own policy.
+    let transient = Instant::now();
+    while transient.elapsed() < Duration::from_secs(1) {
+        let snapshot = supervisor.snapshot();
+        let snapshot = snapshot.borrow();
+        let status = snapshot
+            .cameras
+            .iter()
+            .find(|c| c.camera_id == bad_id)
+            .unwrap();
+        assert_eq!(status.run_id, bad_run, "brief outage restarted recording");
+        assert_eq!(
+            status.state,
+            State::Recording,
+            "brief outage stopped recording"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let interrupted_bytes = supervisor
+        .snapshot()
+        .borrow()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == bad_id)
+        .unwrap()
+        .bytes_written;
+    troubled.set_paused(false);
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id == bad_id
+                && c.run_id == bad_run
+                && c.state == State::Recording
+                && c.bytes_written > interrupted_bytes
+        })
+    });
+    assert_eq!(
+        supervisor
+            .snapshot()
+            .borrow()
+            .cameras
+            .iter()
+            .find(|c| c.camera_id == bad_id)
+            .unwrap()
+            .output,
+        original_file,
+        "short outage started a new file"
+    );
+    // A genuinely sustained interruption still creates a gap and a new run.
+    troubled.set_paused(true);
+    let sustained = Instant::now();
     // Durable failure history survives a fast retry transition.
     let events_path = directory
         .path()
@@ -378,6 +452,11 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
         assert!(Instant::now() < deadline, "silent stall was not detected");
         std::thread::sleep(Duration::from_millis(50));
     }
+    assert!(
+        // The last video buffer can precede fixture pause by one frame interval.
+        sustained.elapsed() >= Duration::from_millis(1800),
+        "recording rolled over before two-second loss timeout"
+    );
     assert!(
         preview.frames.borrow().is_some(),
         "healthy preview did not survive peer failure"
@@ -398,6 +477,17 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
                 && c.bytes_written > 0
         })
     });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while affected_preview.frames.borrow().as_ref().is_none_or(|f| {
+        f.number <= old_frame || f.received_at.elapsed() > Duration::from_millis(500)
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "affected preview failed to recover"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    affected_preview.join();
     preview.request_stop();
     preview.join();
     let switched = vidfish_media::Preview::start(
@@ -698,4 +788,137 @@ fn forget_requires_actual_recorder_stop_preserves_history_and_peer_and_auto_reco
         *session
     );
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
+}
+
+#[test]
+fn two_recorded_cameras_share_their_connections_with_viewing_and_capture() {
+    let root = tempfile::tempdir().unwrap();
+    let config_path = root.path().join("config.json");
+    let inventory = root.path().join("cameras.json");
+    let config = AppConfig {
+        output_directory: root.path().join("media"),
+        segment_seconds: 60,
+        ..Default::default()
+    };
+    config.save(&config_path).unwrap();
+    let first = RtspFixture::start(320, 240).unwrap();
+    let second = RtspFixture::start(320, 240).unwrap();
+    let mut store = CameraStore::default();
+    let first_id = store.add_manual("First", &first.uri).unwrap();
+    let second_id = store.add_manual("Second", &second.uri).unwrap();
+    store.save(&inventory).unwrap();
+    let manager = Manager::start(Options::new(inventory.clone(), None)).unwrap();
+    let supervisor = Supervisor::start_with_executable(
+        config_path,
+        config,
+        manager.snapshot(),
+        env!("CARGO_BIN_EXE_vidfish").into(),
+    )
+    .unwrap();
+    let mut cleanup = Cleanup {
+        manager: Some(manager),
+        supervisor: Some(supervisor),
+    };
+    let supervisor = cleanup.supervisor.as_ref().unwrap();
+    wait(supervisor, |s| {
+        s.cameras.len() == 2
+            && s.cameras
+                .iter()
+                .all(|c| c.state == State::Recording && c.shared_feed.is_some())
+    });
+    let original = supervisor.snapshot().borrow().cameras.clone();
+    let mut previews = Vec::new();
+    for camera in &store.cameras {
+        let (source, codec) = camera_preview::source(camera, None, &inventory).unwrap();
+        assert!(matches!(source, vidfish_media::Source::Shared(_)));
+        let preview = vidfish_media::Preview::start(source, codec);
+        let until = Instant::now() + Duration::from_secs(5);
+        while preview.frames.borrow().is_none() {
+            assert!(
+                Instant::now() < until,
+                "shared preview did not deliver video"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (source, codec) = camera_preview::source(camera, None, &inventory).unwrap();
+        vidfish_media::snapshot(source, codec, Duration::from_secs(3)).unwrap();
+        previews.push(preview);
+    }
+    assert_eq!(first.client_count(), 1);
+    assert_eq!(second.client_count(), 1);
+    first.disconnect_client(0);
+    let disconnected = Instant::now();
+    let until = disconnected + Duration::from_secs(5);
+    loop {
+        if first.client_count() >= 2
+            && previews.iter().all(|p| {
+                p.frames
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|f| f.received_at > disconnected)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "shared reader/viewer did not recover from TCP break"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    wait(supervisor, |s| {
+        original.iter().all(|before| {
+            s.cameras.iter().any(|c| {
+                c.camera_id == before.camera_id
+                    && c.run_id == before.run_id
+                    && c.output == before.output
+                    && c.state == State::Recording
+                    && c.bytes_written > before.bytes_written
+            })
+        })
+    });
+    for preview in previews {
+        preview.join();
+    }
+    assert_eq!(
+        first.client_count(),
+        2,
+        "viewer opened an extra RTSP connection"
+    );
+    assert_eq!(second.client_count(), 1);
+    supervisor
+        .controller()
+        .command(Control::Stop(first_id.clone()))
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera_id == first_id && c.state == State::Stopped)
+    });
+    let camera = store.cameras.iter().find(|c| c.id == first_id).unwrap();
+    let (source, _) = camera_preview::source(camera, None, &inventory).unwrap();
+    assert!(
+        matches!(source, vidfish_media::Source::Rtsp(_)),
+        "viewer-only camera did not return to direct access"
+    );
+    assert!(
+        supervisor
+            .snapshot()
+            .borrow()
+            .cameras
+            .iter()
+            .any(|c| c.camera_id == second_id && c.state == State::Recording)
+    );
+    cleanup.supervisor.take().unwrap().finish_all().unwrap();
+    for session in std::fs::read_dir(root.path().join("media")).unwrap() {
+        for log in std::fs::read_dir(session.unwrap().path().join("logs")).unwrap() {
+            let text = std::fs::read_to_string(log.unwrap().path()).unwrap();
+            for status in &original {
+                assert!(
+                    !text.contains(&status.shared_feed.as_ref().unwrap().identity),
+                    "local feed credential leaked into scientific logs"
+                );
+            }
+        }
+    }
 }

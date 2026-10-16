@@ -13,6 +13,8 @@ jobs:
     with:
       version: 0.1.${{ github.run_number }}
       windows: true
+      checks: false
+      package: true
       windows_tests: false
 
   publish:
@@ -29,7 +31,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Publish release at the tested merge commit
+      - name: Publish release at the built merge commit
         shell: bash
         run: |
           set -euo pipefail

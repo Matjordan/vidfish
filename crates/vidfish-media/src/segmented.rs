@@ -1,5 +1,8 @@
 //! Keyframe-aligned stream copy with a durable append-only fragment journal.
-use crate::{Codec, MediaError, Result, Source, bus_error, element, encoded_source, initialize};
+use crate::{
+    BufferProgress, Codec, MediaError, Result, Source, bus_error, element, initialize,
+    recording_input,
+};
 use gst::prelude::*;
 use gstreamer as gst;
 use serde::{Deserialize, Serialize};
@@ -8,6 +11,9 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// A brief input interruption must keep the current recording open.
+pub const STREAM_LOSS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FragmentEvent {
@@ -20,10 +26,22 @@ pub struct FragmentEvent {
 
 pub struct SegmentedRecording {
     pipeline: gst::Pipeline,
+    input: Option<gst::Pipeline>,
+    input_source: Source,
+    codec: Codec,
+    bridge: gstreamer_app::AppSrc,
+    timeline: recording_input::Timeline,
+    broker: crate::shared_feed::Broker,
+    retry_input: bool,
+    next_input_retry: Instant,
+    input_attempts: u32,
     journal: std::fs::File,
+    input_journal: std::fs::File,
     current: Option<PathBuf>,
     closed_bytes: u64,
     finalized: bool,
+    video_progress: BufferProgress,
+    pending_input_failure: Option<(MediaError, Instant)>,
 }
 impl SegmentedRecording {
     /// The caller owns a unique run directory. Refuse an existing directory so even
@@ -43,8 +61,27 @@ impl SegmentedRecording {
             .write(true)
             .open(directory.join("segments.jsonl"))
             .map_err(|_| MediaError("cannot create segment index".into()))?;
+        let input_journal = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(directory.join("input-recovery.jsonl"))
+            .map_err(|_| MediaError("cannot create recording input recovery index".into()))?;
         let pipeline = gst::Pipeline::new();
-        let parser = encoded_source(&pipeline, source, codec)?;
+        let parser = element(
+            match codec {
+                Codec::H264 => "h264parse",
+                Codec::H265 => "h265parse",
+            },
+            "parser",
+        )?;
+        let bridge = recording_input::writer_source();
+        pipeline
+            .add_many([bridge.upcast_ref(), &parser])
+            .map_err(|_| MediaError("cannot add persistent recording writer".into()))?;
+        bridge
+            .link(&parser)
+            .map_err(|_| MediaError("cannot link persistent recording writer".into()))?;
+        let video_progress = BufferProgress::attach(&parser, "src")?;
         let sink = element("splitmuxsink", "segments")?;
         sink.set_property(
             "location",
@@ -66,17 +103,37 @@ impl SegmentedRecording {
         parser
             .link(&sink)
             .map_err(|_| MediaError("cannot link segmented stream-copy output".into()))?;
-        let recording = Self {
+        let mut recording = Self {
             pipeline,
+            input: None,
+            input_source: source.clone(),
+            broker: crate::shared_feed::Broker::start(codec)?,
+            codec,
+            bridge,
+            timeline: std::sync::Arc::new(std::sync::Mutex::new(0)),
+            retry_input: false,
+            next_input_retry: Instant::now(),
+            input_attempts: 0,
             journal,
+            input_journal,
             current: None,
             closed_bytes: 0,
             finalized: false,
+            video_progress,
+            pending_input_failure: None,
         };
         recording
             .pipeline
             .set_state(gst::State::Playing)
             .map_err(|_| MediaError("cannot start segmented recording".into()))?;
+        recording.input = Some(recording_input::start(
+            source,
+            codec,
+            &recording.pipeline,
+            &recording.bridge,
+            recording.timeline.clone(),
+            recording.broker.publisher(),
+        )?);
         Ok(recording)
     }
     fn handle(&mut self, message: &gst::Message) -> Result<bool> {
@@ -132,36 +189,124 @@ impl SegmentedRecording {
         }
         Ok(false)
     }
+    fn input_event(&mut self, event: &str, reason: Option<&str>) -> Result<()> {
+        let entry = serde_json::json!({
+            "event": event, "output": self.current,
+            "running_time_ns": self.running_time_ns(),
+            "observed_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            "last_encoded_age_ms": self.video_idle().as_millis() as u64,
+            "attempt": self.input_attempts, "reason": reason,
+        });
+        serde_json::to_writer(&mut self.input_journal, &entry)
+            .map_err(|_| MediaError("cannot write input recovery index".into()))?;
+        self.input_journal
+            .write_all(b"\n")
+            .and_then(|_| self.input_journal.sync_data())
+            .map_err(|_| MediaError("cannot persist input recovery index".into()))
+    }
+    fn poll_input(&mut self) -> Result<()> {
+        if let Some(bus) = self.input.as_ref().and_then(|p| p.bus()) {
+            for _ in 0..64 {
+                let Some(message) =
+                    bus.pop_filtered(&[gst::MessageType::Error, gst::MessageType::Eos])
+                else {
+                    break;
+                };
+                let error = if message.type_() == gst::MessageType::Error {
+                    bus_error(&message)
+                } else {
+                    MediaError("camera input connection ended".into())
+                };
+                if self.pending_input_failure.is_none() {
+                    self.input_event("input_lost", Some(&error.to_string()))?;
+                }
+                self.pending_input_failure
+                    .get_or_insert((error, Instant::now()));
+                self.retry_input = true;
+            }
+        }
+        if self.retry_input
+            && self.video_idle() < STREAM_LOSS_TIMEOUT
+            && Instant::now() >= self.next_input_retry
+        {
+            if let Some(input) = self.input.take() {
+                let _ = input.set_state(gst::State::Null);
+            }
+            self.input_attempts = self.input_attempts.saturating_add(1);
+            tracing::warn!(
+                attempt = self.input_attempts,
+                "reconnecting recording input while retaining writer and file"
+            );
+            match recording_input::start(
+                &self.input_source,
+                self.codec,
+                &self.pipeline,
+                &self.bridge,
+                self.timeline.clone(),
+                self.broker.publisher(),
+            ) {
+                Ok(input) => {
+                    self.input = Some(input);
+                    self.retry_input = false;
+                }
+                Err(error) => {
+                    self.pending_input_failure = Some((error, Instant::now()));
+                }
+            }
+            if let Some((_, observed)) = &mut self.pending_input_failure {
+                *observed = Instant::now();
+            }
+            self.next_input_retry = Instant::now()
+                + Duration::from_millis(250u64 << self.input_attempts.saturating_sub(1).min(2));
+        }
+        if !self.retry_input
+            && self
+                .pending_input_failure
+                .as_ref()
+                .is_some_and(|(_, observed)| self.video_idle() < observed.elapsed())
+        {
+            tracing::info!(
+                attempts = self.input_attempts,
+                "recording input recovered in existing file"
+            );
+            self.input_event("input_recovered", None)?;
+            self.pending_input_failure = None;
+            self.input_attempts = 0;
+        }
+        if self.video_idle() >= STREAM_LOSS_TIMEOUT
+            && let Some((error, _)) = self.pending_input_failure.take()
+        {
+            return Err(error);
+        }
+        Ok(())
+    }
     pub fn poll(&mut self, timeout: Duration) -> Result<()> {
         let bus = self
             .pipeline
             .bus()
             .ok_or_else(|| MediaError("recording bus unavailable".into()))?;
+        let types = [
+            gst::MessageType::Error,
+            gst::MessageType::Eos,
+            gst::MessageType::Element,
+        ];
         if let Some(message) = bus.timed_pop_filtered(
             gst::ClockTime::from_nseconds(timeout.as_nanos().min(u64::MAX as u128) as u64),
-            &[
-                gst::MessageType::Error,
-                gst::MessageType::Eos,
-                gst::MessageType::Element,
-            ],
+            &types,
         ) && self.handle(&message)?
         {
-            return Err(MediaError("recording stream ended unexpectedly".into()));
+            return Err(MediaError("recording writer ended unexpectedly".into()));
         }
         // Drain bounded pending events before observing progress.
         for _ in 0..64 {
-            let Some(message) = bus.pop_filtered(&[
-                gst::MessageType::Error,
-                gst::MessageType::Eos,
-                gst::MessageType::Element,
-            ]) else {
+            let Some(message) = bus.pop_filtered(&types) else {
                 break;
             };
             if self.handle(&message)? {
-                return Err(MediaError("recording stream ended unexpectedly".into()));
+                return Err(MediaError("recording writer ended unexpectedly".into()));
             }
         }
-        Ok(())
+        self.poll_input()
     }
     pub fn wait_started(&mut self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
@@ -208,6 +353,12 @@ impl SegmentedRecording {
     pub fn current_output(&self) -> Option<PathBuf> {
         self.current.clone()
     }
+    pub fn shared_feed(&self) -> crate::SharedFeed {
+        self.broker.descriptor()
+    }
+    pub fn video_idle(&self) -> Duration {
+        self.video_progress.idle()
+    }
     pub fn bytes_written(&self) -> Result<u64> {
         Ok(self.closed_bytes
             + match &self.current {
@@ -218,7 +369,12 @@ impl SegmentedRecording {
             })
     }
     pub fn finish(mut self) -> Result<u64> {
-        self.pipeline.send_event(gst::event::Eos::new());
+        self.bridge
+            .end_of_stream()
+            .map_err(|_| MediaError("cannot finalize recording writer".into()))?;
+        if let Some(input) = self.input.take() {
+            let _ = input.set_state(gst::State::Null);
+        }
         let bus = self
             .pipeline
             .bus()
@@ -256,6 +412,59 @@ impl Drop for SegmentedRecording {
     fn drop(&mut self) {
         if !self.finalized {
             let _ = self.pipeline.set_state(gst::State::Null);
+            if let Some(input) = self.input.take() {
+                let _ = input.set_state(gst::State::Null);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod input_grace_tests {
+    use super::*;
+
+    #[test]
+    fn transient_input_error_preserves_file_but_output_error_is_immediate() {
+        let camera = crate::fixtures::RtspFixture::start(320, 240).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut recording = SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            Codec::H264,
+            &root.path().join("run"),
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output();
+        camera.disconnect_client(0);
+        let until = Instant::now() + Duration::from_secs(2);
+        while camera.client_count() < 2 || recording.pending_input_failure.is_some() {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert!(
+                Instant::now() < until,
+                "RTSP input did not recover inside grace period"
+            );
+        }
+        assert_eq!(recording.current_output(), original);
+        let output = recording.pipeline.by_name("segments").unwrap();
+        recording
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::ResourceError::Write, "output fault")
+                    .src(&output)
+                    .build(),
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Err(error) = recording.poll(Duration::from_millis(20)) {
+                assert!(error.to_string().contains("Write"));
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "output failure was hidden by stream grace"
+            );
         }
     }
 }

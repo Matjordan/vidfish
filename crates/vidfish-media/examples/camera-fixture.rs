@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = if std::env::args().any(|a| a == "--small") {
@@ -17,6 +17,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match command.trim() {
                 "pause" => control.set_paused(true),
                 "resume" => control.set_paused(false),
+                "clients" => {
+                    println!("CLIENTS {}", control.client_count());
+                    let _ = std::io::stdout().flush();
+                }
+                "disconnect-first" => control.disconnect_client(0),
+                "disconnect-last" => {
+                    if let Some(index) = control.client_count().checked_sub(1) {
+                        control.disconnect_client(index);
+                    }
+                }
                 _ => {}
             }
         }
