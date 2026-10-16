@@ -167,9 +167,12 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
             }
             rtsp.set_property_from_str("protocols", "tcp");
             rtsp.set_property("latency", 200u32);
-            rtsp.set_property("tcp-timeout", 5_000_000u64);
-            // A dead camera must not delay watchdog recovery waiting for TEARDOWN.
-            rtsp.set_property("teardown-timeout", 0u64);
+            // Allow transient congestion without forcing every recording to restart.
+            // Pipeline watchdogs enforce their own independent recovery policies.
+            rtsp.set_property("tcp-timeout", 20_000_000u64);
+            // Zero disables TEARDOWN altogether and can leave sessions on cameras
+            // with small connection limits when previews reconnect repeatedly.
+            rtsp.set_property("teardown-timeout", 100_000_000u64);
             let depay = element(
                 match codec {
                     Codec::H264 => "rtph264depay",
@@ -358,8 +361,28 @@ fn bus_error(message: &gst::Message) -> MediaError {
         .src()
         .map(|s| s.name().to_string())
         .unwrap_or_else(|| "unknown".into());
+    let category = match message.view() {
+        gst::MessageView::Error(message) => {
+            let error = message.error();
+            error
+                .kind::<gst::ResourceError>()
+                .map(|e| format!("resource {e:?}"))
+                .or_else(|| {
+                    error
+                        .kind::<gst::StreamError>()
+                        .map(|e| format!("stream {e:?}"))
+                })
+                .or_else(|| {
+                    error
+                        .kind::<gst::CoreError>()
+                        .map(|e| format!("core {e:?}"))
+                })
+                .unwrap_or_else(|| format!("unclassified code {}", error.code()))
+        }
+        _ => "unknown".into(),
+    };
     MediaError(format!(
-        "media pipeline error at {source}; check URI, codec, network, plugins, and output permissions"
+        "media pipeline error at {source} ({category}); check URI, codec, network, plugins, and output permissions"
     ))
 }
 

@@ -111,11 +111,15 @@ filesystem, network loss, and sustained disk writes during deployment testing.
 ## Silent RTSP stalls
 
 The recording worker checks encoded-video buffer progress independently of preview
-frames and file growth. After five seconds without encoded video (or the configured
-`stall_seconds` when shorter), it ends the failed run and lets the supervisor reconnect
-in a new run. The existing `stall_seconds` file-growth deadline still catches output
-stalls. A short interruption does not cause a reconnect. RTSP TCP reads remain bounded
-at five seconds; shutdown does not wait for a dead camera's TEARDOWN response.
+frames and file growth. Both recording watchdogs respect the configured `stall_seconds`
+(default 30 seconds). Preview's shorter deadline never shortens the recording deadline.
+A sustained stall ends the failed run and lets the supervisor reconnect in a new run;
+a brief preview outage does not force a healthy recording to reconnect. RTSP TCP reads
+use GStreamer's standard twenty-second timeout to tolerate transient congestion.
+Shutdown allows up to 100 ms to send TEARDOWN so cameras can release their sessions,
+while remaining bounded when a camera is unreachable. Disabling TEARDOWN can leave
+sessions allocated on cameras with limited connections and must not be used to speed
+up preview retries.
 Recovered runs retain separate segment journals and durable gap events. No missing
 footage is synthesized, and a playing preview does not imply a healthy recording.
 

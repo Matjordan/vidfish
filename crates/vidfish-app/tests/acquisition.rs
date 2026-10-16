@@ -318,8 +318,8 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
     let config = AppConfig {
         output_directory: directory.path().join("media"),
         segment_seconds: 2,
-        // Exercise the encoded-video watchdog rather than the longer file deadline.
-        stall_seconds: 30,
+        // Recording tolerates a brief preview outage but still recovers sustained stalls.
+        stall_seconds: 10,
         ..Default::default()
     };
     config.save(&config_path).unwrap();
@@ -379,6 +379,43 @@ fn stalled_recording_logs_gap_recovers_and_does_not_interrupt_peer_preview() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let old_frame = affected_preview.frames.borrow().as_ref().unwrap().number;
+    troubled.set_paused(true);
+    // A preview's short watchdog must not shorten the recording's own policy.
+    let transient = Instant::now();
+    while transient.elapsed() < Duration::from_secs(6) {
+        let snapshot = supervisor.snapshot();
+        let snapshot = snapshot.borrow();
+        let status = snapshot
+            .cameras
+            .iter()
+            .find(|c| c.camera_id == bad_id)
+            .unwrap();
+        assert_eq!(status.run_id, bad_run, "brief outage restarted recording");
+        assert_eq!(
+            status.state,
+            State::Recording,
+            "brief outage stopped recording"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let interrupted_bytes = supervisor
+        .snapshot()
+        .borrow()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == bad_id)
+        .unwrap()
+        .bytes_written;
+    troubled.set_paused(false);
+    wait(supervisor, |s| {
+        s.cameras.iter().any(|c| {
+            c.camera_id == bad_id
+                && c.run_id == bad_run
+                && c.state == State::Recording
+                && c.bytes_written > interrupted_bytes
+        })
+    });
+    // A genuinely sustained interruption still creates a gap and a new run.
     troubled.set_paused(true);
     // Durable failure history survives a fast retry transition.
     let events_path = directory

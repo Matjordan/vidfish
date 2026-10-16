@@ -611,7 +611,7 @@ pub fn record_camera(
                 .is_ok_and(|request| request.trim() == run_id)
         {
             recording.poll(Duration::from_millis(100))?;
-            if recording.video_idle() >= Duration::from_secs(config.stall_seconds.min(5)) {
+            if recording.video_idle() >= Duration::from_secs(config.stall_seconds) {
                 tracing::warn!(
                     camera_id = id,
                     encoded_idle_ms = recording.video_idle().as_millis() as u64,

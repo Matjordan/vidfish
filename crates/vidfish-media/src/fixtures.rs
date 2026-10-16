@@ -17,6 +17,7 @@ pub struct RtspFixture {
     paused: Arc<AtomicBool>,
     drop_keyframes: Arc<AtomicBool>,
     dropped_keyframes: Arc<AtomicU64>,
+    teardown_requests: Arc<AtomicU64>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -31,6 +32,9 @@ impl RtspFixture {
     }
     pub fn dropped_keyframes(&self) -> u64 {
         self.dropped_keyframes.load(Ordering::Acquire)
+    }
+    pub fn teardown_requests(&self) -> u64 {
+        self.teardown_requests.load(Ordering::Acquire)
     }
     pub fn start(width: u32, height: u32) -> Result<Self> {
         Self::start_codec(width, height, crate::Codec::H264)
@@ -66,11 +70,19 @@ impl RtspFixture {
         let dropping = drop_keyframes.clone();
         let dropped_keyframes = Arc::new(AtomicU64::new(0));
         let dropped = dropped_keyframes.clone();
+        let teardown_requests = Arc::new(AtomicU64::new(0));
+        let teardowns = teardown_requests.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
         let worker = std::thread::spawn(move || {
             let context = gst::glib::MainContext::new();
             let result = context.with_thread_default(|| {
                 let server = rtsp::RTSPServer::new();
+                server.connect_client_connected(move |_, client| {
+                    let teardowns = teardowns.clone();
+                    client.connect_teardown_request(move |_, _| {
+                        teardowns.fetch_add(1, Ordering::Release);
+                    });
+                });
                 server.set_address("127.0.0.1");
                 server.set_service("0");
                 let factory = rtsp::RTSPMediaFactory::new();
@@ -132,6 +144,7 @@ impl RtspFixture {
                 paused,
                 drop_keyframes,
                 dropped_keyframes,
+                teardown_requests,
                 worker: Some(worker),
             }),
             _ => {

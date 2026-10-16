@@ -81,7 +81,7 @@ fn rtsp_recording_survives_preview_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("camera.mkv");
     let recording = vidfish_media::Recording::start(&source, Codec::H264, &path).unwrap();
-    for _ in 0..2 {
+    for attempt in 1..=3 {
         let preview = Preview::start(source.clone(), Codec::H264);
         let start = Instant::now();
         while preview.frames.borrow().is_none() {
@@ -93,6 +93,14 @@ fn rtsp_recording_survives_preview_restart() {
             );
         }
         preview.join();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while camera.teardown_requests() < attempt {
+            assert!(
+                Instant::now() < deadline,
+                "preview closed without RTSP TEARDOWN"
+            );
+            recording.poll_error(Duration::from_millis(20)).unwrap();
+        }
         recording.poll_error(Duration::from_millis(250)).unwrap();
     }
     recording.finish().unwrap();
