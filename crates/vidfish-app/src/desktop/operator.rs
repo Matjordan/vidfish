@@ -845,7 +845,7 @@ impl Desktop {
                     self.views_dirty = true;
                 }
             });
-            ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · captures all cameras asynchronously");
+            ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · Mark + Grab saves displayed frames; Grab All captures all cameras");
             if self.event_job.is_some(){ui.label("Saving / capturing cameras… recording continues independently");}
             if self.views.events_expanded {
                 ui.label(
@@ -886,7 +886,13 @@ impl Desktop {
                     input: vidfish::operator_events::Input {
                         camera: camera.camera.id.clone(),
                         label: camera.camera.alias.clone(),
-                        frame: None,
+                        frame: self
+                            .slots
+                            .iter()
+                            .find(|slot| {
+                                slot.camera_id.as_deref() == Some(camera.camera.id.as_str())
+                            })
+                            .and_then(|slot| slot.displayed_frame.clone()),
                     },
                     camera: Some(camera.camera.clone()),
                     profile: camera.profiles.first().cloned(),

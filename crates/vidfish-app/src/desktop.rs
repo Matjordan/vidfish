@@ -235,6 +235,7 @@ struct Slot {
     texture: Option<egui::TextureHandle>,
     number: u64,
     displayed: u64,
+    displayed_frame: Option<std::sync::Arc<vidfish_media::Frame>>,
     last_frame: Option<Instant>,
     last_texture_upload: Option<Instant>,
     source_route: String,
@@ -430,6 +431,7 @@ impl eframe::App for Desktop {
                 slot.last_frame = Some(frame.received_at);
                 slot.last_texture_upload = Some(Instant::now());
                 slot.number = frame.number;
+                slot.displayed_frame = Some(frame);
                 slot.displayed += 1;
             }
         }
@@ -671,6 +673,7 @@ impl Desktop {
         slot.last_frame = None;
         slot.last_texture_upload = None;
         slot.texture = None;
+        slot.displayed_frame = None;
         slot.number = 0;
         slot.displayed = 0;
         slot.error = None;

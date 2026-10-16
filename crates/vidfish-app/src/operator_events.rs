@@ -101,6 +101,7 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
         inventory,
         grab,
     } = request;
+    let displayed_only = kind == "Mark + Grab All" || kind == "Mark + Grab";
     if note.len() > 16384 || inputs.len() > 16 {
         return Err("Operator action exceeds limits".into());
     }
@@ -172,7 +173,14 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
         for (index, item) in inputs.into_iter().enumerate() {
             let mut capture = event.captures[index].clone();
             let mut frame = item.input.frame;
-            if grab && let Some(camera) = &item.camera {
+            if grab && displayed_only {
+                capture.result = if frame.is_some() {
+                    "Displayed frame at action time; local receipt timestamp, not synchronized"
+                } else {
+                    "No displayed frame; camera not captured"
+                }
+                .into();
+            } else if grab && let Some(camera) = &item.camera {
                 // Fresh, one-shot all-camera capture. Never reuse an old selected frame.
                 if std::time::Instant::now() >= deadline {
                     frame = None;
@@ -195,8 +203,9 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
             capture.delay_ms = grab.then(|| now().saturating_sub(unix_ms));
             if grab
                 && let Some(frame) = frame.filter(|f| {
-                    action_at.saturating_duration_since(f.received_at)
-                        < std::time::Duration::from_secs(5)
+                    displayed_only
+                        || action_at.saturating_duration_since(f.received_at)
+                            < std::time::Duration::from_secs(5)
                 })
             {
                 let path = directory.join(format!("snapshot-{}.png", index));
@@ -231,7 +240,7 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
                     continue;
                 }
                 capture.image = Some(path);
-                if item.camera.is_none() {
+                if item.camera.is_none() && !displayed_only {
                     capture.result = "Latest displayed frame (not synchronized)".into();
                 }
                 capture.capture_unix_ms =
@@ -284,7 +293,59 @@ pub(crate) fn persist_event(
 mod tests {
     use super::*;
     #[test]
-    fn captures_are_playable_pngs_and_stale_unselected_cameras_remain_explicit() {
+    fn mark_grab_saves_exact_displayed_pixels_without_contacting_camera() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = vidfish_core::cameras::CameraStore::default();
+        store
+            .add_manual("Unavailable camera", "rtsp://127.0.0.1:1/absent")
+            .unwrap();
+        let frame = Arc::new(vidfish_media::Frame {
+            width: 2,
+            height: 2,
+            rgb: (0..12).collect(),
+            number: 42,
+            // Even a frozen image is the image the operator actually saw.
+            received_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
+        });
+        let input = |frame| CameraInput {
+            input: Input {
+                camera: store.cameras[0].id.clone(),
+                label: "Camera".into(),
+                frame,
+            },
+            camera: Some(store.cameras[0].clone()),
+            profile: None,
+            recording: Default::default(),
+        };
+        let saved = save_request(
+            root.path(),
+            Request {
+                kind: "Mark + Grab All".into(),
+                note: "visible image".into(),
+                unix_ms: now(),
+                elapsed_ns: 0,
+                inputs: vec![input(Some(frame.clone())), input(None)],
+                inventory: root.path().join("missing.json"),
+                grab: true,
+            },
+        )
+        .unwrap();
+        let capture = &saved.event.captures[0];
+        let pixels = image::open(capture.image.as_ref().unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(pixels.as_raw(), &frame.rgb);
+        assert!(capture.result.starts_with("Displayed frame"));
+        assert!(capture.capture_unix_ms.unwrap() <= saved.event.unix_ms.saturating_sub(9_000));
+        assert!(saved.event.captures[1].image.is_none());
+        assert!(
+            saved.event.captures[1]
+                .result
+                .contains("No displayed frame")
+        );
+    }
+    #[test]
+    fn grab_all_rejects_stale_frames_and_reports_unselected_cameras() {
         let root = tempfile::tempdir().unwrap();
         let frame = Arc::new(vidfish_media::Frame {
             width: 2,
@@ -299,7 +360,7 @@ mod tests {
         });
         let saved = save(
             root.path(),
-            "Mark + Grab All",
+            "Grab All",
             "sample note".into(),
             5,
             vec![
