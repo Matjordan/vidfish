@@ -12,13 +12,15 @@ use std::{
 };
 
 mod recording_input;
+mod shared_feed;
+pub use shared_feed::SharedFeed;
 pub mod segmented;
 pub use segmented::SegmentedRecording;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Codec {
     H264,
     H265,
@@ -26,6 +28,7 @@ pub enum Codec {
 
 #[derive(Clone)]
 pub enum Source {
+    Shared(SharedFeed),
     Rtsp(String),
     AuthenticatedRtsp {
         uri: String,
@@ -204,6 +207,15 @@ fn encoded_source(pipeline: &gst::Pipeline, source: &Source, codec: Codec) -> Re
                     let _ = pad.link(&sink);
                 }
             });
+        }
+        Source::Shared(feed) => {
+            let local = shared_feed::source(feed)?;
+            pipeline
+                .add(&local)
+                .map_err(|_| MediaError("cannot add shared recording input".into()))?;
+            local
+                .link(&parser)
+                .map_err(|_| MediaError("cannot link shared recording input".into()))?;
         }
         Source::TestPattern { width, height } => {
             let test = element("videotestsrc", "fixture")?;

@@ -26,6 +26,7 @@ pub(crate) fn start(
     writer: &gst::Pipeline,
     destination: &gstreamer_app::AppSrc,
     timeline: Timeline,
+    publisher: crate::shared_feed::Publisher,
 ) -> Result<gst::Pipeline> {
     let input = gst::Pipeline::new();
     let parser = encoded_source(&input, source, codec)?;
@@ -109,6 +110,7 @@ pub(crate) fn start(
                     let mut next = timeline.lock().unwrap();
                     *next = (*next).max(end);
                 }
+                publisher.publish(buffer.clone(), caps);
                 destination.push_buffer(buffer)
             })
             .build(),

@@ -375,5 +375,46 @@ fn real_rtsp_disconnects_reconnect_into_the_same_playable_recording_file() {
         let events = std::fs::read_to_string(run.join("segments.jsonl")).unwrap();
         assert_eq!(events.matches("\"opened\"").count(), 1);
         assert_eq!(events.matches("\"closed\"").count(), 1);
+        let recovery = std::fs::read_to_string(run.join("input-recovery.jsonl")).unwrap();
+        assert_eq!(recovery.matches("\"input_lost\"").count(), 3);
+        assert_eq!(recovery.matches("\"input_recovered\"").count(), 3);
+    }
+}
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn recording_viewers_and_snapshots_share_one_camera_connection() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            codec,
+            &root.path().join("run"),
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output();
+        for _ in 0..2 {
+            let preview = Preview::start(Source::Shared(recording.shared_feed()), codec);
+            wait_frame(&preview, 0);
+            let capture = vidfish_media::snapshot(
+                Source::Shared(recording.shared_feed()),
+                codec,
+                Duration::from_secs(3),
+            )
+            .unwrap();
+            assert_eq!((capture.width, capture.height), (320, 240));
+            preview.join();
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert_eq!(
+                camera.client_count(),
+                1,
+                "viewing/capture opened another camera session"
+            );
+            assert_eq!(recording.current_output(), original);
+        }
+        recording.finish().unwrap();
     }
 }

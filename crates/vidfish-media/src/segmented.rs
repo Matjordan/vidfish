@@ -31,10 +31,12 @@ pub struct SegmentedRecording {
     codec: Codec,
     bridge: gstreamer_app::AppSrc,
     timeline: recording_input::Timeline,
+    broker: crate::shared_feed::Broker,
     retry_input: bool,
     next_input_retry: Instant,
     input_attempts: u32,
     journal: std::fs::File,
+    input_journal: std::fs::File,
     current: Option<PathBuf>,
     closed_bytes: u64,
     finalized: bool,
@@ -59,6 +61,11 @@ impl SegmentedRecording {
             .write(true)
             .open(directory.join("segments.jsonl"))
             .map_err(|_| MediaError("cannot create segment index".into()))?;
+        let input_journal = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(directory.join("input-recovery.jsonl"))
+            .map_err(|_| MediaError("cannot create recording input recovery index".into()))?;
         let pipeline = gst::Pipeline::new();
         let parser = element(
             match codec {
@@ -100,6 +107,7 @@ impl SegmentedRecording {
             pipeline,
             input: None,
             input_source: source.clone(),
+            broker: crate::shared_feed::Broker::start(codec)?,
             codec,
             bridge,
             timeline: std::sync::Arc::new(std::sync::Mutex::new(0)),
@@ -107,6 +115,7 @@ impl SegmentedRecording {
             next_input_retry: Instant::now(),
             input_attempts: 0,
             journal,
+            input_journal,
             current: None,
             closed_bytes: 0,
             finalized: false,
@@ -123,6 +132,7 @@ impl SegmentedRecording {
             &recording.pipeline,
             &recording.bridge,
             recording.timeline.clone(),
+            recording.broker.publisher(),
         )?);
         Ok(recording)
     }
@@ -179,6 +189,21 @@ impl SegmentedRecording {
         }
         Ok(false)
     }
+    fn input_event(&mut self, event: &str, reason: Option<&str>) -> Result<()> {
+        let entry = serde_json::json!({
+            "event": event, "output": self.current,
+            "running_time_ns": self.running_time_ns(),
+            "observed_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            "last_encoded_age_ms": self.video_idle().as_millis() as u64,
+            "attempt": self.input_attempts, "reason": reason,
+        });
+        serde_json::to_writer(&mut self.input_journal, &entry)
+            .map_err(|_| MediaError("cannot write input recovery index".into()))?;
+        self.input_journal
+            .write_all(b"\n")
+            .and_then(|_| self.input_journal.sync_data())
+            .map_err(|_| MediaError("cannot persist input recovery index".into()))
+    }
     fn poll_input(&mut self) -> Result<()> {
         if let Some(bus) = self.input.as_ref().and_then(|p| p.bus()) {
             for _ in 0..64 {
@@ -192,6 +217,9 @@ impl SegmentedRecording {
                 } else {
                     MediaError("camera input connection ended".into())
                 };
+                if self.pending_input_failure.is_none() {
+                    self.input_event("input_lost", Some(&error.to_string()))?;
+                }
                 self.pending_input_failure
                     .get_or_insert((error, Instant::now()));
                 self.retry_input = true;
@@ -215,6 +243,7 @@ impl SegmentedRecording {
                 &self.pipeline,
                 &self.bridge,
                 self.timeline.clone(),
+                self.broker.publisher(),
             ) {
                 Ok(input) => {
                     self.input = Some(input);
@@ -240,6 +269,7 @@ impl SegmentedRecording {
                 attempts = self.input_attempts,
                 "recording input recovered in existing file"
             );
+            self.input_event("input_recovered", None)?;
             self.pending_input_failure = None;
             self.input_attempts = 0;
         }
@@ -322,6 +352,9 @@ impl SegmentedRecording {
     }
     pub fn current_output(&self) -> Option<PathBuf> {
         self.current.clone()
+    }
+    pub fn shared_feed(&self) -> crate::SharedFeed {
+        self.broker.descriptor()
     }
     pub fn video_idle(&self) -> Duration {
         self.video_progress.idle()

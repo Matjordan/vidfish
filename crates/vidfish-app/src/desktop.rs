@@ -237,6 +237,7 @@ struct Slot {
     displayed: u64,
     last_frame: Option<Instant>,
     last_texture_upload: Option<Instant>,
+    source_route: String,
 }
 impl Slot {
     fn new(preview: Preview, label: String) -> Self {
@@ -355,6 +356,7 @@ impl eframe::App for Desktop {
             self.saving = Some(receiver);
         }
         self.reconcile_camera_views();
+        self.reconcile_preview_routes();
         self.poll_view_save();
         if self.required_previews == 0 {
             let restore: Vec<_> = self
@@ -584,6 +586,48 @@ impl eframe::App for Desktop {
 }
 
 impl Desktop {
+    fn preview_route(&self, id: &str) -> String {
+        self.record_status
+            .cameras
+            .iter()
+            .find(|c| c.camera_id == id && c.state.active())
+            .map(|c| {
+                c.shared_feed.as_ref().map_or_else(
+                    || format!("waiting:{}", c.run_id),
+                    |feed| format!("shared:{}", feed.identity),
+                )
+            })
+            .unwrap_or_else(|| "direct".into())
+    }
+    fn reconcile_preview_routes(&mut self) {
+        let changed: Vec<_> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let id = slot.camera_id.as_ref()?;
+                if slot.pending.is_some() || slot.source_route == self.preview_route(id) {
+                    return None;
+                }
+                let camera = self
+                    .camera_status
+                    .cameras
+                    .iter()
+                    .find(|c| &c.camera.id == id)?;
+                Some((
+                    index,
+                    camera.camera.clone(),
+                    camera.profiles.first().cloned(),
+                ))
+            })
+            .collect();
+        let selected = self.selected_slot;
+        for (index, camera, profile) in changed {
+            self.selected_slot = index;
+            self.open_preview(camera, profile);
+        }
+        self.selected_slot = selected;
+    }
     fn open_preview(
         &mut self,
         camera: vidfish_core::cameras::CameraRecord,
@@ -614,7 +658,15 @@ impl Desktop {
             self.fullscreen = Some(selected);
         }
         self.views_dirty = true;
+        let route = self.preview_route(&camera.id);
+        let recording = self
+            .record_status
+            .cameras
+            .iter()
+            .find(|c| c.camera_id == camera.id && c.state.active())
+            .map(|c| (c.state, c.shared_feed.clone()));
         let slot = &mut self.slots[self.selected_slot];
+        slot.source_route = route;
         let old = slot.preview.take();
         slot.last_frame = None;
         slot.last_texture_upload = None;
@@ -634,8 +686,17 @@ impl Desktop {
             if sender.is_closed() {
                 return;
             }
-            let result = vidfish::camera_preview::source(&camera, profile.as_ref(), &inventory)
-                .map(|(source, codec)| Some(Preview::start(source, codec)));
+            let source = match recording {
+                Some((_, Some(feed))) => {
+                    let codec = feed.codec;
+                    Ok((Source::Shared(feed), codec))
+                }
+                Some((vidfish::acquisition::State::Recording, None)) => Err(
+                    "This recorder uses an older build. Stop and restart recording to enable shared viewing".into()),
+                Some((_, None)) => Err("Waiting for the recording stream to connect".into()),
+                None => vidfish::camera_preview::standalone_source(&camera, profile.as_ref(), &inventory),
+            };
+            let result = source.map(|(source, codec)| Some(Preview::start(source, codec)));
             if let Err(Ok(Some(preview))) = sender.send(result) {
                 preview.join();
             }

@@ -31,6 +31,28 @@ persist in the inventory and update displayed names without restarting a recordi
 or preview. `views.json` and inventory writes happen off the UI thread. Corrupt view
 preferences produce a startup error rather than being silently overwritten.
 
+## One camera connection
+
+While a camera is recording, the recording worker owns its only RTSP connection.
+The viewer and fresh event captures use the same encoded video through a local
+loopback feed; opening, closing or retrying a preview adds no camera/network stream.
+The viewer can display a frame before the writer finishes accepting it; viewing
+never waits for disk writes. Recording continues when the desktop closes or a viewer
+falls behind. Slow viewer clients discard their own backlog until a keyframe;
+recording data is not dropped to keep a viewer current.
+
+Stop existing recordings before installing this build. Older recording workers do not
+publish the local feed; if an older worker remains running, the viewer asks for a
+recording restart instead of adding another camera connection.
+
+The desktop automatically switches existing viewers to the recording feed when
+recording starts. While that feed connects, viewers wait instead of opening another
+camera connection. After recording stops, viewed cameras return to standalone RTSP
+access. Unrecorded cameras still use direct RTSP for viewing/captures. Sharing removes
+duplicate camera traffic; it does not remove the cameras' own bitrate requirements
+or decoder/GPU load. The optional `scripts/shared-stream-smoke.py` exercises the real
+native start/stop/view/capture transitions and counts camera connections.
+
 ## Recording confidence
 
 Camera availability, preview state, and recording state are independent. Each feed

@@ -789,3 +789,136 @@ fn forget_requires_actual_recorder_stop_preserves_history_and_peer_and_auto_reco
     );
     cleanup.supervisor.take().unwrap().finish_all().unwrap();
 }
+
+#[test]
+fn two_recorded_cameras_share_their_connections_with_viewing_and_capture() {
+    let root = tempfile::tempdir().unwrap();
+    let config_path = root.path().join("config.json");
+    let inventory = root.path().join("cameras.json");
+    let config = AppConfig {
+        output_directory: root.path().join("media"),
+        segment_seconds: 60,
+        ..Default::default()
+    };
+    config.save(&config_path).unwrap();
+    let first = RtspFixture::start(320, 240).unwrap();
+    let second = RtspFixture::start(320, 240).unwrap();
+    let mut store = CameraStore::default();
+    let first_id = store.add_manual("First", &first.uri).unwrap();
+    let second_id = store.add_manual("Second", &second.uri).unwrap();
+    store.save(&inventory).unwrap();
+    let manager = Manager::start(Options::new(inventory.clone(), None)).unwrap();
+    let supervisor = Supervisor::start_with_executable(
+        config_path,
+        config,
+        manager.snapshot(),
+        env!("CARGO_BIN_EXE_vidfish").into(),
+    )
+    .unwrap();
+    let mut cleanup = Cleanup {
+        manager: Some(manager),
+        supervisor: Some(supervisor),
+    };
+    let supervisor = cleanup.supervisor.as_ref().unwrap();
+    wait(supervisor, |s| {
+        s.cameras.len() == 2
+            && s.cameras
+                .iter()
+                .all(|c| c.state == State::Recording && c.shared_feed.is_some())
+    });
+    let original = supervisor.snapshot().borrow().cameras.clone();
+    let mut previews = Vec::new();
+    for camera in &store.cameras {
+        let (source, codec) = camera_preview::source(camera, None, &inventory).unwrap();
+        assert!(matches!(source, vidfish_media::Source::Shared(_)));
+        let preview = vidfish_media::Preview::start(source, codec);
+        let until = Instant::now() + Duration::from_secs(5);
+        while preview.frames.borrow().is_none() {
+            assert!(
+                Instant::now() < until,
+                "shared preview did not deliver video"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (source, codec) = camera_preview::source(camera, None, &inventory).unwrap();
+        vidfish_media::snapshot(source, codec, Duration::from_secs(3)).unwrap();
+        previews.push(preview);
+    }
+    assert_eq!(first.client_count(), 1);
+    assert_eq!(second.client_count(), 1);
+    first.disconnect_client(0);
+    let disconnected = Instant::now();
+    let until = disconnected + Duration::from_secs(5);
+    loop {
+        if first.client_count() >= 2
+            && previews.iter().all(|p| {
+                p.frames
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|f| f.received_at > disconnected)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "shared reader/viewer did not recover from TCP break"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    wait(supervisor, |s| {
+        original.iter().all(|before| {
+            s.cameras.iter().any(|c| {
+                c.camera_id == before.camera_id
+                    && c.run_id == before.run_id
+                    && c.output == before.output
+                    && c.state == State::Recording
+                    && c.bytes_written > before.bytes_written
+            })
+        })
+    });
+    for preview in previews {
+        preview.join();
+    }
+    assert_eq!(
+        first.client_count(),
+        2,
+        "viewer opened an extra RTSP connection"
+    );
+    assert_eq!(second.client_count(), 1);
+    supervisor
+        .controller()
+        .command(Control::Stop(first_id.clone()))
+        .unwrap();
+    wait(supervisor, |s| {
+        s.cameras
+            .iter()
+            .any(|c| c.camera_id == first_id && c.state == State::Stopped)
+    });
+    let camera = store.cameras.iter().find(|c| c.id == first_id).unwrap();
+    let (source, _) = camera_preview::source(camera, None, &inventory).unwrap();
+    assert!(
+        matches!(source, vidfish_media::Source::Rtsp(_)),
+        "viewer-only camera did not return to direct access"
+    );
+    assert!(
+        supervisor
+            .snapshot()
+            .borrow()
+            .cameras
+            .iter()
+            .any(|c| c.camera_id == second_id && c.state == State::Recording)
+    );
+    cleanup.supervisor.take().unwrap().finish_all().unwrap();
+    for session in std::fs::read_dir(root.path().join("media")).unwrap() {
+        for log in std::fs::read_dir(session.unwrap().path().join("logs")).unwrap() {
+            let text = std::fs::read_to_string(log.unwrap().path()).unwrap();
+            for status in &original {
+                assert!(
+                    !text.contains(&status.shared_feed.as_ref().unwrap().identity),
+                    "local feed credential leaked into scientific logs"
+                );
+            }
+        }
+    }
+}

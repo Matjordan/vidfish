@@ -81,7 +81,9 @@ segments remain intact, and the open fragment is retained.
 File growth across closed and current segments proves progress. No growth for the saved
 stall deadline (1–3600 seconds) fails the recorder even if a preview remains healthy.
 Startup waits at most 15 seconds for writable video after profile resolution. Media,
-write, index, and network errors fail only the affected recorder. Recovery retries
+write and index errors fail only the affected recorder. Input connection errors
+first reconnect the reader while preserving the writer and file during the two-second
+grace period. Recovery retries
 with bounded backoff up to 60 seconds; restoring connectivity/free space permits a
 new run. Stop all or per-camera Stop suppresses retries. A preview is never used to
 reset recording failure/recovery state.
@@ -137,3 +139,23 @@ preview and recording. Loopback fault tests cover H.264/H.265 silence and missin
 keyframes plus recording recovery with an unaffected peer. Physical-camera recovery
 and comparison against Cayenne remain operator validation; cloud fixtures do not
 establish those results.
+
+
+## Shared viewing and input recovery evidence
+
+The recording process publishes its encoded frames over an automatically provisioned
+loopback-only feed. A per-run random identity prevents attaching to a stale endpoint;
+no camera URL/login is forwarded to viewers. At most eight local clients are admitted,
+with two encoded packets queued per client (at most 4 MiB per packet). The publisher
+never waits for socket writes or viewer decoding. Slow clients wait for a fresh IDR
+after losing their own backlog; recording retains its separate bounded writer queue.
+Fresh captures of recorded cameras also use this feed, including cameras not displayed.
+Transient feed endpoints/identities remain in runtime status, outside scientific logs.
+
+`input-recovery.jsonl` in each recording run records `input_lost` and `input_recovered`
+events, the current output, writer running time, observation time, last encoded-buffer
+age and a safe error category. These entries preserve evidence of short connection
+gaps inside the same file; they do not fabricate missing frames or exact camera-side
+timestamps. `segments.jsonl` retains only actual file-open/file-close boundaries.
+Repeated real TCP disconnect tests cover H.264 and H.265, including fresh RTP timestamp
+epochs, unchanged output paths, playable final files and durable recovery events.
