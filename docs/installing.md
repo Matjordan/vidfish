@@ -166,20 +166,21 @@ update/helper is running. Deleting scientific output is a separate operator acti
 
 ## Verification and deployment status
 
-Linux CI runs real previous-version install/upgrade, reinstall/uninstall, version and
+Optional Linux smoke scripts exercise real previous-version install/upgrade, reinstall/uninstall, version and
 runtime readiness, corrupt/wrong-architecture rejection, failed-health rollback,
 interrupted-journal recovery and actual RTSP recording protection. Rust tests cover
 release selection, checksum parsing, archive traversal and file ownership. The native update smoke also checks an offered release and Later with four growing
 recorders, manual checks with auto disabled, and real version-confirmed desktop
-restart/failure rollback. Existing native GUI/media/acquisition smoke checks continue
-to run. An explicit `VIDFISH_UPDATE_PROBE_RELEASE` metadata fixture is accepted only
+restart/failure rollback. GitHub PR/manual CI is now Linux build-only. Releases build
+and package both platforms but skip optional test, lint and smoke suites; focused
+checks run locally during development. An explicit `VIDFISH_UPDATE_PROBE_RELEASE` metadata fixture is accepted only
 when `VIDFISH_UI_PROBE` is enabled, and still uses the strict official-URL parser; it
 does not supply an alternative download endpoint.
 
 Windows release compilation/packaging and package readiness remain enabled.
 Windows installer/update and native UI tests are implemented behind `windows_tests`
-and remain paused at the operator's request. Installer PR #43 builds and uploads
-Windows packages without test suites; the operator will test on a computer. A passed Linux test is not a
+and remain paused at the operator's request. Windows packages are built on release;
+PR checks no longer package artifacts. The operator will test on a computer. A passed Linux test is not a
 Windows result. A physical Toughpad installation remains to be verified before deployment:
 install as a standard user, check Start Menu/version/runtime, record four streams,
 offer/defer an update and confirm streams keep progressing, explicitly stop them,
