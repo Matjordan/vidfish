@@ -16,7 +16,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: 0.1.0-ci.${{ github.run_number }}
-      windows: false
+      windows: true
       checks: false
-      package: false
+      package: true
       windows_tests: false

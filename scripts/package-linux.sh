@@ -11,6 +11,9 @@ cp scripts/launch-vidfish.sh scripts/install.sh scripts/uninstall.sh "$root/"
 cp assets/vidfish.* "$root/assets/"
 chmod +x "$root/"*.sh
 python3 scripts/make-update-payload.py "$root" "$VIDFISH_VERSION" linux-x86_64
-test "$("$root/vidfish" --version)" = "vidfish $VIDFISH_VERSION"
-"$root/launch-vidfish.sh" --check
+# Packaging can produce operator test builds without executing the application.
+if [ "${VIDFISH_PACKAGE_CHECKS:-0}" = 1 ]; then
+  test "$("$root/vidfish" --version)" = "vidfish $VIDFISH_VERSION"
+  "$root/launch-vidfish.sh" --check
+fi
 tar -C dist/linux -czf "vidfish-${VIDFISH_VERSION}-linux-x86_64.tar.gz" "vidfish-${VIDFISH_VERSION}"

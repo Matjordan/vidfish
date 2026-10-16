@@ -102,8 +102,9 @@ choices, nonblocking Mark during stalls, all-camera captures, note edits, restor
 history, event-panel collapse, and a reduced one-worker limit.
 The same recorder run IDs continue growing across these actions in the passing Linux
 Xvfb check. Windows operator input automation remains unverified; Windows checks
-are paused at the user's request. GitHub PR and manual CI only compile the Linux release
-binary; automatic lint, test, native smoke and packaging checks are disabled.
+are paused at the user's request. GitHub PR and manual CI compile and package Linux/Windows executables and installers
+as downloadable artifacts. Automatic lint, tests, native smoke and package-launch
+checks are disabled.
 Versioned releases still compile and package Linux/Windows installers and uninstallers,
 but skip optional check suites on both platforms. Focused checks run locally during
 development. The reusable workflow retains opt-in `checks` and `windows_tests` switches;

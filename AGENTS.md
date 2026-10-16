@@ -5,8 +5,8 @@
 - Maintain one PR per epic. Reuse its existing branch and PR as implementation progresses.
 - Draft PRs may contain implementation plans; clearly distinguish plans from implemented acceptance criteria.
 - Do not close an epic until its child issues and required platform checks are complete.
-- GitHub PR and manual CI are build-only on Linux: no automatic lint, tests, native smoke, or packaging. Release automation builds and packages both platforms with versioned installers/uninstallers, but skips optional check suites. Keep `checks: false` unless the user explicitly asks to restore checks. Run relevant checks locally before committing code.
-- Windows checks are paused at the user's request, including ready PRs and manual runs. Run Linux CI only; do not resume Windows testing without user direction. Releases still compile and package Windows; optional test suites and GUI smoke are skipped. The reusable workflow has a `windows_tests` switch for future restoration.
+- GitHub PR and manual CI compile and package Linux and Windows executables, runtime bundles and installers for operator testing. Upload both platform artifacts. No automatic lint, tests, native smoke or package-launch checks. Release automation builds and packages both platforms with versioned installers/uninstallers, but skips optional check suites. Keep `checks: false` unless the user explicitly asks to restore checks. Run relevant checks locally before committing code.
+- Windows checks are paused at the user's request, including ready PRs and manual runs. Windows compilation and packaging are authorized; do not resume Windows testing without user direction. Releases still compile and package Windows; optional test suites and GUI smoke are skipped. The reusable workflow has a `windows_tests` switch for future restoration.
 - Each push to `main`, including merged PRs, runs the versioned release workflow.
 - For the current closed deployment, credentials use an app-managed local plaintext file and runtime login dialog. Do not require manual OS keyring setup. Keep passwords out of logs. If secure storage is added later, provision it during install/runtime.
 - Keep recording independent of preview, UI, and event operations. Support Windows and Linux.
@@ -55,7 +55,7 @@ settings during update. Install/uninstall ownership manifests must never claim
 scientific files or follow symlinks. Windows installer/native update smoke checks
 are implemented under `windows_tests`. The user subsequently stopped automated
 Windows testing and will test on a computer. PR #43 originally ran Windows compilation
-and installer packaging only; current PR/manual CI is Linux build-only. Releases
+and installer packaging only; current PR/manual CI builds and packages both platforms without tests. Releases
 still build and package both platforms with optional checks disabled. Do not resume test suites without
 user direction. The general Windows-check pause remains in place. Physical Toughpad installer
 verification is pending; do not close this epic until its required platform checks

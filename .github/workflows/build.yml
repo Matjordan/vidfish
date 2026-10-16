@@ -120,9 +120,12 @@ jobs:
         run: cargo build --locked -p vidfish --bin vidfish
       - name: Package Linux runtime
         if: inputs.package && runner.os == 'Linux'
+        env:
+          VIDFISH_PACKAGE_CHECKS: ${{ inputs.checks && '1' || '0' }}
         run: bash scripts/package-linux.sh
       - name: Package Windows runtime
         env:
+          VIDFISH_PACKAGE_CHECKS: ${{ inputs.checks && inputs.windows_tests && '1' || '0' }}
           VIDFISH_SIGN_CERT_BASE64: ${{ secrets.VIDFISH_SIGN_CERT_BASE64 }}
           VIDFISH_SIGN_CERT_PASSWORD: ${{ secrets.VIDFISH_SIGN_CERT_PASSWORD }}
         if: inputs.package && runner.os == 'Windows'

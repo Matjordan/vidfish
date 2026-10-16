@@ -171,16 +171,16 @@ runtime readiness, corrupt/wrong-architecture rejection, failed-health rollback,
 interrupted-journal recovery and actual RTSP recording protection. Rust tests cover
 release selection, checksum parsing, archive traversal and file ownership. The native update smoke also checks an offered release and Later with four growing
 recorders, manual checks with auto disabled, and real version-confirmed desktop
-restart/failure rollback. GitHub PR/manual CI is now Linux build-only. Releases build
-and package both platforms but skip optional test, lint and smoke suites; focused
+restart/failure rollback. GitHub PR/manual CI builds and uploads Linux and Windows executable bundles and
+installers for operator testing. Releases build and package both platforms as well.
+Both workflows skip test, lint, native smoke and package-launch checks; focused
 checks run locally during development. An explicit `VIDFISH_UPDATE_PROBE_RELEASE` metadata fixture is accepted only
 when `VIDFISH_UI_PROBE` is enabled, and still uses the strict official-URL parser; it
 does not supply an alternative download endpoint.
 
-Windows release compilation/packaging and package readiness remain enabled.
+Windows compilation and installer packaging remain enabled.
 Windows installer/update and native UI tests are implemented behind `windows_tests`
-and remain paused at the operator's request. Windows packages are built on release;
-PR checks no longer package artifacts. The operator will test on a computer. A passed Linux test is not a
+and remain paused at the operator's request. Windows packages are uploaded as PR/manual workflow artifacts and included in releases. The operator will test on a computer. A passed Linux test is not a
 Windows result. A physical Toughpad installation remains to be verified before deployment:
 install as a standard user, check Start Menu/version/runtime, record four streams,
 offer/defer an update and confirm streams keep progressing, explicitly stop them,
