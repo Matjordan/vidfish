@@ -110,16 +110,22 @@ filesystem, network loss, and sustained disk writes during deployment testing.
 
 ## Silent RTSP stalls
 
-The recording worker checks encoded-video buffer progress independently of preview
-frames and file growth. Both recording watchdogs respect the configured `stall_seconds`
-(default 30 seconds). Preview's shorter deadline never shortens the recording deadline.
-A sustained stall ends the failed run and lets the supervisor reconnect in a new run;
-a brief preview outage does not force a healthy recording to reconnect. RTSP TCP reads
-use GStreamer's standard twenty-second timeout to tolerate transient congestion.
-Shutdown allows up to 100 ms to send TEARDOWN so cameras can release their sessions,
-while remaining bounded when a camera is unreachable. Disabling TEARDOWN can leave
-sessions allocated on cameras with limited connections and must not be used to speed
-up preview retries.
+The recording worker checks encoded-video progress independently of preview and file
+growth. A video interruption shorter than two seconds keeps the current recording
+run and file open. Fresh encoded buffers reset the timer; no recording restart or
+outage-driven file rollover occurs during that grace period. Two continuous seconds
+without encoded video triggers a failed run and supervisor recovery in a new run.
+Normal scheduled segment rotation still follows `segment_seconds`.
+
+RTSP input resource errors and stream EOS are held until the two-second loss deadline;
+fresh encoded buffers cancel a pending input failure. A terminal connection that
+cannot resume still requires reconnection after that deadline. Disk, mux and index
+errors remain immediately actionable. `stall_seconds` remains the separate file-growth
+deadline (default 30 seconds, with a two-second minimum during acquisition); it no
+longer sets the stream-loss timeout. RTSP TCP reads use the standard twenty-second
+timeout, while the independent encoded-frame watchdog catches a silent loss sooner.
+Shutdown allows up to 100 ms to send TEARDOWN, releasing limited camera sessions
+without an unbounded wait when a camera is unreachable.
 Recovered runs retain separate segment journals and durable gap events. No missing
 footage is synthesized, and a playing preview does not imply a healthy recording.
 

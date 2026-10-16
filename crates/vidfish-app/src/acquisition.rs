@@ -611,7 +611,7 @@ pub fn record_camera(
                 .is_ok_and(|request| request.trim() == run_id)
         {
             recording.poll(Duration::from_millis(100))?;
-            if recording.video_idle() >= Duration::from_secs(config.stall_seconds) {
+            if recording.video_idle() >= vidfish_media::segmented::STREAM_LOSS_TIMEOUT {
                 tracing::warn!(
                     camera_id = id,
                     encoded_idle_ms = recording.video_idle().as_millis() as u64,
@@ -638,7 +638,7 @@ pub fn record_camera(
                 if size > status.bytes_written {
                     progress = Instant::now();
                 }
-                if progress.elapsed() > Duration::from_secs(config.stall_seconds) {
+                if progress.elapsed() > Duration::from_secs(config.stall_seconds.max(2)) {
                     return Err("Recording file made no progress before the configured stall deadline; stream may be stalled".into());
                 }
                 status.media_running_time_ns = recording.running_time_ns();

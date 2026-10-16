@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+/// A brief input interruption must keep the current recording open.
+pub const STREAM_LOSS_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FragmentEvent {
     pub event: String,
@@ -28,6 +31,7 @@ pub struct SegmentedRecording {
     closed_bytes: u64,
     finalized: bool,
     video_progress: BufferProgress,
+    pending_input_failure: Option<(MediaError, Instant)>,
 }
 impl SegmentedRecording {
     /// The caller owns a unique run directory. Refuse an existing directory so even
@@ -78,6 +82,7 @@ impl SegmentedRecording {
             closed_bytes: 0,
             finalized: false,
             video_progress,
+            pending_input_failure: None,
         };
         recording
             .pipeline
@@ -138,34 +143,57 @@ impl SegmentedRecording {
         }
         Ok(false)
     }
+    fn poll_message(&mut self, message: &gst::Message) -> Result<()> {
+        let input_error = matches!(message.view(), gst::MessageView::Error(error)
+            if message.src().is_some_and(|s| s.name() == "camera")
+                && error.error().kind::<gst::ResourceError>().is_some());
+        if input_error || message.type_() == gst::MessageType::Eos {
+            let error = if input_error {
+                bus_error(message)
+            } else {
+                MediaError("recording stream ended unexpectedly".into())
+            };
+            // Do not close the mux/file on a momentary input error. New encoded
+            // buffers cancel the pending failure; output/index failures stay fatal.
+            self.pending_input_failure
+                .get_or_insert((error, Instant::now()));
+        } else {
+            self.handle(message)?;
+        }
+        Ok(())
+    }
     pub fn poll(&mut self, timeout: Duration) -> Result<()> {
         let bus = self
             .pipeline
             .bus()
             .ok_or_else(|| MediaError("recording bus unavailable".into()))?;
+        let types = [
+            gst::MessageType::Error,
+            gst::MessageType::Eos,
+            gst::MessageType::Element,
+        ];
         if let Some(message) = bus.timed_pop_filtered(
             gst::ClockTime::from_nseconds(timeout.as_nanos().min(u64::MAX as u128) as u64),
-            &[
-                gst::MessageType::Error,
-                gst::MessageType::Eos,
-                gst::MessageType::Element,
-            ],
-        ) && self.handle(&message)?
-        {
-            return Err(MediaError("recording stream ended unexpectedly".into()));
+            &types,
+        ) {
+            self.poll_message(&message)?;
         }
         // Drain bounded pending events before observing progress.
         for _ in 0..64 {
-            let Some(message) = bus.pop_filtered(&[
-                gst::MessageType::Error,
-                gst::MessageType::Eos,
-                gst::MessageType::Element,
-            ]) else {
+            let Some(message) = bus.pop_filtered(&types) else {
                 break;
             };
-            if self.handle(&message)? {
-                return Err(MediaError("recording stream ended unexpectedly".into()));
-            }
+            self.poll_message(&message)?;
+        }
+        if let Some((_, observed)) = &self.pending_input_failure
+            && self.video_idle() < observed.elapsed()
+        {
+            self.pending_input_failure = None;
+        }
+        if self.video_idle() >= STREAM_LOSS_TIMEOUT
+            && let Some((error, _)) = self.pending_input_failure.take()
+        {
+            return Err(error);
         }
         Ok(())
     }
@@ -265,6 +293,95 @@ impl Drop for SegmentedRecording {
     fn drop(&mut self) {
         if !self.finalized {
             let _ = self.pipeline.set_state(gst::State::Null);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod input_grace_tests {
+    use super::*;
+
+    #[test]
+    fn transient_input_error_preserves_file_but_output_error_is_immediate() {
+        let camera = crate::fixtures::RtspFixture::start(320, 240).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut recording = SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            Codec::H264,
+            &root.path().join("run"),
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output();
+        let input = recording.pipeline.by_name("camera").unwrap();
+        // An input warning promoted to a resource error must not immediately
+        // destroy a working mux when fresh encoded buffers continue arriving.
+        recording
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::ResourceError::Read, "transient input fault")
+                    .src(&input)
+                    .build(),
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            recording.poll(Duration::from_millis(20)).unwrap();
+        }
+        assert_eq!(recording.current_output(), original);
+        assert!(recording.pending_input_failure.is_none());
+        camera.set_paused(true);
+        // Drain video already in flight before injecting a persistent failure.
+        let drain_deadline = Instant::now() + Duration::from_secs(2);
+        while recording.video_idle() < Duration::from_millis(200) {
+            recording.poll(Duration::from_millis(20)).unwrap();
+            assert!(
+                Instant::now() < drain_deadline,
+                "fixture did not pause video"
+            );
+        }
+        recording
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::ResourceError::Read, "persistent input fault")
+                    .src(&input)
+                    .build(),
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(4);
+        loop {
+            if recording.poll(Duration::from_millis(20)).is_err() {
+                assert!(
+                    recording.video_idle() >= STREAM_LOSS_TIMEOUT,
+                    "input error ended the run before two seconds of lost video"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "persistent input failure was not reported"
+            );
+        }
+        let output = recording.pipeline.by_name("segments").unwrap();
+        recording
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::ResourceError::Write, "output fault")
+                    .src(&output)
+                    .build(),
+            )
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Err(error) = recording.poll(Duration::from_millis(20)) {
+                assert!(error.to_string().contains("Write"));
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "output failure was hidden by stream grace"
+            );
         }
     }
 }
