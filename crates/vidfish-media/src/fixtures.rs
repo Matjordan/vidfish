@@ -18,6 +18,7 @@ pub struct RtspFixture {
     drop_keyframes: Arc<AtomicBool>,
     dropped_keyframes: Arc<AtomicU64>,
     teardown_requests: Arc<AtomicU64>,
+    clients: Arc<std::sync::Mutex<Vec<rtsp::RTSPClient>>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -35,6 +36,15 @@ impl RtspFixture {
     }
     pub fn teardown_requests(&self) -> u64 {
         self.teardown_requests.load(Ordering::Acquire)
+    }
+    /// Break an established TCP session without stopping the camera server.
+    pub fn disconnect_client(&self, index: usize) {
+        if let Some(client) = self.clients.lock().unwrap().get(index).cloned() {
+            client.close();
+        }
+    }
+    pub fn client_count(&self) -> usize {
+        self.clients.lock().unwrap().len()
     }
     pub fn start(width: u32, height: u32) -> Result<Self> {
         Self::start_codec(width, height, crate::Codec::H264)
@@ -72,12 +82,15 @@ impl RtspFixture {
         let dropped = dropped_keyframes.clone();
         let teardown_requests = Arc::new(AtomicU64::new(0));
         let teardowns = teardown_requests.clone();
+        let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connected = clients.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
         let worker = std::thread::spawn(move || {
             let context = gst::glib::MainContext::new();
             let result = context.with_thread_default(|| {
                 let server = rtsp::RTSPServer::new();
                 server.connect_client_connected(move |_, client| {
+                    connected.lock().unwrap().push(client.clone());
                     let teardowns = teardowns.clone();
                     client.connect_teardown_request(move |_, _| {
                         teardowns.fetch_add(1, Ordering::Release);
@@ -145,6 +158,7 @@ impl RtspFixture {
                 drop_keyframes,
                 dropped_keyframes,
                 teardown_requests,
+                clients,
                 worker: Some(worker),
             }),
             _ => {

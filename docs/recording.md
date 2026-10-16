@@ -117,9 +117,12 @@ outage-driven file rollover occurs during that grace period. Two continuous seco
 without encoded video triggers a failed run and supervisor recovery in a new run.
 Normal scheduled segment rotation still follows `segment_seconds`.
 
-RTSP input resource errors and stream EOS are held until the two-second loss deadline;
-fresh encoded buffers cancel a pending input failure. A terminal connection that
-cannot resume still requires reconnection after that deadline. Disk, mux and index
+The RTSP reader and file writer are separate pipelines. A broken input connection is
+recreated immediately while the existing mux and file remain open. Fresh encoded
+buffers within two seconds keep the same recording run and file; a connection that
+cannot recover by that deadline starts a new run. Reconnection waits for a keyframe
+and maps the new RTP timestamp epoch into the existing writer clock, preserving real
+time gaps and PTS/DTS ordering without decoding or re-encoding the recording. Disk, mux and index
 errors remain immediately actionable. `stall_seconds` remains the separate file-growth
 deadline (default 30 seconds, with a two-second minimum during acquisition); it no
 longer sets the stream-loss timeout. RTSP TCP reads use the standard twenty-second

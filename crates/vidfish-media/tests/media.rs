@@ -322,3 +322,58 @@ fn closing_preview_cancels_reconnect_backoff() {
     );
     drop(socket);
 }
+
+#[cfg(feature = "fixtures")]
+#[test]
+fn real_rtsp_disconnects_reconnect_into_the_same_playable_recording_file() {
+    for codec in [Codec::H264, Codec::H265] {
+        let camera = vidfish_media::fixtures::RtspFixture::start_codec(320, 240, codec).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("run");
+        let mut recording = vidfish_media::SegmentedRecording::start(
+            &Source::Rtsp(camera.uri.clone()),
+            codec,
+            &run,
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        let original = recording.current_output().unwrap();
+        // The camera recreates its live media with a fresh RTP timestamp epoch.
+        // Repeated real TCP breaks must not reset the writer clock or rotate files.
+        for connection in 0..3 {
+            camera.disconnect_client(connection);
+            let start = Instant::now();
+            loop {
+                recording.poll(Duration::from_millis(20)).unwrap();
+                assert_eq!(recording.current_output().as_ref(), Some(&original));
+                assert!(
+                    start.elapsed() < Duration::from_secs(2),
+                    "input did not reconnect inside file grace"
+                );
+                if camera.client_count() > connection + 1
+                    && recording.video_idle() < Duration::from_millis(100)
+                {
+                    // Require a frame after the old session was broken.
+                    if start.elapsed() > Duration::from_millis(300) {
+                        break;
+                    }
+                }
+            }
+        }
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            recording.poll(Duration::from_millis(20)).unwrap();
+        }
+        recording.finish().unwrap();
+        let info = vidfish_media::inspect_recording(&original).unwrap();
+        assert_eq!((info.width, info.height), (320, 240));
+        assert!(
+            info.duration_seconds > 1.0 && info.duration_seconds < 15.0,
+            "reconnect reset recording timestamps"
+        );
+        let events = std::fs::read_to_string(run.join("segments.jsonl")).unwrap();
+        assert_eq!(events.matches("\"opened\"").count(), 1);
+        assert_eq!(events.matches("\"closed\"").count(), 1);
+    }
+}

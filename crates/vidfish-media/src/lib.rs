@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod recording_input;
 pub mod segmented;
 pub use segmented::SegmentedRecording;
 
