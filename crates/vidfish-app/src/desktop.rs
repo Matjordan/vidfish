@@ -3,6 +3,7 @@ mod library;
 mod operator;
 mod picker;
 mod probe;
+mod roster_thumbnails;
 mod theme;
 mod updates;
 use eframe::egui;
@@ -88,7 +89,7 @@ pub fn run(
     while slots.len() < preview_limit {
         slots.push(Slot::default());
     }
-    let (retired, retiring) = std::sync::mpsc::sync_channel(4);
+    let (retired, retiring) = std::sync::mpsc::sync_channel(8);
     let preview_jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
     let cleanup_jobs = preview_jobs.clone();
     let passed = Arc::new(AtomicBool::new(false));
@@ -137,6 +138,7 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
+                roster_thumbnails: Default::default(),
                 picker: Default::default(),
                 force_opengl,
                 interface: config
@@ -174,6 +176,7 @@ pub fn run(
                 views_dirty: false,
                 views_saving: None,
                 fullscreen: None,
+                fullscreen_saved: None,
                 page: 0,
                 show_settings: false,
                 updates: updates::Updates {
@@ -252,6 +255,7 @@ impl Slot {
     }
 }
 struct Desktop {
+    roster_thumbnails: roster_thumbnails::Thumbnails,
     picker: picker::Picker,
     force_opengl: bool,
     adding_camera: bool,
@@ -286,6 +290,7 @@ struct Desktop {
     views_dirty: bool,
     views_saving: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     fullscreen: Option<usize>,
+    fullscreen_saved: Option<vidfish_core::views::Views>,
     page: usize,
     show_settings: bool,
     updates: updates::Updates,
@@ -367,6 +372,7 @@ impl eframe::App for Desktop {
             });
             self.saving = Some(receiver);
         }
+        self.poll_roster_thumbnails(ctx);
         self.reconcile_camera_views();
         self.reconcile_preview_routes();
         self.poll_view_save();

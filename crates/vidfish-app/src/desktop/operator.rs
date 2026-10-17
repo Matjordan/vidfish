@@ -1,3 +1,8 @@
+#[derive(Clone)]
+struct DragCamera {
+    id: String,
+    tile: Option<usize>,
+}
 use super::*;
 use vidfish::acquisition::{Control, State};
 const RED: egui::Color32 = super::theme::DANGER;
@@ -45,7 +50,10 @@ impl Desktop {
         }
         if self.views_dirty && self.views_saving.is_none() {
             self.views_dirty = false;
-            let views = self.views.clone();
+            let views = self
+                .fullscreen_saved
+                .clone()
+                .unwrap_or_else(|| self.views.clone());
             let path = self.path.with_file_name("views.json");
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
@@ -68,7 +76,23 @@ impl Desktop {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
     }
     fn return_grid(&mut self, ctx: &egui::Context) {
-        self.fullscreen = None;
+        if self.fullscreen_saved.is_some()
+            && self
+                .fullscreen
+                .is_some_and(|i| self.slots[i].pending.is_some())
+        {
+            self.message =
+                "Wait for fullscreen camera to finish connecting before restoring.".into();
+            return;
+        }
+        let previous = self.fullscreen.take();
+        if let Some(saved) = self.fullscreen_saved.take() {
+            if let Some(index) = previous {
+                self.close_preview(index);
+            }
+            self.views = saved;
+            self.views_dirty = true;
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
     fn group(&mut self, page: usize) {
@@ -243,38 +267,8 @@ impl Desktop {
                         ui.add_enabled_ui(!offline.is_empty(),|ui|{if touch(ui,"Clear offline cameras").clicked(){self.camera_cleanup=Some(super::camera_cleanup::Confirmation::HideOffline(offline));}});
                     });
                     ui.small(format!("{} hidden · cleanup never deletes media",self.views.hidden_cameras.len()));
-                    ui.horizontal_wrapped(|ui| {
-                        for i in 0..self.slots.len() {
-                            if ui
-                                .add(
-                                    egui::Button::new(format!("Slot {}", i + 1))
-                                        .selected(self.selected_slot == i)
-                                        .min_size(egui::vec2(44.0, 44.0)),
-                                )
-                                .clicked()
-                            {
-                                self.selected_slot = i;
-                                if self.fullscreen.is_some() {
-                                    self.fullscreen = Some(i);
-                                }
-                            }
-                        }
-                    });
-                    let pages = camera_rows.len()
-                        .div_ceil(self.slots.len())
-                        .max(1);
-                    ui.horizontal(|ui| {
-                        if touch(ui, "Previous").clicked() {
-                            self.group((self.page + pages - 1) % pages);
-                        }
-                        ui.label(format!("{}/{}", self.page + 1, pages));
-                        if touch(ui, "Next").clicked() {
-                            self.group((self.page + 1) % pages);
-                        }
-                    });
-                    if touch(ui, "Show this group").clicked() {
-                        self.group(self.page.min(pages - 1));
-                    }
+                    ui.small(format!("Drag to add or replace · {} / {} views", self.views.slots.iter().flatten().count(),self.slots.len()));
+                    if touch(ui,"Show this group").clicked(){self.group(0);}
                     egui::ScrollArea::vertical()
                         .id_salt("roster-scroll")
                         .show(ui, |ui| {
@@ -305,7 +299,13 @@ impl Desktop {
                                         },
                                     ))
                                     .show(ui, |ui| {
-                                        ui.strong(&camera.camera.alias);
+                                        let label=ui.add(egui::Label::new(egui::RichText::new(&camera.camera.alias).strong()).sense(egui::Sense::click_and_drag()));
+                                        super::probe::button(ui,&format!("Camera {}",camera.camera.alias),&label);
+                                        label.dnd_set_drag_payload(DragCamera { id:camera.camera.id.clone(), tile:None });
+                                        if label.double_clicked() { self.camera_fullscreen(ctx,&camera.camera.id); }
+                                        if touch(ui,"Fullscreen").clicked(){self.camera_fullscreen(ctx,&camera.camera.id);}
+
+                                        self.roster_thumbnails.draw(ui,&camera.camera.id,camera.state);
                                         if self.views.hidden_cameras.contains(&camera.camera.id){ui.colored_label(super::theme::WARNING,"HIDDEN · shown by filter");}
                                         let (state_text, state_color) =
                                             super::theme::camera_state(camera.state);
@@ -350,6 +350,7 @@ impl Desktop {
                                         if let Some(error) = &camera.error {
                                             ui.colored_label(RED, error);
                                         }
+                                        if touch(ui,"Replace selected view").clicked(){selected=Some((camera.camera.clone(),camera.profiles.first().cloned()));}
                                         if let Some(retry) = camera.retry_seconds {
                                             ui.label(format!("Retry {retry}s"));
                                         }
@@ -362,12 +363,16 @@ impl Desktop {
                                                     egui::Button::new(if shown.is_some() {
                                                         "Focus feed"
                                                     } else {
-                                                        "View feed"
+                                                        "Add to view"
                                                     })
                                                     .min_size(egui::vec2(88.0, 44.0)),
                                                 )
                                                 .clicked()
                                             {
+                                                if shown.is_none() {
+                                                    if let Some(index)=self.views.slots[..self.slots.len()].iter().position(Option::is_none){self.selected_slot=index;}
+                                                    else {self.message="Viewer limit reached. Remove a view or drag onto an existing tile to replace it.".into();return;}
+                                                }
                                                 selected = Some((
                                                     camera.camera.clone(),
                                                     camera.profiles.first().cloned(),
@@ -509,145 +514,238 @@ impl Desktop {
                 }
             })
     }
+    fn camera_fullscreen(&mut self, ctx: &egui::Context, id: &str) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|s| s.camera_id.as_deref() == Some(id))
+        {
+            self.maximize(ctx, index);
+            return;
+        }
+        if self.slots.iter().any(|s| s.pending.is_some()) {
+            self.message = "Wait for the current view change before fullscreen.".into();
+            return;
+        }
+        if self.fullscreen_saved.is_none() {
+            self.fullscreen_saved = Some(self.views.clone());
+        }
+        let index = self.views.slots[..self.slots.len()]
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.selected_slot);
+        self.show_camera(id, index);
+        self.maximize(ctx, index);
+    }
+    fn show_camera(&mut self, id: &str, index: usize) {
+        if let Some(other) = self
+            .slots
+            .iter()
+            .position(|s| s.camera_id.as_deref() == Some(id))
+        {
+            if other != index {
+                self.slots.swap(other, index);
+                self.views.slots.swap(other, index);
+                self.views_dirty = true;
+            }
+            self.selected_slot = index;
+            return;
+        }
+        if let Some(camera) = self
+            .camera_status
+            .cameras
+            .iter()
+            .find(|c| c.camera.id == id)
+            .cloned()
+        {
+            self.selected_slot = index;
+            self.open_preview(camera.camera, camera.profiles.first().cloned());
+        }
+    }
     fn video_panel(&mut self, ctx: &egui::Context) {
         let mut close = None;
         let mut maximize = None;
+        let mut dropped = None;
+        let mut swaps = None;
         egui::CentralPanel::default().show(ctx, |ui| {
-            let indices: Vec<usize> = self.fullscreen.map(|i| vec![i]).unwrap_or_else(|| {
-                let active: Vec<_> = (0..self.slots.len())
-                    .filter(|i| {
-                        self.slots[*i].preview.is_some()
-                            || self.slots[*i].pending.is_some()
-                            || self.views.slots[*i].is_some()
-                    })
-                    .collect();
-                if active.is_empty() {
-                    (0..self.slots.len()).collect()
-                } else {
-                    active
-                }
+            let indices: Vec<_> = self.fullscreen.map(|i| vec![i]).unwrap_or_else(|| {
+                (0..self.slots.len())
+                    .filter(|i| self.views.slots[*i].is_some() || self.slots[*i].preview.is_some())
+                    .collect()
             });
-            let columns = if indices.len() > 1 { 2 } else { 1 };
-            let rows = indices.len().div_ceil(columns);
-            let width = (ui.available_width() / columns as f32 - 8.0).max(1.0);
-            let height = (ui.available_height() / rows as f32 - 8.0).max(100.0);
-            egui::Grid::new("operator-previews")
-                .num_columns(columns)
+            let area = ui.available_rect_before_wrap();
+            if indices.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Drag a camera here, or choose Add to view in the camera list.");
+                });
+            }
+            let columns = if indices.len() <= 1 {
+                1
+            } else if area.width() > 1100.0 && indices.len() > 4 {
+                3
+            } else {
+                2
+            };
+            let rows = indices.len().div_ceil(columns).max(1);
+            let size = egui::vec2(
+                (area.width() / columns as f32 - 8.0).max(1.0),
+                (area.height() / rows as f32 - 8.0).max(1.0),
+            );
+            egui::Grid::new("dynamic-camera-grid")
                 .spacing([8.0, 8.0])
                 .show(ui, |ui| {
                     for (n, index) in indices.iter().copied().enumerate() {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(width, height),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_max_width(width);
-                                ui.set_min_size(egui::vec2(width, height));
-                                let rect = ui.max_rect();
-                                ui.painter().rect_filled(rect, 7, super::theme::PANEL);
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    7,
-                                    egui::Stroke::new(
-                                        1.0_f32,
-                                        if self.selected_slot == index {
-                                            super::theme::ACCENT
-                                        } else {
-                                            super::theme::BORDER
-                                        },
-                                    ),
-                                    egui::StrokeKind::Inside,
-                                );
-                                let slot = &self.slots[index];
-                                let record = self
-                                    .record_status
-                                    .cameras
-                                    .iter()
-                                    .find(|r| Some(&r.camera_id) == slot.camera_id.as_ref());
-                                let okay = record.is_some_and(|r| {
-                                    r.state == State::Recording
-                                        && r.error.is_none()
-                                        && r.warning.is_none()
-                                        && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
-                                });
-                                ui.add(
-                                    egui::Label::new(format!(
-                                        "Slot {} · {}",
-                                        index + 1,
-                                        slot.label
-                                    ))
-                                    .truncate(),
-                                );
-                                let state = self.preview_state(index);
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        if okay { GREEN } else { RED },
-                                        if okay { "REC" } else { "○ NOT RECORDING" },
-                                    );
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(&state).color(
-                                            if state.contains("STALE") {
-                                                RED
-                                            } else {
-                                                egui::Color32::LIGHT_GRAY
-                                            },
-                                        ))
-                                        .truncate(),
-                                    )
-                                    .on_hover_text(state);
-                                });
-                                ui.horizontal_wrapped(|ui| {
-                                    if touch(
-                                        ui,
-                                        if self.selected_slot == index {
-                                            "Selected"
-                                        } else {
-                                            "Select"
-                                        },
-                                    )
-                                    .clicked()
-                                    {
-                                        self.selected_slot = index;
-                                    }
-                                    if self.fullscreen.is_none() && touch(ui, "Max").clicked() {
-                                        maximize = Some(index);
-                                    }
-                                    if touch(ui, "Retry now").clicked()
-                                        && let Some(preview) = &self.slots[index].preview
-                                    {
-                                        preview.retry_now();
-                                    }
-                                    if touch(ui, "Close").clicked() {
-                                        close = Some(index);
-                                    }
-                                });
-                                let size = egui::vec2(
-                                    (width - 2.0).max(1.0),
-                                    (rect.bottom() - ui.cursor().top() - 4.0).max(1.0),
-                                );
-                                if let Some(texture) = &slot.texture {
-                                    ui.add(
-                                        egui::Image::new(texture)
-                                            .fit_to_exact_size(size)
-                                            .maintain_aspect_ratio(true),
-                                    );
+                        let (rect, response) =
+                            ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                        super::probe::button(ui, &format!("Viewport {}", index + 1), &response);
+                        if response.clicked() {
+                            self.selected_slot = index;
+                        }
+                        if response.double_clicked() {
+                            maximize = Some(index);
+                        }
+                        if let Some(id) = &self.slots[index].camera_id {
+                            response.dnd_set_drag_payload(DragCamera {
+                                id: id.clone(),
+                                tile: Some(index),
+                            });
+                        }
+                        if let Some(payload) = response.dnd_release_payload::<DragCamera>() {
+                            if let Some(from) = payload.tile {
+                                swaps = Some((from, index));
+                            } else {
+                                dropped = Some((payload.id.clone(), index));
+                            }
+                        }
+                        let fill = super::theme::CARD;
+                        ui.painter().rect_filled(rect, 6.0, fill);
+                        ui.painter().rect_stroke(
+                            rect,
+                            6.0,
+                            egui::Stroke::new(
+                                1.0_f32,
+                                if response.hovered() || self.selected_slot == index {
+                                    super::theme::ACCENT
                                 } else {
-                                    ui.allocate_space(size);
-                                }
-                            },
+                                    super::theme::BORDER
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
                         );
+                        if let Some(texture) = &self.slots[index].texture {
+                            let available = rect.shrink(2.0);
+                            let aspect = texture.size_vec2().x / texture.size_vec2().y;
+                            let w = available.width().min(available.height() * aspect);
+                            let h = w / aspect;
+                            ui.painter().image(
+                                texture.id(),
+                                egui::Rect::from_center_size(available.center(), egui::vec2(w, h)),
+                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        let recording =
+                            self.record_status.cameras.iter().find(|r| {
+                                Some(&r.camera_id) == self.slots[index].camera_id.as_ref()
+                            });
+                        let rec = recording.is_some_and(|r| {
+                            r.state == State::Recording
+                                && r.error.is_none()
+                                && r.warning.is_none()
+                                && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
+                        });
+                        let title = egui::Rect::from_min_size(
+                            rect.min,
+                            egui::vec2(rect.width(), 48.0_f32.min(rect.height())),
+                        );
+                        ui.painter()
+                            .rect_filled(title, 4.0, egui::Color32::from_black_alpha(185));
+                        ui.painter().text(
+                            title.left_center() + egui::vec2(8.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            format!(
+                                "{} · {} · {}",
+                                self.slots[index].label,
+                                if rec { "REC" } else { "NOT RECORDING" },
+                                self.preview_state(index)
+                            ),
+                            egui::FontId::proportional(13.0),
+                            if rec { GREEN } else { egui::Color32::WHITE },
+                        );
+                        let control = egui::Rect::from_min_size(
+                            rect.right_bottom() - egui::vec2(100.0, 48.0),
+                            egui::vec2(96.0, 44.0),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(control), |ui| {
+                            ui.horizontal(|ui| {
+                                let expand = ui.add(
+                                    egui::Button::new(if self.fullscreen.is_some() {
+                                        "↙"
+                                    } else {
+                                        "⛶"
+                                    })
+                                    .fill(egui::Color32::from_black_alpha(160))
+                                    .min_size(egui::vec2(44.0, 44.0)),
+                                );
+                                super::probe::button(ui, "Max", &expand);
+                                if expand.clicked() {
+                                    maximize = Some(index);
+                                }
+                                if touch(ui, "×")
+                                    .on_hover_text("Remove from view only")
+                                    .clicked()
+                                {
+                                    close = Some(index);
+                                }
+                            });
+                        });
                         if n % columns == columns - 1 {
                             ui.end_row();
                         }
                     }
                 });
+            // Empty workspace is also an add target, including the empty-state message.
+            let empty = ui.interact(area, ui.id().with("workspace-drop"), egui::Sense::hover());
+            if let Some(payload) = empty.dnd_release_payload::<DragCamera>()
+                && payload.tile.is_none()
+                && dropped.is_none()
+            {
+                if let Some(index) = self.views.slots[..self.slots.len()]
+                    .iter()
+                    .position(Option::is_none)
+                {
+                    dropped = Some((payload.id.clone(), index));
+                } else {
+                    self.message =
+                        "Eight-view limit reached; drop onto a tile to replace it.".into();
+                }
+            }
         });
-        if let Some(index) = close
-            && self.slots[index].pending.is_none()
+        if let Some((a, b)) = swaps
+            && self.fullscreen.is_none()
         {
-            self.close_preview(index);
+            self.slots.swap(a, b);
+            self.views.slots.swap(a, b);
+            self.views_dirty = true;
+        }
+        if let Some((id, index)) = dropped
+            && self.fullscreen.is_none()
+        {
+            self.show_camera(&id, index);
         }
         if let Some(index) = maximize {
-            self.maximize(ctx, index);
+            if self.fullscreen.is_some() {
+                self.return_grid(ctx);
+            } else {
+                self.maximize(ctx, index);
+            }
+        }
+        if let Some(index) = close {
+            if self.fullscreen.is_some() {
+                self.return_grid(ctx);
+            } else {
+                self.close_preview(index);
+            }
         }
     }
     fn settings(&mut self, ctx: &egui::Context) {
@@ -677,10 +775,12 @@ impl Desktop {
             ui.label("Default session name / test ID (blank generates a name)");ui.add(egui::TextEdit::singleline(&mut self.config.session_name).margin(egui::vec2(6.0,14.0)).char_limit(128));
             let mut retention=retention_draft.is_some();if ui.checkbox(&mut retention,"Automatically delete old closed sessions").changed(){*retention_draft=if retention{Some(7)}else{None};}
             if let Some(days)=retention_draft {ui.horizontal(|ui|{ui.label("Keep closed sessions for days");ui.add(egui::DragValue::new(days).range(1..=36500));});ui.colored_label(egui::Color32::LIGHT_RED,"Deletes recordings, snapshots and logs after the saved age. Active/busy sessions and legacy files are preserved.");}
+            ui.label("Preview limit (applies after restart)");ui.add(egui::DragValue::new(&mut self.config.preview_slots).range(1..=self.config.max_cameras.min(8)));
             ui.label("Segment interval / stall deadline (seconds)");ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400));ui.add(egui::DragValue::new(&mut self.config.stall_seconds).range(1..=3600));
             ui.label("Disk warning / stop (MiB)");let mut warning=self.config.disk_warning_bytes/(1024*1024);let mut stop=self.config.disk_stop_bytes/(1024*1024);
             ui.add(egui::DragValue::new(&mut warning).range(0..=1048576));ui.add(egui::DragValue::new(&mut stop).range(0..=warning));self.config.disk_warning_bytes=warning*1024*1024;self.config.disk_stop_bytes=stop.min(warning)*1024*1024;
             let mut stop_on_low=self.config.disk_policy==vidfish_core::config::DiskPolicy::Stop;if ui.checkbox(&mut stop_on_low,"Stop at disk threshold").changed(){self.config.disk_policy=if stop_on_low{vidfish_core::config::DiskPolicy::Stop}else{vidfish_core::config::DiskPolicy::Warn};}
+            ui.horizontal(|ui|{ui.label("Thumbnail refresh (seconds)");if ui.add(egui::DragValue::new(&mut self.views.thumbnail_seconds).range(1..=60)).changed(){self.views_dirty=true;}});
             ui.label("Save applies recording settings to new runs; output directory applies to new sessions. Restart discovery for adapter changes.");
             if ui.add_enabled(valid && self.saving.is_none(),egui::Button::new("Save settings").min_size(egui::vec2(160.0,44.0))).clicked(){
                 self.config.retention_days = *retention_draft;self.config.camera_interface=self.interface.trim().parse().ok();let config=self.config.clone();let path=self.path.clone();let (sender,receiver)=tokio::sync::oneshot::channel();self.runtime.spawn_blocking(move||{let _=sender.send(config.save(&path));});self.saving=Some(receiver);

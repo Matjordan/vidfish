@@ -58,7 +58,7 @@ struct Args {
     /// Finish a recording after this many seconds instead of waiting for Ctrl+C.
     #[arg(long, requires = "record", value_parser = clap::value_parser!(u64).range(1..=86400))]
     seconds: Option<u64>,
-    /// Show up to four RTSP previews. May be supplied multiple times.
+    /// Show up to eight RTSP previews. May be supplied multiple times.
     #[arg(long, conflicts_with_all = ["demo", "service", "check", "media_check"])]
     preview: Vec<String>,
     /// Show four simulated 1080p feeds (not a recording or hardware benchmark).
@@ -174,8 +174,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("GStreamer runtime ready: {}", plugins.join(", "));
         return Ok(());
     }
-    if args.preview.len() > 4 {
-        return Err("at most four previews are supported".into());
+    if args.preview.len() > 8 {
+        return Err("at most eight previews are supported".into());
     }
     let codec = if args.h265 {
         vidfish_media::Codec::H265

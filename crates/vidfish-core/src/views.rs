@@ -8,7 +8,8 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 pub struct Views {
     pub schema_version: u32,
-    pub slots: [Option<String>; 4],
+    pub thumbnail_seconds: u32,
+    pub slots: Vec<Option<String>>,
     pub selected_slot: usize,
     pub events_expanded: bool,
     pub cameras_collapsed: bool,
@@ -20,7 +21,8 @@ impl Default for Views {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            slots: Default::default(),
+            thumbnail_seconds: 5,
+            slots: vec![None; 8],
             selected_slot: 0,
             events_expanded: false,
             cameras_collapsed: false,
@@ -47,7 +49,9 @@ impl Views {
         if self.session_label.trim().is_empty()
             || self.session_label.chars().count() > 128
             || self.schema_version != 1
-            || self.selected_slot >= 4
+            || self.selected_slot >= 8
+            || self.slots.len() != 8
+            || !(1..=60).contains(&self.thumbnail_seconds)
             || self
                 .slots
                 .iter()
@@ -62,7 +66,7 @@ impl Views {
     }
     /// Selecting a camera already displayed focuses it instead of duplicating a decoder.
     pub fn select(&mut self, slot: usize, id: String) -> io::Result<usize> {
-        self.select_with_limit(slot, id, 4)
+        self.select_with_limit(slot, id, 8)
     }
     pub fn select_with_limit(
         &mut self,
@@ -70,7 +74,7 @@ impl Views {
         id: String,
         limit: usize,
     ) -> io::Result<usize> {
-        if !(1..=4).contains(&limit) || slot >= limit || uuid::Uuid::parse_str(&id).is_err() {
+        if !(1..=8).contains(&limit) || slot >= limit || uuid::Uuid::parse_str(&id).is_err() {
             return Err(io::Error::other("Invalid preview selection"));
         }
         let index = self.slots[..limit]
@@ -87,7 +91,7 @@ impl Views {
         Ok(index)
     }
     pub fn load(path: &Path) -> io::Result<Self> {
-        let views = match std::fs::read(path) {
+        let mut views = match std::fs::read(path) {
             Ok(bytes) if bytes.len() <= 16384 => {
                 serde_json::from_slice::<Self>(&bytes).map_err(io::Error::other)?
             }
@@ -95,6 +99,9 @@ impl Views {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Self::default(),
             Err(e) => return Err(e),
         };
+        if views.slots.len() <= 8 {
+            views.slots.resize(8, None);
+        }
         views.validate()?;
         Ok(views)
     }
@@ -116,6 +123,21 @@ impl Views {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_four_slots_migrate_and_eight_distinct_views_persist() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("views.json");
+        std::fs::write(&path, r#"{"slots":[null,null,null,null]}"#).unwrap();
+        let mut views = Views::load(&path).unwrap();
+        assert_eq!(views.slots.len(), 8);
+        for i in 0..8 {
+            views.select(i, uuid::Uuid::new_v4().to_string()).unwrap();
+        }
+        assert!(views.select(8, uuid::Uuid::new_v4().to_string()).is_err());
+        views.slots.swap(0, 7);
+        views.save(&path).unwrap();
+        assert_eq!(Views::load(&path).unwrap(), views);
+    }
     #[test]
     fn selections_survive_restart_and_duplicate_selection_focuses_existing() {
         let root = tempfile::tempdir().unwrap();

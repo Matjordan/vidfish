@@ -42,7 +42,7 @@ impl Default for AppConfig {
             disk_policy: DiskPolicy::Stop,
             stall_seconds: 30,
             max_cameras: 16,
-            preview_slots: 4,
+            preview_slots: 8,
             camera_interface: None,
         }
     }
@@ -66,12 +66,12 @@ impl AppConfig {
             || !(1..=3600).contains(&self.stall_seconds)
             || self.disk_stop_bytes > self.disk_warning_bytes
             || !(1..=16).contains(&self.max_cameras)
-            || !(1..=4).contains(&self.preview_slots)
+            || !(1..=8).contains(&self.preview_slots)
             || self.preview_slots > self.max_cameras
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid settings: schema must be 1, output nonempty, segment 1–86400s, stall 1–3600s, stop threshold <= warning threshold, cameras 1–16, previews 1–4 and no greater than cameras",
+                "invalid settings: schema must be 1, output nonempty, segment 1–86400s, stall 1–3600s, stop threshold <= warning threshold, cameras 1–16, previews 1–8 and no greater than cameras",
             ));
         }
         Ok(())
