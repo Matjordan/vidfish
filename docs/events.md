@@ -2,7 +2,7 @@
 
 **Mark** (F6) records an event without taking images. **Grab All** (F7) takes
 stills from every registered camera, including hidden feeds. **Mark + Grab All**
-(F8) does both. All three actions record a unique event ID, UTC Unix milliseconds,
+(F8) saves a mark with the frames currently displayed in the viewer. All three actions record a unique event ID, UTC Unix milliseconds,
 optional note, stable camera IDs, aliases at the event, and per-camera recording
 references. Touch buttons remain available at the bottom of the viewer.
 
@@ -36,14 +36,25 @@ restart reconcile references against the journal; missing media and unavailable
 recording clocks remain explicit. No synthetic filename is invented for a gap.
 Renaming a camera does not change saved IDs or file paths.
 
-## Capturing hidden cameras
+## Saving displayed frames with Mark + Grab
 
-A grab tries the profile's ONVIF snapshot HTTP URI first, using the saved camera
+F8 freezes the viewer's displayed frame references at the operator action and saves
+those exact pixels asynchronously. It does not call the ONVIF snapshot endpoint or
+open a temporary RTSP connection. Cameras without a displayed frame remain in the
+event with an explicit uncaptured result. A frozen displayed image is still saved;
+its original local receipt timestamp identifies its age. The recording reference
+remains anchored to the mark action, not a claimed exposure time of that image.
+
+## Capturing hidden cameras with Grab All
+
+Grab All tries the profile's ONVIF snapshot HTTP URI first, using the saved camera
 login when required (HTTP Digest or Basic). It does not follow redirects or send
 credentials to a different host. HTTP bodies are capped at 16 MiB; decoded images
 are bounded to 4096×2160 and limited allocations. If snapshots are unsupported or
-fail, a temporary RTSP pipeline decodes one fresh frame and closes before the next
-camera. Existing recorder pipelines are never stopped, replaced or reconfigured.
+fail, a temporary decoder reads one fresh frame and closes before the next
+camera. While recording, that decoder uses the recorder’s local encoded feed;
+it never opens a second camera RTSP connection. Without an active recording, it
+uses a temporary camera RTSP connection. Existing recorder pipelines are never stopped, replaced or reconfigured.
 
 One capture job processes cameras sequentially, so at most one temporary snapshot
 decoder is added to the maximum four persistent previews. RTSP extraction has an

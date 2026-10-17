@@ -1,38 +1,110 @@
 # Vidfish
 
 Rust desktop software for scientific camera acquisition on Windows and Linux.
-The foundation provides an egui desktop, persistent typed settings, structured
-logging, an independently testable Tokio lifecycle, and GStreamer RTSP recording/
-preview. Epic #2 adds ONVIF discovery, persistent camera identities/aliases, app-managed local
-credentials, and independent camera polling/reconnection. Arriving cameras can auto-record in independent processes with observable file progress.
-Epic #3 adds keyframe MKV segmentation, disk policy, and durable recording gaps. Epic #4
-adds the touch operator layout, persistent preview choices, fullscreen, recording alerts,
-and a selected-preview event bridge. See [operator monitoring](docs/monitoring.md).
-Scientific event correlation and session management remain later work.
+Discover ONVIF cameras, record H.264/H.265 RTSP video, monitor live feeds, and
+collect timestamped events and images in named acquisition sessions.
 
-## Target operator UI
+![Vidfish operator interface with four simulated camera feeds](docs/images/operator.png)
 
-![Vidfish target operator interface](docs/target-ui.svg)
+Actual Linux desktop screenshot at 1280×800, using four simulated camera feeds.
+The camera test patterns are fixtures, not footage from a deployment.
 
-[Open full-size target layout](docs/target-ui.svg) · [UI epic #4](https://github.com/Matjordan/vidfish/issues/4)
+## Install
 
-This layout is the **reference design**, not a screenshot of implemented functionality. It is intended for an attended Toughpad in scientific bench or vehicle testing. Prioritize recording confidence and usable touch targets over visual fidelity where they conflict.
+Download a versioned package from [GitHub Releases](https://github.com/Matjordan/vidfish/releases).
+No Rust installation is needed to run a release.
 
-- Four large live previews in a 2×2 grid, with single-camera fullscreen and quick camera swaps.
-- Right-hand camera roster showing all discovered cameras, independent recording state, aliases, and current preview selection (up to 16 recording, up to 4 displayed).
-- Top strip showing session, elapsed time, recording counts, and disk capacity.
-- Large **Mark + Grab All**, **Mark Event**, and **Grab All** controls with keyboard shortcuts; optional notes.
-- Collapsible event log and associated snapshot previews below the camera feeds. Show recording filenames and precise per-camera offsets in event detail.
-- Clear camera-specific failures, missing-camera indicators, reconnect status, and actual file-write health; never equate live preview with successful recording.
-- Responsive for Toughpad resolution and touchscreen interaction. The bottom panel and sidebar may collapse to preserve preview area.
-- Display changes, snapshots, notes, and browsing must not interrupt ongoing recordings.
+- **Windows 10/11 x86_64:** run `vidfish-VERSION-windows-x86_64-setup.exe`.
+  The per-user installer includes the GStreamer runtime and creates Start Menu
+  and uninstall entries. A portable Windows ZIP is also available.
+- **Linux x86_64:** install the system media dependencies, extract
+  `vidfish-VERSION-linux-x86_64.tar.gz`, and run `./install.sh`.
+  Use `./launch-vidfish.sh` for portable operation.
 
-**Visual source:** The SVG is a checked-in, maintainable layout reference based on the proposed dark Vidfish UI. It uses illustrative camera placeholders, not operational camera imagery. The UI does not need to replicate ornamental styling pixel-for-pixel.
+Release assets include SHA-256 checksums. Vidfish Windows executables and installers
+are currently unsigned. See [installation, updates, rollback and uninstall](docs/installing.md)
+for dependencies, verification and data locations.
+
+PR test builds are available as Windows and Linux artifacts on the
+[Actions page](https://github.com/Matjordan/vidfish/actions). They require a GitHub
+login and contain development changes that may not yet be in a stable release.
+
+## Start an acquisition
+
+1. Open **Settings** and choose an absolute output directory on a disk with enough
+   free space. Set a session name and check the recording/segmentation settings.
+2. Allow automatic ONVIF discovery across active IPv4 adapters, or add a camera
+   manually. Configure a shared camera login or individual camera credentials.
+3. Choose which feeds to display. Up to four previews can be shown, with
+   single-camera fullscreen; the camera roster supports up to 16 recording cameras.
+4. Use **Record all**, **Stop all**, or individual camera controls. Auto-record is
+   enabled by default; arriving registered cameras can start recording automatically.
+5. Add optional notes and use the event controls below. Open **Sessions / recordings**
+   to browse acquisitions, recording segments and events or export a portable bundle.
+
+Recording runs in independent processes. Closing or restarting the viewer does
+not stop an acquisition; a reopened desktop reattaches to active recorders. Stop
+recordings explicitly when finished. **Stop all** suppresses automatic restarts
+until **Record all** or an application restart.
+
+### Events and images
+
+| Action | Shortcut | Result |
+| --- | --- | --- |
+| Mark | F6 | Save a timestamped event and optional note without images. |
+| Grab All | F7 | Request fresh stills from all registered cameras, including hidden feeds. |
+| Mark + Grab All | F8 | Save an event with the frames currently displayed in the viewer. |
+
+**Mark + Grab** saves the displayed pixels as they were at the action, without an
+ONVIF snapshot or another camera connection. A frozen displayed frame is retained
+with its original local receipt timestamp; cameras without a displayed frame are
+reported as uncaptured. **Grab All** is a separate fresh-camera capture operation.
+
+Events retain stable camera IDs, recording references, notes and PNG images with
+JSON/CSV metadata. Captures and recording offsets have explicit timing uncertainty;
+they do not establish synchronized camera exposure times. See [events and captures](docs/events.md)
+and [sessions, browsing, export and retention](docs/sessions.md).
+
+### Recording and network behavior
+
+While recording, each recorder owns one RTSP connection to its camera. Viewers
+and RTSP still captures consume its bounded local encoded feed, avoiding duplicate
+camera streams on a throughput-limited network. Closing or slowing a viewer does
+not block the recorder. Recordings copy encoded video without re-encoding.
+
+A brief input interruption keeps the existing recording writer and file open while
+the reader reconnects. Recovery within the **two-second video-loss grace period**
+continues the same run/file; longer continuous loss triggers recovery in a new run.
+Normal timed segment rotation still applies. Missing footage is not synthesized.
+
+Keyframe-aligned MKV segments, durable boundary indexes, recovery/gap logs, and disk
+warning/stop policies make recording progress observable. A playing preview alone
+is not evidence that a file is growing. See [recording and recovery](docs/recording.md)
+and [operator monitoring](docs/monitoring.md).
+
+### Settings and camera management
+
+![Vidfish settings window](docs/images/settings.png)
+
+Settings include output/session configuration, preview and recording limits,
+segmentation, disk policy, discovery and shared camera login. Camera controls support
+aliases, per-camera login, hiding/restoring roster entries and guarded inventory
+cleanup. Hiding a camera does not stop recording or delete scientific data.
+
+Configuration uses the platform configuration directory, or `--config PATH`.
+Camera credentials currently use an app-managed local plaintext file for the closed
+system deployment; settings and session metadata contain no passwords. See
+[cameras and credentials](docs/cameras.md) for details.
+
+Updates can be checked from Settings. Recording-safe updates defer installation
+until acquisition has stopped. Install/uninstall preserves settings and scientific
+data; retention is a separate, explicit operation. Close old desktops/services and
+finish recordings before manually replacing an installation.
 
 ## Development
 
 Install rustup and the GStreamer development/runtime prerequisites in
-[docs/media.md](docs/media.md). `rust-toolchain.toml` pins Rust 1.99.0.
+[media setup](docs/media.md). `rust-toolchain.toml` pins Rust 1.99.0.
 
 ```sh
 cargo run --locked -p vidfish
@@ -41,7 +113,7 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 ```
 
-## Prototype workflows
+Useful CLI workflows:
 
 ```sh
 cargo run --locked -p vidfish -- --media-check
@@ -51,103 +123,34 @@ cargo run --locked -p vidfish -- --record rtsp://CAMERA/PROFILE --output NEW_FIL
 cargo run --locked -p vidfish -- --inspect NEW_FILE.mkv
 cargo run --locked -p vidfish -- --check
 cargo run --locked -p vidfish -- --service
-cargo run --locked -p vidfish -- --discover --interface LOCAL_IPV4
 cargo run --locked -p vidfish -- cameras list
-```
-
-Repeat `--preview` up to four times; add `--h265` for an H.265 profile. Recording
-runs in a separate process and survives preview window closure/restart. Ctrl+C
-finalizes the recording. The desktop and service automatically discover cameras across active IPv4 adapters and poll the inventory. Use View feed in the camera list to open a preview. Auto-record is on
-by default for registered/arriving cameras; Record all, Stop all, and per-camera controls
-operate independent recorder processes. A desktop restart reattaches to active recordings.
-Use either the desktop or headless service as the camera manager for an inventory. See [media setup](docs/media.md)
-and [camera discovery, credentials, and lifecycle](docs/cameras.md).
-
-For a simulated 1080p camera with ONVIF endpoints:
-
-```sh
 cargo run --locked -p vidfish-media --example camera-fixture --features fixtures
 ```
 
-Fixtures bind only loopback. They exercise RTSP stream-copy, preview restarts,
-H.264/H.265 media inspection, ONVIF SOAP/WS-Discovery, and snapshots. Process smoke
-tests verify recording remains usable after a preview process is killed.
+Repeat `--preview` up to four times; add `--h265` for H.265. Ctrl+C finalizes a
+CLI recording. Use either the desktop or headless service as the camera manager
+for an inventory. Fixtures bind loopback and provide simulated RTSP/ONVIF cameras.
+Optional native smoke scripts live in `scripts/`.
 
-## Settings
+Settings writes use synced temporary files and atomic replacement. Relative output
+paths use the launch working directory. Structured JSON logs go to stdout;
+`RUST_LOG=debug` increases detail. Raw media error strings containing camera URLs
+are excluded from operator errors.
 
-Settings use the platform configuration directory (`directories::ProjectDirs`),
-or `--config PATH`. A missing file uses defaults without writing anything. Save
-settings in the desktop to persist them. Writes run off the UI thread and use a
-synced temporary file followed by atomic replacement. Invalid/future settings fail
-visibly. Changes take effect on the next manager start.
+## Builds and releases
 
-```json
-{
-  "schema_version": 1,
-  "output_directory": "recordings",
-  "auto_record": true,
-  "segment_seconds": 600,
-  "stall_seconds": 30,
-  "disk_warning_bytes": 1073741824,
-  "disk_stop_bytes": 268435456,
-  "disk_policy": "Stop",
-  "max_cameras": 16,
-  "preview_slots": 4,
-  "camera_interface": null
-}
-```
+PR and manual CI **build and package Windows and Linux executables, runtime bundles
+and installers**. GitHub does not run tests, lint, native smoke or package-launch
+checks. Relevant checks run locally during development; Windows runtime tests remain
+paused at the operator's request.
 
-Relative paths use the launch working directory. Auto-record changes persist immediately
-and affect future starts; turning it off leaves active recordings running. Stop all
-suppresses automatic restarts until Record all or an application restart. Recordings
-use keyframe-aligned MKV segments (600 seconds by default), durable boundary indexes,
-disk warning/stop policy, and gap history. See [continuous recording](docs/recording.md).
-The prototype refuses existing output files and never deletes scientific data.
-JSON structured logs go to stdout; `RUST_LOG=debug` increases detail. Settings have
-no credential fields. Raw GStreamer error/debug strings are excluded from errors
-because camera URIs can contain credentials.
+Every push to `main`, including a merged PR, builds both platforms and publishes a
+release after both packages succeed. Versions use `0.1.<release workflow run number>`
+for the application, tag and assets. PR packages use `0.1.0-ci.<CI run number>`.
+Failed release runs can leave version gaps; reruns retain their version and do not
+replace an existing release. See [AGENTS.md](AGENTS.md) for branch and commit rules.
 
-## Branches, CI, and releases
-
-[AGENTS.md](AGENTS.md) records the per-epic branches/PRs and commit rules. Each
-verified coherent change is committed on its epic branch. Planning PRs remain drafts.
-
-CI and release workflows share build, lint, tests, RTSP smoke, desktop launch checks,
-and package steps. Draft PR updates run Linux only; marking a PR ready for review
-runs both Windows and Linux, as do later updates to ready PRs. Manual CI runs and
-releases always check both platforms. PR CI uploads executable packages. Every
-push to `main`, including PR merges, publishes only after both platform packages pass.
-Version `0.1.<release workflow run number>` appears in `--version`, Git tags, and
-archive names. Failed runs may leave gaps; reruns retain their version and do not
-replace an existing release. PR packages use `0.1.0-ci.<CI run number>`. The Cargo
-manifest remains at development version `0.1.0`; update the release version prefix
-to start a new major/minor series.
-
-GitHub Releases include a Windows ZIP with GStreamer runtime, a Linux tarball with
-runtime installation instructions, and SHA-256 checksums. No Rust installation is
-needed to launch packages. See [deployment instructions](docs/media.md). Publishing
-needs Actions enabled; its token has write access only in the publication job.
-
-## Epic sequence and outstanding acceptance
-
-1. #7: workspace, settings, desktop/manager lifecycle.
-2. #8: GStreamer recording/preview spike and four-preview Toughpad measurements.
-3. #9: Windows/Linux delivery, runtime packaging, and simulated camera fixtures.
-4. #10–12: discovery, stable identities, and reconnection.
-5. #13–16: isolated multi-camera recording, segments, controls, and health.
-6. #17–19: operator preview controls and resource limits.
-7. #20–25: event capture, sessions, browsing, retention, and export.
-
-The operator reported successful four-stream operation after merging the foundation.
-Cloud virtual-display checks establish functionality, not target hardware performance.
-Numerical Toughpad CPU/GPU measurements are deferred at the user's request; the operator
-observed that the earlier four-stream build looked fine. Native Linux checks validate functionality; Windows checks are paused by user request. Do not claim zero-copy preview upload, frame-perfect
-synchronization, or sustained physical 16-camera throughput without measurements.
-
-Scientific events (Epic 5): [all-camera grabs, recording references, notes and JSON/CSV](docs/events.md). F6 marks, F7 grabs all cameras, and F8 combines both. Captures run independently of recording; timing uncertainty is explicit.
-
-Sessions (Epic 6): [named acquisitions, media library, portable export and opt-in retention](docs/sessions.md). All six epics are implemented; platform and timing limitations are documented.
-
-Follow-ups #32–#34 add operator visual polish, automatic all-adapter IPv4 discovery and shared camera login defaults with isolated authentication recovery.
-
-For per-user Windows/Linux installers, safe in-app updates, rollback and data-preserving uninstall, see [installation instructions](docs/installing.md). Portable releases remain available.
+Physical-camera recovery and sustained throughput still require testing on the target
+network/hardware. The operator reported successful four-stream use; numerical
+Toughpad CPU/GPU measurements are deferred. Linux fixture checks do not establish
+Windows runtime behavior, synchronized capture or sustained 16-camera performance.
