@@ -72,7 +72,7 @@ still records the camera's recording state without waiting for image work.
 
 ## Durability, notes and exports
 
-New events live in `session-…/events/<event-UUID>/` under the acquisition output root.
+New events live in `session-…/events/<event-ID>/` under the acquisition output root.
 Earlier settings-adjacent `operator-events` folders remain accessible in the library. Each folder
 contains `event.json`, `event.csv`, and collision-free `snapshot-N.png` files.
 JSON is the canonical record. CSV has one quoted row per camera, with event ID,

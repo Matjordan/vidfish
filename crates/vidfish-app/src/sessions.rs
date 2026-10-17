@@ -9,6 +9,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    #[serde(default)]
+    pub timestamp: crate::identifiers::Timestamp,
     pub label: String,
     pub directory: PathBuf,
     pub created_unix_ms: u64,
@@ -96,7 +98,7 @@ pub fn read(directory: &Path) -> Result<Session> {
         return Err("Session manifest exceeds size limit".into());
     }
     let session: Session = serde_json::from_slice(&bytes)?;
-    uuid::Uuid::parse_str(&session.id)?;
+    crate::identifiers::validate(&session.id)?;
     if session.schema_version != 1 || session.directory != directory {
         return Err("Session manifest path/schema mismatch".into());
     }
@@ -108,15 +110,8 @@ fn create(config: &AppConfig, label: &str) -> Result<Session> {
     }
     std::fs::create_dir_all(&config.output_directory)?;
     let root = config.output_directory.canonicalize()?;
-    let id = uuid::Uuid::new_v4().to_string();
     let created = crate::operator_events::now();
-    let slug: String = label
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .take(40)
-        .collect();
-    let directory = root.join(format!("session-{created}-{slug}-{id}"));
-    std::fs::create_dir(&directory)?;
+    let (id, directory) = crate::identifiers::reserve(&root, created, false, "session-")?;
     let _lease = file_lock(&directory.join("session.lease"))?;
     for name in ["recordings", "events", "logs"] {
         std::fs::create_dir(directory.join(name))?;
@@ -125,6 +120,7 @@ fn create(config: &AppConfig, label: &str) -> Result<Session> {
     conditions.output_directory = root;
     let session = Session {
         id,
+        timestamp: crate::identifiers::timestamp(created),
         label: if label.trim().is_empty() {
             format!(
                 "Acquisition {} UTC",

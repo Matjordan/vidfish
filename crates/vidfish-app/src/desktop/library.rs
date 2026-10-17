@@ -16,7 +16,7 @@ pub(super) struct Library {
     maintenance: Option<tokio::sync::oneshot::Receiver<Result<String, String>>>,
     rectangle: Option<egui::Rect>,
     message: String,
-    destination: String,
+    pub(super) destination: String,
     name: String,
     refresh: bool,
     event_page: usize,
@@ -203,7 +203,7 @@ impl Desktop {
    }
    ui.small("Choose filters, then Refresh library to apply them.");
    ui.horizontal_wrapped(|ui|{ui.label("UTC dates");ui.add(egui::TextEdit::singleline(&mut self.library.filter.from).hint_text("From YYYY-MM-DD").desired_width(140.0));ui.add(egui::TextEdit::singleline(&mut self.library.filter.to).hint_text("To YYYY-MM-DD").desired_width(140.0));ui.add(egui::TextEdit::singleline(&mut self.library.filter.event).hint_text("Event ID, kind or note").desired_width(180.0));if button(ui,"Refresh library").clicked(){self.library.refresh=true;self.library.event_page=0;self.library.segment_page=0;}});
-   ui.horizontal_wrapped(|ui|{ui.label("Export directory");let response=super::theme::edit(ui,&mut self.library.destination);super::probe::button(ui,"Export directory",&response);});
+   ui.horizontal_wrapped(|ui|{ui.label("Export directory");let response=super::theme::edit(ui,&mut self.library.destination);super::probe::button(ui,"Export directory",&response);if button(ui,"Browse export…").clicked(){self.picker.folder(&self.runtime,super::picker::Target::Export,self.library.destination.clone().into());}});
    if self.library.loading.is_some(){ui.label("Loading session metadata…");}
 if busy{ui.label("Opening / exporting in background… recordings continue");}
 if !self.library.message.is_empty(){ui.label(&self.library.message);}

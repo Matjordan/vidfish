@@ -8,7 +8,7 @@ or session operation owns it. Starting a session never stops or starts cameras.
 Viewer restarts and newly arriving cameras reuse the active session.
 
 Under the configured output directory, each collision-safe
-`session-<timestamp>-<name>-<UUID>` folder contains `manifest.json`, `recordings/`,
+`session-YYYYMMDD-HHMMSS` folder contains `manifest.json`, `recordings/`,
 `events/` (event JSON/CSV and PNG snapshots), and `logs/`. The manifest records stable
 camera IDs, aliases, runs, codec, acquisition settings and negotiated dimensions/FPS
 when available; unavailable values are null. Camera credentials are not included.
@@ -60,10 +60,19 @@ not ownership tracked; keep retention disabled when manually using older recordi
 
 Use `vidfish --config /path/settings.json cameras sessions` followed by `list`,
 `new --name "Test ID"`, `rename --name "Corrected ID"`, `browse`, `storage`,
-`retention`, or `export <event-UUID> --destination /path/export`.
+`retention`, or `export <event-ID> --destination /path/export`.
 Run each subcommand with `--help` for filters and session selection. Retention uses
 only the saved opt-in policy. Commands do not implicitly start or stop recording.
 
 Linux automated checks exercise manifests, ownership, real MKV exports, missing/open
 media, opt-in deletion safeguards and native browser/export operation while recording.
 Windows checks remain paused at the user's request; Windows release packaging continues.
+
+## Public identifiers
+
+New session IDs use UTC `YYYYMMDD-HHMMSS`; events add `-SSS` milliseconds.
+An atomic directory reservation adds `-02`, `-03`, etc. on collisions, including
+clock corrections and restarts. UTC avoids daylight-saving ambiguity in IDs;
+metadata also stores RFC3339 UTC/local timestamps and the local offset at creation.
+The UI displays local timestamps with offsets. IDs do not replace precise timing
+metadata. Existing UUID folders and historical metadata are never renamed.

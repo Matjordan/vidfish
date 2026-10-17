@@ -7,10 +7,12 @@ rust-version.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:eframe", "dep:wgpu"]
+desktop = ["dep:eframe", "dep:wgpu", "dep:rfd"]
 wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 
 [dependencies]
+rfd = { version = "0.15", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 sha2 = "0.10"
 semver = "1"

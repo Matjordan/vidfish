@@ -13,3 +13,5 @@ pub mod snapshots;
 
 pub mod installation;
 pub mod updater;
+
+pub mod identifiers;

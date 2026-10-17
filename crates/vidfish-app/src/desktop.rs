@@ -1,6 +1,7 @@
 mod camera_cleanup;
 mod library;
 mod operator;
+mod picker;
 mod probe;
 mod theme;
 mod updates;
@@ -136,6 +137,7 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
+                picker: Default::default(),
                 force_opengl,
                 interface: config
                     .camera_interface
@@ -250,6 +252,7 @@ impl Slot {
     }
 }
 struct Desktop {
+    picker: picker::Picker,
     force_opengl: bool,
     adding_camera: bool,
     new_alias: String,
@@ -310,6 +313,14 @@ struct Desktop {
 }
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if let Some((target, path)) = self.picker.poll() {
+            match target {
+                picker::Target::Output => self.config.output_directory = path,
+                picker::Target::Export => {
+                    self.library.destination = path.to_string_lossy().into_owned()
+                }
+            }
+        }
         if self.record_snapshot.has_changed().unwrap_or(true) {
             self.record_status = self.record_snapshot.borrow_and_update().clone();
         }

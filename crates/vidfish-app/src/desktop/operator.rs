@@ -673,6 +673,7 @@ impl Desktop {
             ui.label("Camera adapter IPv4 (blank searches all active adapters)");super::theme::edit(ui,&mut self.interface);
             let valid=self.interface.trim().is_empty() || self.interface.trim().parse::<std::net::Ipv4Addr>().is_ok();
             let mut output=self.config.output_directory.to_string_lossy().into_owned();ui.label("Output directory");if super::theme::edit(ui,&mut output).changed(){self.config.output_directory=output.into();}
+            if touch(ui,"Browse output…").clicked(){self.picker.folder(&self.runtime,super::picker::Target::Output,self.config.output_directory.clone());}
             ui.label("Default session name / test ID (blank generates a name)");ui.add(egui::TextEdit::singleline(&mut self.config.session_name).margin(egui::vec2(6.0,14.0)).char_limit(128));
             let mut retention=retention_draft.is_some();if ui.checkbox(&mut retention,"Automatically delete old closed sessions").changed(){*retention_draft=if retention{Some(7)}else{None};}
             if let Some(days)=retention_draft {ui.horizontal(|ui|{ui.label("Keep closed sessions for days");ui.add(egui::DragValue::new(days).range(1..=36500));});ui.colored_label(egui::Color32::LIGHT_RED,"Deletes recordings, snapshots and logs after the saved age. Active/busy sessions and legacy files are preserved.");}
