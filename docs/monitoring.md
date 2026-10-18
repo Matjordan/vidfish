@@ -105,7 +105,8 @@ Long notes remain available in details and the note editor.
 when its section was previously collapsed. It is also available under **Session Details**. Add, rename, reorder
 and remove up to 16 labels and choose **Save event presets**. Quick preset buttons
 create ordinary timestamped Mark events with the chosen label as the note and normal
-recording references. Presets belong to the active session. Edits affect future
+recording references. New sessions copy the previous session’s saved presets as an independent starting
+set. Presets belong to the active session. Edits affect future
 marks only and never rename historical events. Free-form Mark remains available.
 
 See [events](events.md) and [sessions](sessions.md) for durable storage and exports.

@@ -85,3 +85,7 @@ apply edits to the wrong acquisition. Presets are carried in the session manifes
 older manifests default to an empty list. Existing event notes are never rewritten.
 Output and export destination fields provide native folder pickers; cancel preserves
 the current value, and manual entry remains available.
+
+New sessions copy the previous active session’s saved preset labels in their saved
+order as an independent starting set. Later edits affect only the new session.
+The first session, or a session following one with no presets, starts empty.

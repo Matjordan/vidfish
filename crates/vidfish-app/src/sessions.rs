@@ -106,7 +106,12 @@ pub fn read(directory: &Path) -> Result<Session> {
     }
     Ok(session)
 }
-fn create(config: &AppConfig, label: &str, registry: &Registry) -> Result<Session> {
+fn create(
+    config: &AppConfig,
+    label: &str,
+    registry: &Registry,
+    presets: &[String],
+) -> Result<Session> {
     if label.chars().count() > 128 || label.contains(['\n', '\r']) {
         return Err("Session name must be at most 128 characters on one line".into());
     }
@@ -129,7 +134,7 @@ fn create(config: &AppConfig, label: &str, registry: &Registry) -> Result<Sessio
     let session = Session {
         id,
         timestamp: crate::identifiers::timestamp(created),
-        event_presets: Vec::new(),
+        event_presets: presets.to_vec(),
         label: if label.trim().is_empty() {
             format!(
                 "Acquisition {} UTC",
@@ -167,7 +172,7 @@ fn ensure(config_path: &Path, config: &AppConfig, registry: &mut Registry) -> Re
                 .into(),
         );
     }
-    let session = create(config, &config.session_name, registry)?;
+    let session = create(config, &config.session_name, registry, &[])?;
     registry.sessions.push(Entry {
         id: session.id.clone(),
         directory: session.directory.clone(),
@@ -246,7 +251,14 @@ pub fn start_new(config_path: &Path, config: &AppConfig, label: &str) -> Result<
     } else {
         None
     };
-    let next = create(config, label, &registry)?;
+    let next = create(
+        config,
+        label,
+        &registry,
+        previous
+            .as_ref()
+            .map_or(&[], |s| s.event_presets.as_slice()),
+    )?;
     if let Some(mut old) = previous {
         old.closed_unix_ms = Some(crate::operator_events::now());
         write_json(&old.directory.join("manifest.json"), &old)?;
@@ -406,6 +418,8 @@ mod tests {
         };
         config.save(&path).unwrap();
         let lease = acquire(&path, &config).unwrap();
+        assert!(lease.session.event_presets.is_empty());
+        let previous_directory = lease.session.directory.clone();
         let id = lease.session.id.clone();
         drop(lease);
         set_presets(
@@ -440,7 +454,24 @@ mod tests {
             vec!["Fault", "Start"]
         );
         let next = start_new(&path, &config, "Next").unwrap();
-        assert!(next.event_presets.is_empty());
+        assert_eq!(next.event_presets, vec!["Fault", "Start"]);
+        assert_eq!(
+            read(&next.directory).unwrap().event_presets,
+            next.event_presets
+        );
+        set_presets(&path, &next.id, vec!["New label".into(), "Fault".into()]).unwrap();
+        assert_eq!(
+            current(&path).unwrap().unwrap().event_presets,
+            vec!["New label", "Fault"]
+        );
+        assert_eq!(
+            read(&previous_directory).unwrap().event_presets,
+            vec!["Fault", "Start"]
+        );
+        assert_eq!(
+            crate::operator_events::load(&previous_directory.join("events")).unwrap()[0].note,
+            "Start Test"
+        );
         assert!(set_presets(&path, &id, vec!["Wrong session".into()]).is_err());
         assert!(set_presets(&path, &next.id, vec!["\n".into()]).is_err());
     }

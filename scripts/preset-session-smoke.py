@@ -54,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix='vidfish-empty-presets-') as folder:
         click('Start new session')
         second = m.until(lambda:value if (value:=state().get('session_id')) and value!=first else None)
         assert json.loads((root/'sessions.json').read_text())['active']==second
+        manifest=next(p for p in (root/'media').glob('*/manifest.json') if json.loads(p.read_text())['id']==second)
+        assert json.loads(manifest.read_text())['event_presets']==['New event']
         click('Add preset')
         assert all(not json.loads(p.read_text()).get('state')=='Recording' for p in (root/'acquisition').glob('*.json'))
         print('PASS: empty session creation exposes presets, saves/uses a preset, and switches to a new session without recording')
