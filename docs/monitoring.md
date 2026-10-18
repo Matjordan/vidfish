@@ -26,7 +26,7 @@ eight are occupied. **Return to grid**, Escape, or the restore control returns t
 previous selections and order. If a temporary camera is still switching, wait for
 that transition before restoring. No fullscreen operation changes recording.
 
-`views.json` beside the configuration persists selections, ordering, roster visibility,
+`views-v2.json` beside the configuration persists selections, ordering, roster visibility,
 thumbnail interval and event-section visibility. Older four-slot preferences load
 without renaming cameras. There is no dedicated slot selector in the roster.
 Unavailable selected cameras remain placeholders instead of being replaced silently.
@@ -127,3 +127,10 @@ not enabled in CI. Windows runtime/native tests remain paused at the operator's
 request; Windows compilation and installer packaging remain enabled. Physical
 Toughpad eight-preview performance and native picker behavior require operator checks.
 Previous successful four-stream operation is not an eight-stream benchmark.
+
+New view preferences use `views-v2.json` so old four-view versions can still start
+and reach their updater. First migration reads `views.json`. If an early eight-view
+build wrote incompatible preferences there, Vidfish preserves an exact
+`views-before-v2-UUID.json` backup and restores a four-slot legacy file. All eight
+selections and the thumbnail interval remain in the independent v2 file. Older
+versions saving their layout do not replace the v2 layout.
