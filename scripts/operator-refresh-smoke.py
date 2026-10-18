@@ -52,6 +52,10 @@ with tempfile.TemporaryDirectory(prefix='vidfish-events-') as folder:
   capture=next(e for e in events() if e['kind']=='Mark + Grab All')
   assert sum(c['image'] is not None for c in capture['captures'])==4
   assert all('Displayed frame' in c['result'] for c in capture['captures'] if c['image'])
+  # Explicit user scrolling to newest keeps the documentation capture readable.
+  buttons=[b for b in state().get('buttons',[]) if b[0].startswith('Event ')]
+  if buttons:
+   rect=buttons[-1][1];mouse.scroll(-30,int((rect[0]+rect[2])/2),min(int((rect[1]+rect[3])/2),int(state()['viewport'][1])-25))
   time.sleep(1)
   if args.screenshot: ImageGrab.grab().save(args.screenshot)
   click('Search events');mouse.type_note('sample');time.sleep(1)

@@ -238,63 +238,64 @@ impl Desktop {
                                 } else {
                                     egui::Color32::LIGHT_GRAY
                                 };
-                                let mut row = ui.new_child(
-                                    egui::UiBuilder::new()
-                                        .max_rect(rect.shrink(6.0))
-                                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                                );
-                                row.spacing_mut().item_spacing.y = 2.0;
-                                row.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 4.0;
-                                    let font = if compact { 12.0 } else { 13.0 };
-                                    let field = |ui: &mut egui::Ui, w: f32, text: String| {
-                                        ui.add_sized(
-                                            [w, 16.0],
-                                            egui::Label::new(
-                                                egui::RichText::new(text).size(font).color(color),
-                                            )
-                                            .truncate(),
-                                        );
-                                    };
-                                    field(ui, if compact { 92.0 } else { 150.0 }, time);
-                                    field(
-                                        ui,
-                                        if compact { 92.0 } else { 118.0 },
-                                        event.kind.clone(),
+                                let mut cell = |x: f32, y: f32, w: f32, text: String, font: f32| {
+                                    let cell_rect = egui::Rect::from_min_size(
+                                        rect.min + egui::vec2(x, y),
+                                        egui::vec2(w.max(1.0), 18.0),
                                     );
-                                    field(
-                                        ui,
-                                        if compact { 30.0 } else { 48.0 },
-                                        format!("{}s", event.elapsed_seconds),
+                                    let clip = cell_rect.intersect(rect).intersect(ui.clip_rect());
+                                    let mut child = ui.new_child(
+                                        egui::UiBuilder::new()
+                                            .max_rect(cell_rect)
+                                            .layout(egui::Layout::top_down(egui::Align::Min)),
                                     );
-                                    field(
-                                        ui,
-                                        ui.available_width().max(1.0),
-                                        format!(
-                                            "{captures}/{} img · {recording}/{} rec",
-                                            event.captures.len(),
-                                            event.captures.len()
-                                        ),
-                                    );
-                                });
-                                row.horizontal(|ui| {
-                                    ui.add_sized(
-                                        [142.0, 16.0],
-                                        egui::Label::new(egui::RichText::new(public_id).small())
-                                            .truncate(),
-                                    );
-                                    ui.add(
+                                    child.set_clip_rect(clip);
+                                    child.add(
                                         egui::Label::new(
-                                            egui::RichText::new(if note.is_empty() {
-                                                "No note"
-                                            } else {
-                                                &note
-                                            })
-                                            .small(),
+                                            egui::RichText::new(text).size(font).color(color),
                                         )
                                         .truncate(),
                                     );
-                                });
+                                };
+                                let font = if compact { 12.0 } else { 13.0 };
+                                let (date_width, kind_width, elapsed_width) = if compact {
+                                    (92.0, 92.0, 30.0)
+                                } else {
+                                    (150.0, 118.0, 48.0)
+                                };
+                                cell(6.0, 5.0, date_width, time, font);
+                                cell(10.0 + date_width, 5.0, kind_width, event.kind.clone(), font);
+                                cell(
+                                    14.0 + date_width + kind_width,
+                                    5.0,
+                                    elapsed_width,
+                                    format!("{}s", event.elapsed_seconds),
+                                    font,
+                                );
+                                let x = 18.0 + date_width + kind_width + elapsed_width;
+                                cell(
+                                    x,
+                                    5.0,
+                                    rect.width() - x - 6.0,
+                                    format!(
+                                        "{captures}/{} img · {recording}/{} rec",
+                                        event.captures.len(),
+                                        event.captures.len()
+                                    ),
+                                    font,
+                                );
+                                cell(6.0, 27.0, 142.0, public_id, 12.0);
+                                cell(
+                                    154.0,
+                                    27.0,
+                                    rect.width() - 160.0,
+                                    if note.is_empty() {
+                                        "No note".into()
+                                    } else {
+                                        note
+                                    },
+                                    12.0,
+                                );
                                 super::probe::button(ui, &format!("Event {}", event.id), &response);
                                 if response.clicked() || response.double_clicked() {
                                     browser.selected = Some(event.id.clone());
