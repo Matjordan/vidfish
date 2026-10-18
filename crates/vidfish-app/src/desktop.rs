@@ -1,5 +1,6 @@
 mod camera_cleanup;
 mod event_browser;
+mod grid_layout;
 mod library;
 mod operator;
 mod picker;

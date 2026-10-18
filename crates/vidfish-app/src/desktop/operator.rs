@@ -1,5 +1,5 @@
 #[derive(Clone)]
-struct DragCamera {
+pub(super) struct DragCamera {
     id: String,
     tile: Option<usize>,
 }
@@ -285,7 +285,7 @@ impl Desktop {
                                 } else {
                                     RED
                                 };
-                                egui::Frame::group(ui.style())
+                                let card=egui::Frame::group(ui.style())
                                     .fill(super::theme::CARD)
                                     .corner_radius(7)
                                     .stroke(egui::Stroke::new(
@@ -457,6 +457,17 @@ impl Desktop {
                                             }
                                         }
                                     });
+                                // Start only after movement; do not put a drag widget over card buttons.
+                                let gesture=ctx.input(|i|i.pointer.primary_down().then(||(i.pointer.press_origin(),i.pointer.interact_pos())));
+                                let editing=ctx.data(|d|d.get_temp::<bool>(egui::Id::new(("camera-editor",&camera.camera.id))).unwrap_or(false));
+                                if !editing && !egui::DragAndDrop::has_any_payload(ctx)
+                                    && let Some((Some(origin),Some(pointer)))=gesture
+                                    && card.response.rect.intersect(ui.clip_rect()).contains(origin)
+                                    && pointer.distance(origin)>6.0 {
+                                    ctx.set_dragged_id(ui.id().with(("drag-camera-card",&camera.camera.id)));
+                                    egui::DragAndDrop::set_payload(ctx,DragCamera{id:camera.camera.id.clone(),tile:None});
+                                }
+                                super::probe::button(ui,&format!("Camera card {}",camera.camera.alias),&card.response);
                                 ui.add_space(4.0);
                             }
                         });
@@ -581,157 +592,216 @@ impl Desktop {
             });
             let area = ui.available_rect_before_wrap();
             if indices.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Drag a camera here, or choose Add to view in the camera list.");
-                });
+                ui.painter().text(
+                    area.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Drag a camera here, or choose Add to view in the camera list.",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::LIGHT_GRAY,
+                );
             }
-            let columns = if indices.len() <= 1 {
-                1
-            } else if area.width() > 1100.0 && indices.len() > 4 {
-                3
-            } else {
-                2
-            };
+            let adding = self.fullscreen.is_none() && indices.len() < self.slots.len();
+            let add_height = if adding { 56.0 } else { 0.0 };
+            let grid_height = (area.height() - add_height - 8.0).max(1.0);
+            let columns = super::grid_layout::columns(indices.len(), area.width(), grid_height);
             let rows = indices.len().div_ceil(columns).max(1);
-            let size = egui::vec2(
-                ((area.width() - 16.0) / columns as f32 - 8.0).max(1.0),
-                (area.height() / rows as f32 - 8.0).max(100.0),
-            );
+            let tile_height = (grid_height / rows as f32 - 8.0).max(100.0);
             egui::ScrollArea::vertical()
                 .id_salt("preview-workspace-scroll")
-                .max_height(area.height())
+                .max_height(grid_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    egui::Grid::new("dynamic-camera-grid")
-                        .spacing([8.0, 8.0])
-                        .show(ui, |ui| {
-                            for (n, index) in indices.iter().copied().enumerate() {
-                                let (rect, response) =
-                                    ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-                                super::probe::button(
-                                    ui,
-                                    &format!("Viewport {}", index + 1),
-                                    &response,
-                                );
-                                if response.clicked() {
-                                    self.selected_slot = index;
-                                }
-                                if response.double_clicked() {
-                                    maximize = Some(index);
-                                }
-                                if let Some(id) = &self.slots[index].camera_id {
-                                    response.dnd_set_drag_payload(DragCamera {
-                                        id: id.clone(),
-                                        tile: Some(index),
-                                    });
-                                }
-                                if let Some(payload) = response.dnd_release_payload::<DragCamera>()
-                                {
-                                    if let Some(from) = payload.tile {
-                                        swaps = Some((from, index));
-                                    } else {
-                                        dropped = Some((payload.id.clone(), index));
-                                    }
-                                }
-                                let fill = super::theme::CARD;
-                                ui.painter().rect_filled(rect, 6.0, fill);
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    6.0,
-                                    egui::Stroke::new(
-                                        1.0_f32,
-                                        if response.hovered() || self.selected_slot == index {
-                                            super::theme::ACCENT
-                                        } else {
-                                            super::theme::BORDER
-                                        },
+                    if !indices.is_empty() {
+                        let width = ui.available_width();
+                        let (canvas, _) = ui.allocate_exact_size(
+                            egui::vec2(width, rows as f32 * (tile_height + 8.0)),
+                            egui::Sense::hover(),
+                        );
+                        for (n, index) in indices.iter().copied().enumerate() {
+                            let row = n / columns;
+                            let col = n % columns;
+                            let in_row = columns.min(indices.len() - row * columns);
+                            let tile_width = (width - 8.0 * (in_row - 1) as f32) / in_row as f32;
+                            let rect = egui::Rect::from_min_size(
+                                canvas.min
+                                    + egui::vec2(
+                                        col as f32 * (tile_width + 8.0),
+                                        row as f32 * (tile_height + 8.0),
                                     ),
-                                    egui::StrokeKind::Inside,
-                                );
-                                if let Some(texture) = &self.slots[index].texture {
-                                    let available = rect.shrink(2.0);
-                                    let aspect = texture.size_vec2().x / texture.size_vec2().y;
-                                    let w = available.width().min(available.height() * aspect);
-                                    let h = w / aspect;
-                                    ui.painter().image(
-                                        texture.id(),
-                                        egui::Rect::from_center_size(
-                                            available.center(),
-                                            egui::vec2(w, h),
-                                        ),
-                                        egui::Rect::from_min_max(
-                                            egui::Pos2::ZERO,
-                                            egui::pos2(1.0, 1.0),
-                                        ),
-                                        egui::Color32::WHITE,
-                                    );
-                                }
-                                let recording = self.record_status.cameras.iter().find(|r| {
-                                    Some(&r.camera_id) == self.slots[index].camera_id.as_ref()
+                                egui::vec2(tile_width, tile_height),
+                            );
+                            let response = ui.interact(
+                                rect,
+                                ui.id().with(("viewport", index)),
+                                egui::Sense::click_and_drag(),
+                            );
+                            super::probe::button(ui, &format!("Viewport {}", index + 1), &response);
+                            if response.clicked() {
+                                self.selected_slot = index;
+                            }
+                            if response.double_clicked() {
+                                maximize = Some(index);
+                            }
+                            if let Some(id) = &self.slots[index].camera_id {
+                                response.dnd_set_drag_payload(DragCamera {
+                                    id: id.clone(),
+                                    tile: Some(index),
                                 });
-                                let rec = recording.is_some_and(|r| {
-                                    r.state == State::Recording
-                                        && r.error.is_none()
-                                        && r.warning.is_none()
-                                        && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
-                                });
-                                let title = egui::Rect::from_min_size(
-                                    rect.min,
-                                    egui::vec2(rect.width(), 24.0_f32.min(rect.height())),
-                                );
-                                ui.painter().rect_filled(
-                                    title,
-                                    4.0,
-                                    egui::Color32::from_black_alpha(185),
-                                );
-                                ui.painter().text(
-                                    title.left_center() + egui::vec2(8.0, 0.0),
-                                    egui::Align2::LEFT_CENTER,
-                                    format!(
-                                        "{} · {} · {}",
-                                        self.slots[index].label,
-                                        if rec { "REC" } else { "NOT RECORDING" },
-                                        self.preview_state(index)
-                                    ),
-                                    egui::FontId::proportional(13.0),
-                                    if rec { GREEN } else { egui::Color32::WHITE },
-                                );
-                                let control = egui::Rect::from_min_size(
-                                    rect.right_bottom() - egui::vec2(100.0, 48.0),
-                                    egui::vec2(96.0, 44.0),
-                                );
-                                let mut controls =
-                                    ui.new_child(egui::UiBuilder::new().max_rect(control));
-                                {
-                                    let ui = &mut controls;
-                                    ui.horizontal(|ui| {
-                                        let expand = ui.add(
-                                            egui::Button::new(if self.fullscreen.is_some() {
-                                                "↙"
-                                            } else {
-                                                "⛶"
-                                            })
-                                            .fill(egui::Color32::from_black_alpha(160))
-                                            .min_size(egui::vec2(44.0, 44.0)),
-                                        );
-                                        super::probe::button(ui, "Max", &expand);
-                                        if expand.clicked() {
-                                            maximize = Some(index);
-                                        }
-                                        if touch(ui, "×")
-                                            .on_hover_text("Remove from view only")
-                                            .clicked()
-                                        {
-                                            close = Some(index);
-                                        }
-                                    });
-                                }
-                                if n % columns == columns - 1 {
-                                    ui.end_row();
+                            }
+                            if let Some(payload) = response.dnd_release_payload::<DragCamera>() {
+                                if let Some(from) = payload.tile {
+                                    swaps = Some((from, index));
+                                } else {
+                                    dropped = Some((payload.id.clone(), index));
                                 }
                             }
-                        });
+                            let fill = super::theme::CARD;
+                            ui.painter().rect_filled(rect, 6.0, fill);
+                            ui.painter().rect_stroke(
+                                rect,
+                                6.0,
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    if response.hovered()
+                                        || (response.contains_pointer()
+                                            && egui::DragAndDrop::has_payload_of_type::<DragCamera>(
+                                                ctx,
+                                            ))
+                                        || self.selected_slot == index
+                                    {
+                                        super::theme::ACCENT
+                                    } else {
+                                        super::theme::BORDER
+                                    },
+                                ),
+                                egui::StrokeKind::Inside,
+                            );
+                            if let Some(texture) = &self.slots[index].texture {
+                                let available = rect.shrink(2.0);
+                                let aspect = texture.size_vec2().x / texture.size_vec2().y;
+                                let w = available.width().min(available.height() * aspect);
+                                let h = w / aspect;
+                                ui.painter().image(
+                                    texture.id(),
+                                    egui::Rect::from_center_size(
+                                        available.center(),
+                                        egui::vec2(w, h),
+                                    ),
+                                    egui::Rect::from_min_max(
+                                        egui::Pos2::ZERO,
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            let recording = self.record_status.cameras.iter().find(|r| {
+                                Some(&r.camera_id) == self.slots[index].camera_id.as_ref()
+                            });
+                            let rec = recording.is_some_and(|r| {
+                                r.state == State::Recording
+                                    && r.error.is_none()
+                                    && r.warning.is_none()
+                                    && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
+                            });
+                            let title = egui::Rect::from_min_size(
+                                rect.min,
+                                egui::vec2(rect.width(), 24.0_f32.min(rect.height())),
+                            );
+                            ui.painter().rect_filled(
+                                title,
+                                4.0,
+                                egui::Color32::from_black_alpha(185),
+                            );
+                            ui.painter().text(
+                                title.left_center() + egui::vec2(8.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                format!(
+                                    "{} · {} · {}",
+                                    self.slots[index].label,
+                                    if rec { "REC" } else { "NOT RECORDING" },
+                                    self.preview_state(index)
+                                ),
+                                egui::FontId::proportional(13.0),
+                                if rec { GREEN } else { egui::Color32::WHITE },
+                            );
+                            let control = egui::Rect::from_min_size(
+                                rect.right_bottom() - egui::vec2(100.0, 48.0),
+                                egui::vec2(96.0, 44.0),
+                            );
+                            let mut controls =
+                                ui.new_child(egui::UiBuilder::new().max_rect(control));
+                            {
+                                let ui = &mut controls;
+                                ui.horizontal(|ui| {
+                                    let expand = ui.add(
+                                        egui::Button::new(if self.fullscreen.is_some() {
+                                            "↙"
+                                        } else {
+                                            "⛶"
+                                        })
+                                        .fill(egui::Color32::from_black_alpha(160))
+                                        .min_size(egui::vec2(44.0, 44.0)),
+                                    );
+                                    super::probe::button(ui, "Max", &expand);
+                                    if expand.clicked() {
+                                        maximize = Some(index);
+                                    }
+                                    if touch(ui, "×")
+                                        .on_hover_text("Remove from view only")
+                                        .clicked()
+                                    {
+                                        close = Some(index);
+                                    }
+                                });
+                            }
+                        }
+                    }
                 });
+            if adding {
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(area.left(), area.bottom() - 56.0),
+                    area.right_bottom(),
+                );
+                let response =
+                    ui.interact(rect, ui.id().with("add-camera-view"), egui::Sense::hover());
+                let active = egui::DragAndDrop::has_payload_of_type::<DragCamera>(ctx)
+                    && response.contains_pointer();
+                ui.painter().rect_filled(
+                    rect,
+                    6.0,
+                    if active {
+                        egui::Color32::from_rgb(27, 65, 86)
+                    } else {
+                        super::theme::CARD
+                    },
+                );
+                ui.painter().rect_stroke(
+                    rect,
+                    6.0,
+                    egui::Stroke::new(if active { 2.0_f32 } else { 1.0_f32 }, super::theme::ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!(
+                        "+ Drop camera here to add a view · {} / {}",
+                        indices.len(),
+                        self.slots.len()
+                    ),
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+                super::probe::button(ui, "Add view drop area", &response);
+                if let Some(payload) = response.dnd_release_payload::<DragCamera>()
+                    && payload.tile.is_none()
+                    && let Some(index) = self.views.slots[..self.slots.len()]
+                        .iter()
+                        .position(Option::is_none)
+                {
+                    dropped = Some((payload.id.clone(), index));
+                }
+            }
             // Empty workspace is also an add target, including the empty-state message.
             let empty = ui.interact(area, ui.id().with("workspace-drop"), egui::Sense::hover());
             if let Some(payload) = empty.dnd_release_payload::<DragCamera>()
@@ -749,6 +819,67 @@ impl Desktop {
                 }
             }
         });
+        if let Some(payload) = egui::DragAndDrop::payload::<DragCamera>(ctx)
+            && let Some(pointer) = ctx.pointer_interact_pos()
+        {
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            let mut rect = egui::Rect::from_min_size(
+                pointer + egui::vec2(16.0, 16.0),
+                egui::vec2(220.0, 136.0),
+            );
+            let screen = ctx.content_rect();
+            rect = rect.translate(egui::vec2(
+                (screen.right() - rect.right()).min(0.0),
+                (screen.bottom() - rect.bottom()).min(0.0),
+            ));
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("camera-drag-preview"),
+            ));
+            painter.rect_filled(
+                rect,
+                8.0,
+                egui::Color32::from_rgba_unmultiplied(18, 38, 56, 235),
+            );
+            if let Some(texture) = self
+                .slots
+                .iter()
+                .find(|s| s.camera_id.as_deref() == Some(&payload.id))
+                .and_then(|s| s.texture.as_ref())
+                .or_else(|| self.roster_thumbnails.texture(&payload.id))
+            {
+                let image = egui::Rect::from_min_max(
+                    rect.min + egui::vec2(6.0, 6.0),
+                    rect.max - egui::vec2(6.0, 32.0),
+                );
+                painter.image(
+                    texture.id(),
+                    image,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE.linear_multiply(0.8),
+                );
+            }
+            let label = self
+                .camera_status
+                .cameras
+                .iter()
+                .find(|c| c.camera.id == payload.id)
+                .map(|c| c.camera.alias.as_str())
+                .unwrap_or("Camera view");
+            painter.text(
+                rect.left_bottom() + egui::vec2(8.0, -16.0),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+            painter.rect_stroke(
+                rect,
+                8.0,
+                egui::Stroke::new(2.0_f32, super::theme::ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
         if let Some((a, b)) = swaps
             && self.fullscreen.is_none()
         {

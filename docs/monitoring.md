@@ -6,10 +6,12 @@ thumbnail collection and event work are independent of recorder ownership.
 
 ## Dynamic camera workspace
 
-Drag a camera alias from the roster into empty workspace to add a view, or onto a
-tile to replace it. Drag tiles onto each other to swap their positions. Empty tiles
-are not retained in the layout. One to eight views reflow to suit the window;
-the configured preview limit can be reduced in Settings and applies after restart.
+Drag from a camera card’s thumbnail, status area or name. A floating preview follows
+the pointer. Drop on **+ Drop camera here to add a view** to add it, or onto a
+tile to replace that view. Drag live tiles onto each other to swap their positions.
+Card buttons remain clickable; open text editors retain text selection. Empty tiles
+are not retained. One to eight views reflow to suit the actual workspace;
+the final row expands to fill its width, and the configured preview limit can be reduced in Settings and applies after restart.
 Existing configurations retain their earlier preview limit until changed.
 
 For a non-drag workflow, choose **Add to view**, or select a tile and choose
@@ -127,3 +129,5 @@ not enabled in CI. Windows runtime/native tests remain paused at the operator's
 request; Windows compilation and installer packaging remain enabled. Physical
 Toughpad eight-preview performance and native picker behavior require operator checks.
 Previous successful four-stream operation is not an eight-stream benchmark.
+
+![Dragging a camera card into the add-view target using simulated feeds](images/drag-feedback.png)
