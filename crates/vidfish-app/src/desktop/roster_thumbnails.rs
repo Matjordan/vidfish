@@ -131,6 +131,10 @@ impl Desktop {
     }
 }
 impl Thumbnails {
+    pub(super) fn texture(&self, id: &str) -> Option<&egui::TextureHandle> {
+        self.entries.get(id).and_then(|e| e.texture.as_ref())
+    }
+
     pub(super) fn probe(&self) -> serde_json::Value {
         serde_json::json!({"cached":self.entries.values().filter(|e|e.texture.is_some()).count(),"busy":self.job.is_some()})
     }
