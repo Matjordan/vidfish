@@ -980,16 +980,16 @@ impl Desktop {
             });
             ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · Mark + Grab saves displayed frames; Grab All captures all cameras");
             if self.event_job.is_some(){ui.label("Saving / capturing cameras… recording continues independently");}
-            if let Some(session)=&self.active_session {
-                ui.horizontal_wrapped(|ui|{
-                    ui.small("Presets");
+            ui.horizontal_wrapped(|ui|{
+                ui.small("Presets");
+                if let Some(session)=&self.active_session {
                     for label in &session.event_presets {
                         let response=ui.add_enabled(self.mark_jobs.len()<8,egui::Button::new(label).min_size(egui::vec2(64.0,44.0)));super::probe::button(ui,label,&response);
                         if response.clicked(){preset_note=Some(label.clone());action=Some(("Mark",false));}
                     }
-                    if touch(ui,"Session Details").clicked(){self.library.open=true;}
-                });
-            }
+                }
+                if touch(ui,"Event presets…").clicked(){self.library.open=true;self.library.focus_presets=true;}
+            });
             if self.views.events_expanded {self.draw_event_browser(ui,ctx);}
 
         });

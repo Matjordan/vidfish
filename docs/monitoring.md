@@ -101,7 +101,8 @@ List scroll anchoring and selection are retained when events arrive. **Follow ne
 explicitly follows new events; new-event highlighting does not take keyboard focus.
 Long notes remain available in details and the note editor.
 
-**Session Details** opens the session library's preset editor. Add, rename, reorder
+**Event presets…** opens and scrolls directly to the session preset editor, even
+when its section was previously collapsed. It is also available under **Session Details**. Add, rename, reorder
 and remove up to 16 labels and choose **Save event presets**. Quick preset buttons
 create ordinary timestamped Mark events with the chosen label as the note and normal
 recording references. Presets belong to the active session. Edits affect future

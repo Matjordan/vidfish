@@ -4,6 +4,7 @@ use vidfish::library::{Catalog, Filter, Storage};
 #[derive(Default)]
 pub(super) struct Library {
     pub open: bool,
+    pub(super) focus_presets: bool,
     pub(super) draft_retention: Option<Option<u32>>,
     filter: Filter,
     catalog: Option<Catalog>,
@@ -196,7 +197,7 @@ impl Desktop {
     ui.add_enabled_ui(!busy && !acquisition_busy,|ui|{if button(ui,"Start new session").clicked(){action=Some(Operation::New(self.library.name.clone()));}});
     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Rename active session").clicked(){action=Some(Operation::Rename(self.library.name.clone()));}});
    });ui.small("Stop all recordings and wait for captures first. New session never stops recordings implicitly.");
-   egui::CollapsingHeader::new("Session Details · preset events").default_open(true).show(ui,|ui|{
+   let presets_panel=egui::CollapsingHeader::new("Session Details · preset events").id_salt("session-event-presets").default_open(true).open(self.library.focus_presets.then_some(true)).show(ui,|ui|{
     if let Some(session)=&self.active_session {
      if self.library.presets.as_ref().is_none_or(|(id,_)|id!=&session.id){self.library.presets=Some((session.id.clone(),session.event_presets.clone()));}
      ui.label(format!("{} · {}",session.label,session.id));
@@ -215,6 +216,7 @@ impl Desktop {
      ui.add_enabled_ui(!busy,|ui|{if button(ui,"Save event presets").clicked(){action=Some(Operation::Presets(id.clone(),presets.clone()));}});
     }else{ui.label("Start an acquisition session to configure preset events.");}
    });
+   if self.library.focus_presets {presets_panel.header_response.scroll_to_me(Some(egui::Align::Min));self.library.focus_presets=false;}
    if let Some(catalog)=&self.library.catalog{
     ui.horizontal_wrapped(|ui|{
      let label=self.library.filter.session.as_ref().and_then(|id|catalog.sessions.iter().find(|s|&s.id==id)).map(|s|s.label.as_str()).unwrap_or(if self.library.filter.session.as_deref()==Some("legacy"){"Earlier events"}else{"All sessions"});

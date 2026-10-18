@@ -64,7 +64,8 @@ reported as uncaptured. **Grab All** is a separate fresh-camera capture operatio
 
 The resizable event list supports search, sorting, persistent non-image details,
 clipboard actions and separate snapshot viewing. Configure quick event labels in
-**Session Details**; presets are saved per session and create ordinary Mark events.
+**Event presets…** (also available in Session Details); presets are saved per
+session and create ordinary Mark events.
 New session/event IDs use UTC date/time with collision suffixes; legacy UUID data
 remains readable. The UI shows local timestamps with offsets.
 

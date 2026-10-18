@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='vidfish-events-') as folder:
   click('Show events');m.until(lambda:state().get('event_browser',{}).get('selected'))
   click('Edit note');click('Event note field');mouse.type_note('sample collected');click('Save note')
   m.until(lambda:events()[0]['note']=='sample collected')
-  click('Session Details');click('Add preset');click('Save event presets')
+  click('Event presets…');click('Add preset');click('Save event presets')
   m.until(lambda:any('New event' in json.loads(p.read_text()).get('event_presets',[]) for p in (root/'media').glob('*/manifest.json')))
   mouse.scroll(-20,400,250);time.sleep(.5);click('Close library')
   m.until(lambda:any(b[0]=='New event' for b in state().get('buttons',[])))
@@ -53,13 +53,13 @@ with tempfile.TemporaryDirectory(prefix='vidfish-events-') as folder:
   assert sum(c['image'] is not None for c in capture['captures'])==4
   assert all('Displayed frame' in c['result'] for c in capture['captures'] if c['image'])
   # Explicit user scrolling to newest keeps the documentation capture readable.
-  buttons=[b for b in state().get('buttons',[]) if b[0].startswith('Event ')]
+  buttons=[b for b in state().get('buttons',[]) if b[0].startswith('Event ') and b[0]!='Event presets…']
   if buttons:
    rect=buttons[-1][1];mouse.scroll(-30,int((rect[0]+rect[2])/2),min(int((rect[1]+rect[3])/2),int(state()['viewport'][1])-25))
   time.sleep(1)
   if args.screenshot: ImageGrab.grab().save(args.screenshot)
   click('Search events');mouse.type_note('sample');time.sleep(1)
-  assert len([b for b in state().get('buttons',[]) if b[0].startswith('Event ')])==1
+  assert len([b for b in state().get('buttons',[]) if b[0].startswith('Event ') and b[0]!='Event presets…'])==1
   click('View snapshots');m.until(lambda:state().get('event_browser',{}).get('snapshots'))
   print('PASS: hidden thumbnail, persistent event details, note editing, session preset creation and mark, displayed-frame captures, separate snapshots')
  except:
