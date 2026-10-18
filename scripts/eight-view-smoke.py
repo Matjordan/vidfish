@@ -35,6 +35,9 @@ with tempfile.TemporaryDirectory(prefix='vidfish-eight-') as folder:
   assert before==[s['camera'] for s in state()['slots']]
   click('Fullscreen');m.until(lambda:state().get('fullscreen') is not None)
   m.until(lambda:any(slot['camera']==ids[8] for slot in state()['slots']))
+  # Change the temporary fullscreen composition, then restore all borrowed views.
+  click('Show this group')
+  m.until(lambda:all(not slot['pending'] and slot['frame']>0 for slot in state()['slots']))
   click('Return to grid');m.until(lambda:before==[slot['camera'] for slot in state()['slots']])
   # Real native drag from sidebar onto an occupied viewport.
   value=state();start=next(b[1] for b in value['buttons'] if b[0]=='Camera A hidden camera');end=next(b[1] for b in value['buttons'] if b[0]=='Viewport 1')

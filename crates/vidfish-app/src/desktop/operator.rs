@@ -76,18 +76,17 @@ impl Desktop {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
     }
     fn return_grid(&mut self, ctx: &egui::Context) {
-        if self.fullscreen_saved.is_some()
-            && self
-                .fullscreen
-                .is_some_and(|i| self.slots[i].pending.is_some())
-        {
+        if self.fullscreen_saved.is_some() && self.slots.iter().any(|s| s.pending.is_some()) {
             self.message =
                 "Wait for fullscreen camera to finish connecting before restoring.".into();
             return;
         }
-        let previous = self.fullscreen.take();
+        self.fullscreen = None;
         if let Some(saved) = self.fullscreen_saved.take() {
-            if let Some(index) = previous {
+            let changed: Vec<_> = (0..self.slots.len())
+                .filter(|i| self.slots[*i].camera_id != saved.slots[*i])
+                .collect();
+            for index in changed {
                 self.close_preview(index);
             }
             self.selected_slot = saved.selected_slot.min(self.slots.len() - 1);

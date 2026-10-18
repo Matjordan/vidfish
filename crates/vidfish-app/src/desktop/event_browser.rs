@@ -195,20 +195,106 @@ impl Desktop {
                                     .iter()
                                     .filter(|c| c.recording.segment.is_some())
                                     .count();
-                                let time=chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.unix_ms as i64).unwrap_or_default().with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
-                                let note=event.note.replace(['\n','\r']," ");
-                                let public_id=vidfish::identifiers::public_id(&event.id,event.unix_ms);
-                                let summary=format!("{time} · {} · {}s · {captures}/{} images · {recording}/{} files",event.kind,event.elapsed_seconds,event.captures.len(),event.captures.len());
-                                let selected=browser.selected.as_ref()==Some(&event.id);
-                                let (rect,response)=ui.allocate_exact_size(egui::vec2(width-16.0,row_height-4.0),egui::Sense::click());
-                                let fill=if selected{egui::Color32::from_rgb(30,84,133)}else if response.hovered(){egui::Color32::from_rgb(34,62,85)}else{super::theme::CARD};
-                                ui.painter().rect_filled(rect,4.0,fill);
-                                if response.has_focus(){ui.painter().rect_stroke(rect,4.0,egui::Stroke::new(2.0_f32,super::theme::ACCENT),egui::StrokeKind::Inside);}
-                                let color=if selected{egui::Color32::WHITE}else if browser.latest.as_ref()==Some(&event.id){super::theme::ACCENT}else{egui::Color32::LIGHT_GRAY};
-                                let mut row=ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).layout(egui::Layout::top_down(egui::Align::Min)));
-                                row.spacing_mut().item_spacing.y=2.0;
-                                row.add(egui::Label::new(egui::RichText::new(summary).color(color)).truncate());
-                                row.add(egui::Label::new(egui::RichText::new(format!("{public_id} · {}",if note.is_empty(){"No note"}else{&note})).small()).truncate());
+                                let compact = width < 480.0;
+                                let time = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                                    event.unix_ms as i64,
+                                )
+                                .unwrap_or_default()
+                                .with_timezone(&chrono::Local)
+                                .format(if compact {
+                                    "%m-%d %H:%M:%S"
+                                } else {
+                                    "%Y-%m-%d %H:%M:%S"
+                                })
+                                .to_string();
+                                let note = event.note.replace(['\n', '\r'], " ");
+                                let public_id =
+                                    vidfish::identifiers::public_id(&event.id, event.unix_ms);
+                                let selected = browser.selected.as_ref() == Some(&event.id);
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(width - 16.0, row_height - 4.0),
+                                    egui::Sense::click(),
+                                );
+                                let fill = if selected {
+                                    egui::Color32::from_rgb(30, 84, 133)
+                                } else if response.hovered() {
+                                    egui::Color32::from_rgb(34, 62, 85)
+                                } else {
+                                    super::theme::CARD
+                                };
+                                ui.painter().rect_filled(rect, 4.0, fill);
+                                if response.has_focus() {
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        4.0,
+                                        egui::Stroke::new(2.0_f32, super::theme::ACCENT),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                let color = if selected {
+                                    egui::Color32::WHITE
+                                } else if browser.latest.as_ref() == Some(&event.id) {
+                                    super::theme::ACCENT
+                                } else {
+                                    egui::Color32::LIGHT_GRAY
+                                };
+                                let mut row = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(rect.shrink(6.0))
+                                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                                );
+                                row.spacing_mut().item_spacing.y = 2.0;
+                                row.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let font = if compact { 12.0 } else { 13.0 };
+                                    let field = |ui: &mut egui::Ui, w: f32, text: String| {
+                                        ui.add_sized(
+                                            [w, 16.0],
+                                            egui::Label::new(
+                                                egui::RichText::new(text).size(font).color(color),
+                                            )
+                                            .truncate(),
+                                        );
+                                    };
+                                    field(ui, if compact { 92.0 } else { 150.0 }, time);
+                                    field(
+                                        ui,
+                                        if compact { 92.0 } else { 118.0 },
+                                        event.kind.clone(),
+                                    );
+                                    field(
+                                        ui,
+                                        if compact { 30.0 } else { 48.0 },
+                                        format!("{}s", event.elapsed_seconds),
+                                    );
+                                    field(
+                                        ui,
+                                        ui.available_width().max(1.0),
+                                        format!(
+                                            "{captures}/{} img · {recording}/{} rec",
+                                            event.captures.len(),
+                                            event.captures.len()
+                                        ),
+                                    );
+                                });
+                                row.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [142.0, 16.0],
+                                        egui::Label::new(egui::RichText::new(public_id).small())
+                                            .truncate(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(if note.is_empty() {
+                                                "No note"
+                                            } else {
+                                                &note
+                                            })
+                                            .small(),
+                                        )
+                                        .truncate(),
+                                    );
+                                });
                                 super::probe::button(ui, &format!("Event {}", event.id), &response);
                                 if response.clicked() || response.double_clicked() {
                                     browser.selected = Some(event.id.clone());
