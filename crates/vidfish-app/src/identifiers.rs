@@ -21,6 +21,19 @@ pub fn timestamp(ms: u64) -> Timestamp {
 pub fn display(ms: u64) -> String {
     timestamp(ms).local
 }
+pub fn public_id(id: &str, ms: u64) -> String {
+    if uuid::Uuid::parse_str(id).is_ok() {
+        let utc = DateTime::<Utc>::from_timestamp_millis(ms.min(i64::MAX as u64) as i64)
+            .unwrap_or_default();
+        format!(
+            "{}-{}",
+            utc.format("%Y%m%d-%H%M%S"),
+            id.chars().take(6).collect::<String>()
+        )
+    } else {
+        id.into()
+    }
+}
 pub fn validate(id: &str) -> Result<(), &'static str> {
     if uuid::Uuid::parse_str(id).is_ok() {
         return Ok(());

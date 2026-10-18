@@ -18,12 +18,14 @@ pub(super) struct Library {
     message: String,
     pub(super) destination: String,
     name: String,
+    presets: Option<(String, Vec<String>)>,
     refresh: bool,
     event_page: usize,
     segment_page: usize,
 }
 enum Operation {
     New(String),
+    Presets(String, Vec<String>),
     Rename(String),
     Export(PathBuf, PathBuf),
     Open(PathBuf, Option<u64>),
@@ -194,10 +196,29 @@ impl Desktop {
     ui.add_enabled_ui(!busy && !acquisition_busy,|ui|{if button(ui,"Start new session").clicked(){action=Some(Operation::New(self.library.name.clone()));}});
     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Rename active session").clicked(){action=Some(Operation::Rename(self.library.name.clone()));}});
    });ui.small("Stop all recordings and wait for captures first. New session never stops recordings implicitly.");
+   egui::CollapsingHeader::new("Session Details · preset events").default_open(true).show(ui,|ui|{
+    if let Some(session)=&self.active_session {
+     if self.library.presets.as_ref().is_none_or(|(id,_)|id!=&session.id){self.library.presets=Some((session.id.clone(),session.event_presets.clone()));}
+     ui.label(format!("{} · {}",session.label,session.id));
+     ui.small("Preset changes affect future marks only. Use ↑ / ↓ to reorder.");
+     let (id,presets)=self.library.presets.as_mut().unwrap();
+     let mut move_row=None;let mut remove=None;
+     for (i,label) in presets.iter_mut().enumerate(){ui.horizontal(|ui|{
+      let field=ui.add(egui::TextEdit::singleline(label).char_limit(128).desired_width(200.0));super::probe::button(ui,&format!("Preset label {i}"),&field);
+      if button(ui,"↑").clicked()&&i>0{move_row=Some((i,i-1));}
+      if button(ui,"↓").clicked(){move_row=Some((i,i+1));}
+      if button(ui,"Remove preset").clicked(){remove=Some(i);}
+     });}
+     if let Some((a,b))=move_row && b<presets.len(){presets.swap(a,b);}
+     if let Some(i)=remove{presets.remove(i);}
+     if presets.len()<16 && button(ui,"Add preset").clicked(){presets.push("New event".into());}
+     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Save event presets").clicked(){action=Some(Operation::Presets(id.clone(),presets.clone()));}});
+    }else{ui.label("Start an acquisition session to configure preset events.");}
+   });
    if let Some(catalog)=&self.library.catalog{
     ui.horizontal_wrapped(|ui|{
      let label=self.library.filter.session.as_ref().and_then(|id|catalog.sessions.iter().find(|s|&s.id==id)).map(|s|s.label.as_str()).unwrap_or(if self.library.filter.session.as_deref()==Some("legacy"){"Earlier events"}else{"All sessions"});
-     egui::ComboBox::from_id_salt("library-session").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.session,None,"All sessions + earlier events");ui.selectable_value(&mut self.library.filter.session,Some("legacy".into()),"Earlier events");for session in &catalog.sessions{ui.selectable_value(&mut self.library.filter.session,Some(session.id.clone()),format!("{} · {}{}",session.label,vidfish::library::date(session.created_unix_ms),if session.closed_unix_ms.is_none(){" · active"}else{""}));}});
+     egui::ComboBox::from_id_salt("library-session").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.session,None,"All sessions + earlier events");ui.selectable_value(&mut self.library.filter.session,Some("legacy".into()),"Earlier events");for session in &catalog.sessions{ui.selectable_value(&mut self.library.filter.session,Some(session.id.clone()),format!("{} · {} · {}{}",session.label,vidfish::identifiers::public_id(&session.id,session.created_unix_ms),vidfish::library::date(session.created_unix_ms),if session.closed_unix_ms.is_none(){" · active"}else{""}));}});
      let label=self.library.filter.camera.as_ref().and_then(|id|catalog.cameras.iter().find(|(camera,_)|camera==id)).map(|(_,label)|label.as_str()).unwrap_or("All cameras");egui::ComboBox::from_id_salt("library-camera").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.camera,None,"All cameras");for(id,label)in &catalog.cameras{ui.selectable_value(&mut self.library.filter.camera,Some(id.clone()),format!("{label} · {}",id.chars().take(8).collect::<String>()));}});
     });
    }
@@ -251,6 +272,11 @@ if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalo
                 let result = (|| -> Result<String, String> {
                     let config = AppConfig::load(&path).map_err(|e| e.to_string())?;
                     match action {
+                        Operation::Presets(id, presets) => {
+                            vidfish::sessions::set_presets(&path, &id, presets)
+                                .map(|_| "Session event presets saved".into())
+                                .map_err(|e| e.to_string())
+                        }
                         Operation::Rename(name) => vidfish::sessions::rename(&path, &name)
                             .map(|s| format!("Renamed session {} without moving media", s.label))
                             .map_err(|e| e.to_string()),

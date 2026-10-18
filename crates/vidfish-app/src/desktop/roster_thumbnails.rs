@@ -131,6 +131,10 @@ impl Desktop {
     }
 }
 impl Thumbnails {
+    pub(super) fn probe(&self) -> serde_json::Value {
+        serde_json::json!({"cached":self.entries.values().filter(|e|e.texture.is_some()).count(),"busy":self.job.is_some()})
+    }
+
     pub fn draw(&self, ui: &mut egui::Ui, id: &str, state: vidfish_onvif::manager::State) {
         let entry = self.entries.get(id);
         if let Some(texture) = entry.and_then(|e| e.texture.as_ref()) {

@@ -1,4 +1,5 @@
 mod camera_cleanup;
+mod event_browser;
 mod library;
 mod operator;
 mod picker;
@@ -139,6 +140,7 @@ pub fn run(
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
                 roster_thumbnails: Default::default(),
+                event_browser: Default::default(),
                 picker: Default::default(),
                 force_opengl,
                 interface: config
@@ -194,7 +196,8 @@ pub fn run(
                 active_session: None,
                 history_last: Instant::now() - Duration::from_secs(10),
                 edit_note: None,
-                events: std::collections::VecDeque::new(),
+                event_revision: 0,
+    events: std::collections::VecDeque::new(),
                 thumbnails: Vec::new(),
                 probe_path,
                 probe_last: Instant::now() - Duration::from_secs(2),
@@ -256,6 +259,7 @@ impl Slot {
 }
 struct Desktop {
     roster_thumbnails: roster_thumbnails::Thumbnails,
+    event_browser: event_browser::Browser,
     picker: picker::Picker,
     force_opengl: bool,
     adding_camera: bool,
@@ -304,6 +308,7 @@ struct Desktop {
     active_session: Option<vidfish::sessions::Session>,
     history_last: Instant,
     edit_note: Option<(String, String)>,
+    event_revision: u64,
     events: std::collections::VecDeque<vidfish::operator_events::Event>,
     thumbnails: Vec<(String, egui::TextureHandle)>,
     probe_path: Option<PathBuf>,
@@ -318,12 +323,13 @@ struct Desktop {
 }
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        if let Some((target, path)) = self.picker.poll() {
-            match target {
-                picker::Target::Output => self.config.output_directory = path,
-                picker::Target::Export => {
+        if let Some(result) = self.picker.poll() {
+            match result {
+                Ok((picker::Target::Output, path)) => self.config.output_directory = path,
+                Ok((picker::Target::Export, path)) => {
                     self.library.destination = path.to_string_lossy().into_owned()
                 }
+                Err(error) => self.message = error,
             }
         }
         if self.record_snapshot.has_changed().unwrap_or(true) {

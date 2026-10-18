@@ -15,8 +15,8 @@ fn touch(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Respons
         .corner_radius(6);
     if name == "Mark + Grab All" {
         button = button
-            .fill(egui::Color32::from_rgb(166, 45, 56))
-            .stroke(egui::Stroke::new(1.0_f32, RED))
+            .fill(egui::Color32::from_rgb(33, 72, 105))
+            .stroke(egui::Stroke::new(1.0_f32, super::theme::ACCENT))
             .min_size(egui::vec2(174.0, 48.0));
     } else if name == "Record all" {
         button = button.fill(egui::Color32::from_rgb(23, 74, 65));
@@ -90,6 +90,7 @@ impl Desktop {
             if let Some(index) = previous {
                 self.close_preview(index);
             }
+            self.selected_slot = saved.selected_slot.min(self.slots.len() - 1);
             self.views = saved;
             self.views_dirty = true;
         }
@@ -299,7 +300,7 @@ impl Desktop {
                                         },
                                     ))
                                     .show(ui, |ui| {
-                                        let label=ui.add(egui::Label::new(egui::RichText::new(&camera.camera.alias).strong()).sense(egui::Sense::click_and_drag()));
+                                        let label=ui.add_sized([ui.available_width(),44.0],egui::Label::new(egui::RichText::new(&camera.camera.alias).strong()).sense(egui::Sense::click_and_drag()));
                                         super::probe::button(ui,&format!("Camera {}",camera.camera.alias),&label);
                                         label.dnd_set_drag_payload(DragCamera { id:camera.camera.id.clone(), tile:None });
                                         if label.double_clicked() { self.camera_fullscreen(ctx,&camera.camera.id); }
@@ -405,6 +406,12 @@ impl Desktop {
                                             ctx.data_mut(|d| d.insert_temp(editor_id, editing));
                                         }
                                         if editing {
+                                            if let Some(index)=shown {
+                                                if touch(ui,"Retry now").clicked() && let Some(preview)=&self.slots[index].preview{preview.retry_now();}
+                                                if index>0 && touch(ui,"Move view earlier").clicked(){self.slots.swap(index,index-1);self.views.slots.swap(index,index-1);self.views_dirty=true;}
+                                                if index+1<self.slots.len() && touch(ui,"Move view later").clicked(){self.slots.swap(index,index+1);self.views.slots.swap(index,index+1);self.views_dirty=true;}
+                                            }
+
                                             let hidden=self.views.hidden_cameras.contains(&camera.camera.id);
                                             if touch(ui,if hidden{"Restore to list"}else{"Hide from list"}).clicked(){
                                                 if hidden{self.views.hidden_cameras.retain(|id|id!=&camera.camera.id);}else{self.views.hidden_cameras.push(camera.camera.id.clone());}
@@ -588,121 +595,143 @@ impl Desktop {
             };
             let rows = indices.len().div_ceil(columns).max(1);
             let size = egui::vec2(
-                (area.width() / columns as f32 - 8.0).max(1.0),
-                (area.height() / rows as f32 - 8.0).max(1.0),
+                ((area.width() - 16.0) / columns as f32 - 8.0).max(1.0),
+                (area.height() / rows as f32 - 8.0).max(100.0),
             );
-            egui::Grid::new("dynamic-camera-grid")
-                .spacing([8.0, 8.0])
+            egui::ScrollArea::vertical()
+                .id_salt("preview-workspace-scroll")
+                .max_height(area.height())
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for (n, index) in indices.iter().copied().enumerate() {
-                        let (rect, response) =
-                            ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-                        super::probe::button(ui, &format!("Viewport {}", index + 1), &response);
-                        if response.clicked() {
-                            self.selected_slot = index;
-                        }
-                        if response.double_clicked() {
-                            maximize = Some(index);
-                        }
-                        if let Some(id) = &self.slots[index].camera_id {
-                            response.dnd_set_drag_payload(DragCamera {
-                                id: id.clone(),
-                                tile: Some(index),
-                            });
-                        }
-                        if let Some(payload) = response.dnd_release_payload::<DragCamera>() {
-                            if let Some(from) = payload.tile {
-                                swaps = Some((from, index));
-                            } else {
-                                dropped = Some((payload.id.clone(), index));
-                            }
-                        }
-                        let fill = super::theme::CARD;
-                        ui.painter().rect_filled(rect, 6.0, fill);
-                        ui.painter().rect_stroke(
-                            rect,
-                            6.0,
-                            egui::Stroke::new(
-                                1.0_f32,
-                                if response.hovered() || self.selected_slot == index {
-                                    super::theme::ACCENT
-                                } else {
-                                    super::theme::BORDER
-                                },
-                            ),
-                            egui::StrokeKind::Inside,
-                        );
-                        if let Some(texture) = &self.slots[index].texture {
-                            let available = rect.shrink(2.0);
-                            let aspect = texture.size_vec2().x / texture.size_vec2().y;
-                            let w = available.width().min(available.height() * aspect);
-                            let h = w / aspect;
-                            ui.painter().image(
-                                texture.id(),
-                                egui::Rect::from_center_size(available.center(), egui::vec2(w, h)),
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        let recording =
-                            self.record_status.cameras.iter().find(|r| {
-                                Some(&r.camera_id) == self.slots[index].camera_id.as_ref()
-                            });
-                        let rec = recording.is_some_and(|r| {
-                            r.state == State::Recording
-                                && r.error.is_none()
-                                && r.warning.is_none()
-                                && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
-                        });
-                        let title = egui::Rect::from_min_size(
-                            rect.min,
-                            egui::vec2(rect.width(), 48.0_f32.min(rect.height())),
-                        );
-                        ui.painter()
-                            .rect_filled(title, 4.0, egui::Color32::from_black_alpha(185));
-                        ui.painter().text(
-                            title.left_center() + egui::vec2(8.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            format!(
-                                "{} · {} · {}",
-                                self.slots[index].label,
-                                if rec { "REC" } else { "NOT RECORDING" },
-                                self.preview_state(index)
-                            ),
-                            egui::FontId::proportional(13.0),
-                            if rec { GREEN } else { egui::Color32::WHITE },
-                        );
-                        let control = egui::Rect::from_min_size(
-                            rect.right_bottom() - egui::vec2(100.0, 48.0),
-                            egui::vec2(96.0, 44.0),
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(control), |ui| {
-                            ui.horizontal(|ui| {
-                                let expand = ui.add(
-                                    egui::Button::new(if self.fullscreen.is_some() {
-                                        "↙"
-                                    } else {
-                                        "⛶"
-                                    })
-                                    .fill(egui::Color32::from_black_alpha(160))
-                                    .min_size(egui::vec2(44.0, 44.0)),
+                    egui::Grid::new("dynamic-camera-grid")
+                        .spacing([8.0, 8.0])
+                        .show(ui, |ui| {
+                            for (n, index) in indices.iter().copied().enumerate() {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                                super::probe::button(
+                                    ui,
+                                    &format!("Viewport {}", index + 1),
+                                    &response,
                                 );
-                                super::probe::button(ui, "Max", &expand);
-                                if expand.clicked() {
+                                if response.clicked() {
+                                    self.selected_slot = index;
+                                }
+                                if response.double_clicked() {
                                     maximize = Some(index);
                                 }
-                                if touch(ui, "×")
-                                    .on_hover_text("Remove from view only")
-                                    .clicked()
-                                {
-                                    close = Some(index);
+                                if let Some(id) = &self.slots[index].camera_id {
+                                    response.dnd_set_drag_payload(DragCamera {
+                                        id: id.clone(),
+                                        tile: Some(index),
+                                    });
                                 }
-                            });
+                                if let Some(payload) = response.dnd_release_payload::<DragCamera>()
+                                {
+                                    if let Some(from) = payload.tile {
+                                        swaps = Some((from, index));
+                                    } else {
+                                        dropped = Some((payload.id.clone(), index));
+                                    }
+                                }
+                                let fill = super::theme::CARD;
+                                ui.painter().rect_filled(rect, 6.0, fill);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    6.0,
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        if response.hovered() || self.selected_slot == index {
+                                            super::theme::ACCENT
+                                        } else {
+                                            super::theme::BORDER
+                                        },
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                                if let Some(texture) = &self.slots[index].texture {
+                                    let available = rect.shrink(2.0);
+                                    let aspect = texture.size_vec2().x / texture.size_vec2().y;
+                                    let w = available.width().min(available.height() * aspect);
+                                    let h = w / aspect;
+                                    ui.painter().image(
+                                        texture.id(),
+                                        egui::Rect::from_center_size(
+                                            available.center(),
+                                            egui::vec2(w, h),
+                                        ),
+                                        egui::Rect::from_min_max(
+                                            egui::Pos2::ZERO,
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                                let recording = self.record_status.cameras.iter().find(|r| {
+                                    Some(&r.camera_id) == self.slots[index].camera_id.as_ref()
+                                });
+                                let rec = recording.is_some_and(|r| {
+                                    r.state == State::Recording
+                                        && r.error.is_none()
+                                        && r.warning.is_none()
+                                        && unix_ms().saturating_sub(r.heartbeat_unix_ms) <= 5000
+                                });
+                                let title = egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(rect.width(), 24.0_f32.min(rect.height())),
+                                );
+                                ui.painter().rect_filled(
+                                    title,
+                                    4.0,
+                                    egui::Color32::from_black_alpha(185),
+                                );
+                                ui.painter().text(
+                                    title.left_center() + egui::vec2(8.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    format!(
+                                        "{} · {} · {}",
+                                        self.slots[index].label,
+                                        if rec { "REC" } else { "NOT RECORDING" },
+                                        self.preview_state(index)
+                                    ),
+                                    egui::FontId::proportional(13.0),
+                                    if rec { GREEN } else { egui::Color32::WHITE },
+                                );
+                                let control = egui::Rect::from_min_size(
+                                    rect.right_bottom() - egui::vec2(100.0, 48.0),
+                                    egui::vec2(96.0, 44.0),
+                                );
+                                let mut controls =
+                                    ui.new_child(egui::UiBuilder::new().max_rect(control));
+                                {
+                                    let ui = &mut controls;
+                                    ui.horizontal(|ui| {
+                                        let expand = ui.add(
+                                            egui::Button::new(if self.fullscreen.is_some() {
+                                                "↙"
+                                            } else {
+                                                "⛶"
+                                            })
+                                            .fill(egui::Color32::from_black_alpha(160))
+                                            .min_size(egui::vec2(44.0, 44.0)),
+                                        );
+                                        super::probe::button(ui, "Max", &expand);
+                                        if expand.clicked() {
+                                            maximize = Some(index);
+                                        }
+                                        if touch(ui, "×")
+                                            .on_hover_text("Remove from view only")
+                                            .clicked()
+                                        {
+                                            close = Some(index);
+                                        }
+                                    });
+                                }
+                                if n % columns == columns - 1 {
+                                    ui.end_row();
+                                }
+                            }
                         });
-                        if n % columns == columns - 1 {
-                            ui.end_row();
-                        }
-                    }
                 });
             // Empty workspace is also an add target, including the empty-state message.
             let empty = ui.interact(area, ui.id().with("workspace-drop"), egui::Sense::hover());
@@ -811,11 +840,12 @@ impl Desktop {
                     if self.note == saved.event.note {
                         self.note.clear();
                     }
+                    self.event_revision = self.event_revision.wrapping_add(1);
                     self.events.push_front(saved.event);
                     self.events
                         .make_contiguous()
                         .sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
-                    self.events.truncate(200);
+                    self.events.truncate(10000);
                     self.message = "Mark saved".into();
                 }
                 Err(error) => self.message = error,
@@ -848,11 +878,12 @@ impl Desktop {
                         self.note.clear();
                     }
                     self.edit_note = None;
+                    self.event_revision = self.event_revision.wrapping_add(1);
                     self.events.push_front(saved.event);
                     self.events
                         .make_contiguous()
                         .sort_by_key(|e| std::cmp::Reverse(e.unix_ms));
-                    self.events.truncate(200);
+                    self.events.truncate(10000);
                     self.event_job = None;
                     self.message = "Operator action saved".into();
                 }
@@ -872,6 +903,7 @@ impl Desktop {
                 Ok(Ok(history)) => {
                     self.active_session = history.session;
                     if !actions_completed && self.event_job.is_none() && self.mark_jobs.is_empty() {
+                        self.event_revision = self.event_revision.wrapping_add(1);
                         self.events = history.events.into();
                     }
                     self.history_job = None;
@@ -900,6 +932,7 @@ impl Desktop {
             self.history_last = std::time::Instant::now();
         }
         let mut action = None;
+        let mut preset_note = None;
         {
             ctx.input_mut(|i| {
                 if self.mark_jobs.len() < 8 && i.consume_key(egui::Modifiers::NONE, egui::Key::F6) {
@@ -913,7 +946,7 @@ impl Desktop {
                 }
             });
         }
-        egui::TopBottomPanel::bottom("operator-events").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("operator-events").resizable(self.views.events_expanded).default_height(if self.views.events_expanded {360.0}else{80.0}).height_range(if self.views.events_expanded {280.0..=ctx.content_rect().height()*0.75}else{70.0..=120.0}).show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(self.event_job.is_none(), |ui| {
                     if touch(ui, "Mark + Grab All").clicked() {
@@ -948,34 +981,18 @@ impl Desktop {
             });
             ui.small("F6 Mark · F7 Grab All · F8 Mark + Grab · Mark + Grab saves displayed frames; Grab All captures all cameras");
             if self.event_job.is_some(){ui.label("Saving / capturing cameras… recording continues independently");}
-            if self.views.events_expanded {
-                ui.label(
-                    "Per-camera captures are asynchronous. Offsets are estimates; pending boundaries reconcile after close.",
-                );
-                egui::ScrollArea::vertical()
-                    .id_salt("events-scroll")
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        for event in &self.events {
-                            let response=egui::CollapsingHeader::new(format!("{} · {}s · {} · {} captured{}",event.kind,event.elapsed_seconds,event.note,event.captures.iter().filter(|c|c.image.is_some()).count(),if event.complete {""} else {" · INCOMPLETE"})).id_salt(&event.id).show(ui,|ui|{
-                                ui.label(format!("{} · UTC Unix ms {}",event.id,event.unix_ms));
-                                let edit=ui.add_enabled(self.event_job.is_none(),egui::Button::new("Edit note"));super::probe::button(ui,"Edit note",&edit);if ui.ctx().data(|d|d.get_temp::<String>(egui::Id::new("scroll-to-event-note"))).as_deref()==Some(event.id.as_str()){edit.scroll_to_me(Some(egui::Align::Min));ui.ctx().data_mut(|d|{d.remove::<String>(egui::Id::new("scroll-to-event-note"));});}
-                                if edit.clicked(){self.edit_note=Some((event.id.clone(),event.note.clone()));}
-                                for capture in &event.captures {ui.label(format!("{} · {} · {} · offset {}",capture.label,capture.result,capture.recording.state,capture.recording.offset_ns.map(|n|format!("{:.3}s",n as f64/1e9)).unwrap_or_else(||"unavailable".into())));}
-                            });
-                            super::probe::button(ui,&format!("Event {}",event.id),&response.header_response);
-                            if response.header_response.clicked(){ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("scroll-to-event-note"),event.id.clone()));}
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            for (label, texture) in &self.thumbnails {
-                                ui.vertical(|ui| {
-                                    ui.image((texture.id(), egui::vec2(96.0, 54.0)));
-                                    ui.label(label);
-                                });
-                            }
-                        });
-                    });
+            if let Some(session)=&self.active_session {
+                ui.horizontal_wrapped(|ui|{
+                    ui.small("Presets");
+                    for label in &session.event_presets {
+                        let response=ui.add_enabled(self.mark_jobs.len()<8,egui::Button::new(label).min_size(egui::vec2(64.0,44.0)));super::probe::button(ui,label,&response);
+                        if response.clicked(){preset_note=Some(label.clone());action=Some(("Mark",false));}
+                    }
+                    if touch(ui,"Session Details").clicked(){self.library.open=true;}
+                });
             }
+            if self.views.events_expanded {self.draw_event_browser(ui,ctx);}
+
         });
         if let Some((kind, grab)) = action {
             let action_ms = vidfish::operator_events::now();
@@ -1007,7 +1024,7 @@ impl Desktop {
                 })
                 .collect();
             let root = self.path.clone();
-            let note = self.note.clone();
+            let note = preset_note.unwrap_or_else(|| self.note.clone());
             let elapsed_ns = self.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             let inventory = self.path.with_file_name("cameras.json");
             let (sender, receiver) = tokio::sync::oneshot::channel();

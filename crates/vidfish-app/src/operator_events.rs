@@ -567,7 +567,7 @@ pub fn load(root: &Path) -> Result<Vec<Event>, String> {
         drop(reserve);
         paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
         let mut events = Vec::new();
-        for path in paths.into_iter().take(200) {
+        for path in paths.into_iter().take(10000) {
             let file = path.path().join("event.json");
             if !file.exists() {
                 continue;

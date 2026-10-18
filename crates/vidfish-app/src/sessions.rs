@@ -11,6 +11,8 @@ pub struct Session {
     pub id: String,
     #[serde(default)]
     pub timestamp: crate::identifiers::Timestamp,
+    #[serde(default)]
+    pub event_presets: Vec<String>,
     pub label: String,
     pub directory: PathBuf,
     pub created_unix_ms: u64,
@@ -121,6 +123,7 @@ fn create(config: &AppConfig, label: &str) -> Result<Session> {
     let session = Session {
         id,
         timestamp: crate::identifiers::timestamp(created),
+        event_presets: Vec::new(),
         label: if label.trim().is_empty() {
             format!(
                 "Acquisition {} UTC",
@@ -355,9 +358,86 @@ pub fn rename(config: &Path, label: &str) -> Result<Session> {
     Ok(session)
 }
 
+/// Update only the active session's future quick actions; never rewrite events.
+pub fn set_presets(config: &Path, expected_id: &str, presets: Vec<String>) -> Result<Session> {
+    if presets.len() > 16
+        || presets
+            .iter()
+            .any(|p| p.trim().is_empty() || p.chars().count() > 128 || p.contains(['\n', '\r']))
+    {
+        return Err(
+            "Use at most 16 nonempty, single-line preset labels of up to 128 characters".into(),
+        );
+    }
+    let _registry = lock_registry(config)?;
+    let registry = registry_unlocked(config)?;
+    let entry = registry
+        .active
+        .as_ref()
+        .filter(|id| id.as_str() == expected_id)
+        .and_then(|id| registry.sessions.iter().find(|s| &s.id == id))
+        .ok_or("Active session changed; reopen Session Details before saving presets")?;
+    let lease = lease_directory(&entry.directory)?;
+    let guard = file_lock(&entry.directory.join("manifest.lock"))?;
+    fs2::FileExt::lock_exclusive(&guard)?;
+    let mut session = read(&lease.session.directory)?;
+    session.event_presets = presets.into_iter().map(|p| p.trim().to_owned()).collect();
+    write_json(&session.directory.join("manifest.json"), &session)?;
+    Ok(session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preset_updates_are_scoped_and_leave_saved_events_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let config = AppConfig {
+            output_directory: root.path().join("media"),
+            auto_record: false,
+            ..Default::default()
+        };
+        config.save(&path).unwrap();
+        let lease = acquire(&path, &config).unwrap();
+        let id = lease.session.id.clone();
+        drop(lease);
+        set_presets(
+            &path,
+            &id,
+            vec!["Start Test".into(), "Equipment Fault".into()],
+        )
+        .unwrap();
+        let event = crate::operator_events::save_session(
+            &path,
+            crate::operator_events::Request {
+                kind: "Mark".into(),
+                note: "Start Test".into(),
+                unix_ms: crate::operator_events::now(),
+                elapsed_ns: 0,
+                inputs: vec![],
+                inventory: PathBuf::new(),
+                grab: false,
+            },
+        )
+        .unwrap();
+        set_presets(&path, &id, vec!["Fault".into(), "Start".into()]).unwrap();
+        assert_eq!(
+            crate::operator_events::session_history(&path)
+                .unwrap()
+                .events[0]
+                .note,
+            event.event.note
+        );
+        assert_eq!(
+            current(&path).unwrap().unwrap().event_presets,
+            vec!["Fault", "Start"]
+        );
+        let next = start_new(&path, &config, "Next").unwrap();
+        assert!(next.event_presets.is_empty());
+        assert!(set_presets(&path, &id, vec!["Wrong session".into()]).is_err());
+        assert!(set_presets(&path, &next.id, vec!["\n".into()]).is_err());
+    }
     #[test]
     fn leases_survive_viewer_restart_hot_arrivals_join_and_names_never_collide() {
         let dir = tempfile::tempdir().unwrap();
