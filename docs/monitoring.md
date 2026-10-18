@@ -1,156 +1,127 @@
 # Operator monitoring
 
-The desktop follows the [target layout](target-ui.svg): session/status header,
-central camera previews, camera roster on the right, and collapsible event/snapshot
-area beneath the video. Primary controls, camera editing, and input fields use
-44-point touch targets. Settings open in a scrollable window. The header remains
-visible when a camera is maximized or the event log is collapsed.
+Vidfish uses a live camera workspace, a scrollable camera roster, a recording-health
+header, and a resizable event section. Controls use touch-sized targets. Viewing,
+thumbnail collection and event work are independent of recorder ownership.
 
-## Select, page, and maximize
+## Dynamic camera workspace
 
-Choose **Slot 1–4** in the roster and press a camera's **View feed**. A camera already
-shown is focused rather than opened twice. One selected feed uses the central area;
-two use one row; three/four use a 2×2 grid. Empty selections wait for a compatible
-profile, including saved selections whose cameras are unavailable at startup.
-The roster is sorted by alias, with local ID as a tie-breaker, and scrolls through
-all 16 cameras. **Previous**, **Next**, and **Show this group** select consecutive
-groups sized to the configured `preview_slots` (1–4). Paging joins old workers
-before starting replacements. Use **Close** to release a slot's preview.
+Drag a camera alias from the roster into empty workspace to add a view, or onto a
+tile to replace it. Drag tiles onto each other to swap their positions. Empty tiles
+are not retained in the layout. One to eight views reflow to suit the window;
+the configured preview limit can be reduced in Settings and applies after restart.
+Existing configurations retain their earlier preview limit until changed.
 
-**Max** opens that slot in a fullscreen viewport. Other selected previews remain
-bounded to the same total worker limit. **Return to grid** or Escape restores the
-window and grid without changing recording or opening another decoder. Choosing
-another slot/focusing a displayed camera while maximized changes the maximized
-view. Saved `views.json` beside the configuration contains local camera IDs,
-selected slot, event-panel visibility, and session display label. It contains no
-camera URLs or logins. Reducing the configured slot limit preserves other choices;
-selecting a camera from a hidden slot moves it safely into an active slot.
+For a non-drag workflow, choose **Add to view**, or select a tile and choose
+**Replace selected view** on a camera. **Camera actions** includes **Move view
+earlier/later** and **Retry now** for a displayed camera. **×** removes a view
+without forgetting the camera or stopping its recording. At the preview limit,
+adding another camera is refused; replacing an existing tile remains available.
+**Show this group** fills the available views from the start of the alias-sorted roster.
 
-Use **Camera actions** for a large alias editor and login action. Alias changes
-persist in the inventory and update displayed names without restarting a recording
-or preview. `views.json` and inventory writes happen off the UI thread. Corrupt view
-preferences produce a startup error rather than being silently overwritten.
+Double-tap a viewport or a camera alias to open fullscreen. Each tile also has a
+semi-transparent corner expand/restore control; sidebar cameras have a Fullscreen
+button. A camera outside the grid temporarily borrows a view, including when all
+eight are occupied. **Return to grid**, Escape, or the restore control returns the
+previous selections and order. If a temporary camera is still switching, wait for
+that transition before restoring. No fullscreen operation changes recording.
 
-## One camera connection
+`views.json` beside the configuration persists selections, ordering, roster visibility,
+thumbnail interval and event-section visibility. Older four-slot preferences load
+without renaming cameras. There is no dedicated slot selector in the roster.
+Unavailable selected cameras remain placeholders instead of being replaced silently.
+View saves run off the UI thread and contain no camera URLs or passwords.
 
-While a camera is recording, the recording worker owns its only RTSP connection.
-The viewer and fresh event captures use the same encoded video through a local
-loopback feed; opening, closing or retrying a preview adds no camera/network stream.
-The viewer can display a frame before the writer finishes accepting it; viewing
-never waits for disk writes. Recording continues when the desktop closes or a viewer
-falls behind. Slow viewer clients discard their own backlog until a keyframe;
-recording data is not dropped to keep a viewer current.
+## Roster thumbnails
 
-Stop existing recordings before installing this build. Older recording workers do not
-publish the local feed; if an older worker remains running, the viewer asks for a
-recording restart instead of adding another camera connection.
+Each available camera has a small aspect-fitted thumbnail, including cameras outside
+the grid. The default refresh target is five seconds; Settings allows 1–60 seconds.
+The UI shows the image's local receipt age and clearly labels stale images and
+unavailable cameras. Receipt time is not camera exposure time.
 
-The desktop automatically switches existing viewers to the recording feed when
-recording starts. While that feed connects, viewers wait instead of opening another
-camera connection. After recording stops, viewed cameras return to standalone RTSP
-access. Unrecorded cameras still use direct RTSP for viewing/captures. Sharing removes
-duplicate camera traffic; it does not remove the cameras' own bitrate requirements
-or decoder/GPU load. The optional `scripts/shared-stream-smoke.py` exercises the real
-native start/stop/view/capture transitions and counts camera connections.
+A displayed frame is reused where possible. Otherwise one background worker makes
+one bounded still capture at a time. Recorded cameras use the recorder's local
+encoded feed; unrecorded cameras prefer ONVIF HTTP snapshots and fall back to a
+one-shot RTSP capture. Each camera retains only its latest 128×72 thumbnail.
+Unresponsive cameras can make refreshes take longer than five seconds; thumbnails
+are never presented as guaranteed synchronized or continuously live images.
 
-## Recording confidence
+## One camera connection while recording
 
-Camera availability, preview state, and recording state are independent. Each feed
-and roster row displays **NOT RECORDING** when acquisition is absent or unhealthy,
-even when its preview is playing. The header shows actual recording count, cameras
-not recording, recording/disk alerts, and minimum reported free disk space. Errors
-and warnings appear in the roster and persistent header. Stale recorder heartbeats
-cannot be displayed as healthy acquisition. Record all/Stop all and per-camera
-Record/Stop use the independent recording supervisor.
+Each recording worker owns one camera RTSP connection. Viewers and temporary RTSP
+still captures use its bounded local encoded feed. Slow viewers discard their own
+backlog until a keyframe and cannot block the recorder. Preview-only cameras use
+direct RTSP. Starting/stopping recording automatically changes the viewing route.
+Older recording workers without a local feed must be stopped and restarted before
+shared viewing can be used; Vidfish does not fall back to a second camera stream.
 
-The session display label is a view preference, not a scientific session ID.
-The clock uses the earliest active recorder's actual video-start timestamp. With no
-known active start timestamp, it explicitly shows viewer uptime. Reopening the viewer
-reattaches to existing recorder status/start times. Full session organization and
-scientific event timestamps and recording references are documented in events.md; named session organization remains Epic 6.
+Up to eight preview decoders can run, plus a bounded temporary decoder for each
+independent sequential capture worker (event grabs and thumbnails). Appsink/watch
+channels retain the latest preview frame, not an unbounded queue. Decoder/driver
+buffers and GPU textures still consume resources. Eight full-resolution previews
+can cost substantially more CPU/GPU than four; reduce the configured preview limit
+on constrained hardware. Recorded video is never resized or re-encoded for the UI.
 
-A frame older than five seconds is conspicuously **STALE**, including its age.
-The last image remains visible for context. Error/stalled feeds do not block controls
-or peer feeds. Each persistent preview automatically rebuilds after five seconds
-without decoded frames, or after a pipeline error/end of stream. Initial connection
-has a fifteen-second frame deadline. Retry delays grow from 250 ms to four seconds
-plus up to 250 ms jitter, and reset after ten seconds of healthy frames. **Retry now**
-on a feed bypasses the delay and rebuilds that preview only. Closing a slot cancels
-retries. The last image stays visible with its stale age and current recovery status.
+## Recording confidence and preview recovery
 
-`VIDFISH_PREVIEW_STALL_SECONDS` tunes the preview watchdog (integer 1–60, default 5);
-the initial-frame deadline is three times that setting. Keyframe requests and waiting
-for a clean keyframe are enabled when supported by the installed depayloader. Logs
-report encoded-buffer and RTP-buffer idle ages when the decoded-frame watchdog fires,
-without including camera URLs or credentials. The optional UI probe records decoded-frame
-age and texture-upload age separately (an upload is not proof of physical display
-presentation). Recording has its own encoded-video
-and file-progress watchdogs and recovery policy; preview health never clears a
-recording failure.
+Camera availability, preview state and recording health are independent. The header
+shows actual recording count, cameras not recording, recording/disk alerts, and
+free space. A playing preview is not proof that the recording file is growing.
+Stale recorder heartbeats are not displayed as healthy acquisition.
 
-## Scientific event controls
+A preview older than five seconds remains visible with its stale age. Preview
+workers rebuild after a pipeline failure or the decoded-frame watchdog, with bounded
+retry delays. **Camera actions → Retry now** retries that viewer only. Removing a
+view cancels its retries. `VIDFISH_PREVIEW_STALL_SECONDS` tunes the watchdog (1–60,
+default 5); the initial-frame deadline is three times that value. Recording uses its
+own two-second input-loss grace and file-progress watchdog; see [recording](recording.md).
 
-Mark + Grab All, Mark and Grab All now use the Epic 5 scientific event service.
-Fresh captures include all registered cameras, even hidden feeds. Recording file
-references use actual split boundaries with explicit clock uncertainty and gap
-states. Notes are editable, JSON/CSV are durable, and recent history restores on
-restart. See [events.md](events.md) for shortcuts, capture deadlines and recovery.
-Collapsing this area never hides the recording header.
+## Events, details and presets
 
-## Resource and platform validation
+F6 **Mark** saves a timestamp and note. F7 **Grab All** requests fresh images from
+all registered cameras. F8 **Mark + Grab All** saves the currently displayed frames,
+without ONVIF requests. Cameras without a displayed frame are explicitly uncaptured.
+A frozen displayed image is retained with its original receipt timestamp.
 
-- At most four preview workers/RTSP decoders; a slot's old worker is joined before
-  its replacement starts. Fullscreen reuses its existing worker. Configuring fewer
-  slots lowers the limit. Duplicate selection focuses the existing camera connection.
-- Appsink retains at most one sample and drops old frames. The watch channel keeps
-  only the latest frame. Application frame packing accepts 1–4096 × 1–2160 pixels
-  (at most 26,542,080 RGB bytes per frame), rejects invalid strides, and handles
-  different incoming sizes; UI textures resize to the delivered dimensions.
-- One capture worker captures sequentially with one temporary decoder/frame; images
-  are encoded sequentially. Thumbnails are at most 128×128 pixels and only four from
-  the latest event are retained. Summary history is bounded to 200 items. These are
-  application queue/retention bounds, not a fixed total RSS promise for codec/driver
-  buffers, GPU textures, or the allocator.
-- GStreamer `decodebin` selects installed decoders by rank; hardware acceleration
-  depends on the camera codec, plugins, GPU and driver. Logs name the actual selected
-  decoder and desktop renderer separately. Rendering on a GPU does not establish
-  hardware video decoding. Current RGB upload is not a zero-copy path.
+Expand **Show events** and drag the panel boundary to resize it. Newest-first rows
+show local date/time, type, elapsed time, capture/file coverage, a short public ID
+and a note excerpt. Search time, note, type, ID or camera; optionally reverse the
+sort. Rendering uses virtual rows. The newest 10,000 events are loaded off-thread;
+use the session library for historical session/date/camera browsing.
 
-The shared native input smoke requests 1280×800 and 800×600 windows and reports the
-actual rendered viewports (a smaller Windows host may clamp the first window to
-1024×768). It exercises all 16
-camera choices, four-worker paging, 1080p/640×360 swaps, fullscreen/return, persisted
-choices, nonblocking Mark during stalls, all-camera captures, note edits, restored
-history, event-panel collapse, and a reduced one-worker limit.
-The same recorder run IDs continue growing across these actions in the passing Linux
-Xvfb check. Windows operator input automation remains unverified; Windows checks
-are paused at the user's request. GitHub PR and manual CI compile and package Linux/Windows executables and installers
-as downloadable artifacts. Automatic lint, tests, native smoke and package-launch
-checks are disabled.
-Versioned releases still compile and package Linux/Windows installers and uninstallers,
-but skip optional check suites on both platforms. Focused checks run locally during
-development. The reusable workflow retains opt-in `checks` and `windows_tests` switches;
-leave them off unless the operator explicitly requests checks. Existing acquisition checks cover 16 simultaneous
-recorder processes separately.
+Single-tap or double-tap selects an event. One persistent details pane shows its full
+note, local/UTC timestamps, exact ID, elapsed clock scope, camera coverage, linked
+recording paths, estimated offsets and capture errors. On narrow screens it sits
+below the list. Details scroll independently and contain no images. **Edit note**,
+**Copy timestamp / ID**, **Open recording** and **View snapshots** avoid transcribing
+identifiers. Snapshot viewing is a separate optional window with system-viewer links.
+Missing files produce an actionable error when opened, without blocking recording.
 
-The operator observed that the earlier four-stream build looked fine. Numerical
-Toughpad CPU/GPU measurements are deferred at the user's request. Native/cloud
-functional checks are not a measurement of sustained physical Toughpad throughput.
-The bundled `benchmark-toughpad.ps1` remains available when measurements are desired.
+List scroll anchoring and selection are retained when events arrive. **Follow newest**
+explicitly follows new events; new-event highlighting does not take keyboard focus.
+Long notes remain available in details and the note editor.
 
-## Operator presentation
+**Session Details** opens the session library's preset editor. Add, rename, reorder
+and remove up to 16 labels and choose **Save event presets**. Quick preset buttons
+create ordinary timestamped Mark events with the chosen label as the note and normal
+recording references. Presets belong to the active session. Edits affect future
+marks only and never rename historical events. Free-form Mark remains available.
 
-The operator screen uses a shared dark palette, consistent type and touch controls,
-outlined selected feeds, separate recording/preview/connection states and a prominent
-Mark + Grab All action. Camera rows distinguish ready, connecting, reconnecting,
-offline, identity conflict and authentication required. **Hide cameras / Show cameras**
-collapses the roster without changing preview workers or recorder ownership; this
-choice persists with view preferences. Events remain collapsible, and preview images
-fit within the remaining card area at smaller resolutions. Keyboard shortcuts remain
-F6/F7/F8 for events, F9 for the session library, and Escape to return from fullscreen.
+See [events](events.md) and [sessions](sessions.md) for durable storage and exports.
 
-Camera cleanup lives in the **Camera actions** details panel. **Show hidden** and
-**Clear offline cameras** are roster controls; bulk cleanup hides confirmed offline
-entries and preserves their settings. Forgetting is separately confirmed and disabled
-while recording. The native cleanup smoke exercises these touch controls, cancellation,
-restart persistence and uninterrupted peer recording; see [camera cleanup](cameras.md#hide-restore-and-forget-cameras).
+## Paths and platform checks
+
+Settings output and library export destinations both provide native **Browse…**
+folder dialogs; manual typing/pasting remains available. Cancel leaves the existing
+path unchanged. Dialogs run on a worker and never launch from headless/CLI modes.
+Linux uses the desktop's XDG portal: install `xdg-desktop-portal` and your desktop's
+portal backend if native dialogs are unavailable. Windows uses the native picker.
+
+Local Linux checks cover eight displayed feeds with nine recorders, real sidebar
+drag replacement, fullscreen for an out-of-grid camera and exact grid restoration,
+hidden-camera thumbnails, note edits, preset persistence/marks, displayed-frame
+grabs and separate snapshot navigation. Optional scripts are in `scripts/` and are
+not enabled in CI. Windows runtime/native tests remain paused at the operator's
+request; Windows compilation and installer packaging remain enabled. Physical
+Toughpad eight-preview performance and native picker behavior require operator checks.
+Previous successful four-stream operation is not an eight-stream benchmark.

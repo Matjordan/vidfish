@@ -76,3 +76,12 @@ clock corrections and restarts. UTC avoids daylight-saving ambiguity in IDs;
 metadata also stores RFC3339 UTC/local timestamps and the local offset at creation.
 The UI displays local timestamps with offsets. IDs do not replace precise timing
 metadata. Existing UUID folders and historical metadata are never renamed.
+
+## Preset event labels and destination pickers
+
+Session Details in the session library edits an ordered list of up to 16 preset
+labels. Saving validates the active session identity so a session switch cannot
+apply edits to the wrong acquisition. Presets are carried in the session manifest;
+older manifests default to an empty list. Existing event notes are never rewritten.
+Output and export destination fields provide native folder pickers; cancel preserves
+the current value, and manual entry remains available.

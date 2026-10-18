@@ -5,6 +5,7 @@ if (Test-Path $root) { throw "Package directory already exists: $root. Move it a
 New-Item -ItemType Directory -Force "$root/docs", "$root/gstreamer", "$root/assets" | Out-Null
 Copy-Item target/release/vidfish.exe, target/release/vidfish-maintenance.exe, README.md, scripts/launch-vidfish.cmd, scripts/benchmark-toughpad.ps1 $root/
 Copy-Item docs/media.md, docs/cameras.md, docs/recording.md, docs/monitoring.md, docs/events.md, docs/sessions.md, docs/installing.md "$root/docs/"
+Copy-Item docs/images "$root/docs/" -Recurse
 Copy-Item assets/vidfish.* "$root/assets/"
 ./scripts/sign-windows.ps1 -Files @("$root/vidfish.exe", "$root/vidfish-maintenance.exe")
 $gst = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64

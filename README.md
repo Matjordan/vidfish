@@ -6,7 +6,8 @@ collect timestamped events and images in named acquisition sessions.
 
 ![Vidfish operator interface with four simulated camera feeds](docs/images/operator.png)
 
-Actual Linux desktop screenshot at 1280×800, using four simulated camera feeds.
+Actual Linux desktop screenshot at 1280×800, using four displayed simulated feeds
+and a fifth recording camera outside the grid.
 The camera test patterns are fixtures, not footage from a deployment.
 
 ## Install
@@ -35,12 +36,13 @@ login and contain development changes that may not yet be in a stable release.
    free space. Set a session name and check the recording/segmentation settings.
 2. Allow automatic ONVIF discovery across active IPv4 adapters, or add a camera
    manually. Configure a shared camera login or individual camera credentials.
-3. Choose which feeds to display. Up to four previews can be shown, with
+3. Choose which feeds to display. Drag cameras into the workspace; up to eight previews can be shown, with
    single-camera fullscreen; the camera roster supports up to 16 recording cameras.
 4. Use **Record all**, **Stop all**, or individual camera controls. Auto-record is
    enabled by default; arriving registered cameras can start recording automatically.
 5. Add optional notes and use the event controls below. Open **Sessions / recordings**
    to browse acquisitions, recording segments and events or export a portable bundle.
+   Use the native **Browse…** controls to select output and export folders.
 
 Recording runs in independent processes. Closing or restarting the viewer does
 not stop an acquisition; a reopened desktop reattaches to active recorders. Stop
@@ -59,6 +61,12 @@ until **Record all** or an application restart.
 ONVIF snapshot or another camera connection. A frozen displayed frame is retained
 with its original local receipt timestamp; cameras without a displayed frame are
 reported as uncaptured. **Grab All** is a separate fresh-camera capture operation.
+
+The resizable event list supports search, sorting, persistent non-image details,
+clipboard actions and separate snapshot viewing. Configure quick event labels in
+**Session Details**; presets are saved per session and create ordinary Mark events.
+New session/event IDs use UTC date/time with collision suffixes; legacy UUID data
+remains readable. The UI shows local timestamps with offsets.
 
 Events retain stable camera IDs, recording references, notes and PNG images with
 JSON/CSV metadata. Captures and recording offsets have explicit timing uncertainty;
@@ -90,6 +98,9 @@ Settings include output/session configuration, preview and recording limits,
 segmentation, disk policy, discovery and shared camera login. Camera controls support
 aliases, per-camera login, hiding/restoring roster entries and guarded inventory
 cleanup. Hiding a camera does not stop recording or delete scientific data.
+
+Camera thumbnails refresh at a configurable five-second target, including feeds
+outside the grid, with explicit age/stale indicators and a single capture worker.
 
 Configuration uses the platform configuration directory, or `--config PATH`.
 Camera credentials currently use an app-managed local plaintext file for the closed
@@ -127,7 +138,7 @@ cargo run --locked -p vidfish -- cameras list
 cargo run --locked -p vidfish-media --example camera-fixture --features fixtures
 ```
 
-Repeat `--preview` up to four times; add `--h265` for H.265. Ctrl+C finalizes a
+Repeat `--preview` up to eight times; add `--h265` for H.265. Ctrl+C finalizes a
 CLI recording. Use either the desktop or headless service as the camera manager
 for an inventory. Fixtures bind loopback and provide simulated RTSP/ONVIF cameras.
 Optional native smoke scripts live in `scripts/`.
