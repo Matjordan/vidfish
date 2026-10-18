@@ -90,6 +90,65 @@ impl Views {
         self.selected_slot = index;
         Ok(index)
     }
+    /// New preferences live separately so strict four-slot builds can still launch.
+    pub fn load_desktop(legacy: &Path) -> io::Result<Self> {
+        let modern = legacy.with_file_name("views-v2.json");
+        let views = if modern.try_exists()? {
+            Self::load(&modern)?
+        } else {
+            let views = Self::load(legacy)?;
+            if legacy.try_exists()? {
+                views.save(&modern)?;
+            }
+            views
+        };
+        if legacy.try_exists()? {
+            let bytes = std::fs::read(legacy)?;
+            if bytes.len() > 16384 {
+                return Err(io::Error::other("View preferences exceed size limit"));
+            }
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            let incompatible = value.get("thumbnail_seconds").is_some()
+                || value
+                    .get("slots")
+                    .and_then(|s| s.as_array())
+                    .is_some_and(|s| s.len() != 4);
+            if incompatible {
+                // Only repair the supported early eight-view format, never unknown/corrupt data.
+                Self::load(legacy)?;
+                let parent = legacy
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let backup = parent.join(format!("views-before-v2-{}.json", uuid::Uuid::new_v4()));
+                let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                file.write_all(&bytes)?;
+                file.as_file().sync_all()?;
+                file.persist_noclobber(backup).map_err(|e| e.error)?;
+                value
+                    .as_object_mut()
+                    .ok_or_else(|| io::Error::other("Invalid view preferences"))?
+                    .remove("thumbnail_seconds");
+                if let Some(slots) = value.get_mut("slots").and_then(|s| s.as_array_mut()) {
+                    slots.resize(4, serde_json::Value::Null);
+                }
+                value["selected_slot"] = serde_json::json!(
+                    value
+                        .get("selected_slot")
+                        .and_then(|s| s.as_u64())
+                        .unwrap_or(0)
+                        .min(3)
+                );
+                let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                serde_json::to_writer_pretty(&mut file, &value).map_err(io::Error::other)?;
+                file.write_all(b"\n")?;
+                file.as_file().sync_all()?;
+                file.persist(legacy).map_err(|e| e.error)?;
+            }
+        }
+        Ok(views)
+    }
     pub fn load(path: &Path) -> io::Result<Self> {
         let mut views = match std::fs::read(path) {
             Ok(bytes) if bytes.len() <= 16384 => {
@@ -123,6 +182,64 @@ impl Views {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct FourSlotViews {
+        schema_version: u32,
+        slots: [Option<String>; 4],
+        selected_slot: usize,
+        events_expanded: bool,
+        cameras_collapsed: bool,
+        hidden_cameras: Vec<String>,
+        show_hidden: bool,
+        session_label: String,
+    }
+    #[test]
+    fn desktop_migration_keeps_eight_views_and_repairs_strict_old_format_with_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("views.json");
+        let mut views = Views {
+            thumbnail_seconds: 11,
+            selected_slot: 7,
+            ..Default::default()
+        };
+        for i in 0..8 {
+            views.slots[i] = Some(uuid::Uuid::new_v4().to_string());
+        }
+        views.save(&legacy).unwrap();
+        let original = std::fs::read(&legacy).unwrap();
+        assert!(serde_json::from_slice::<FourSlotViews>(&original).is_err());
+        assert_eq!(Views::load_desktop(&legacy).unwrap(), views);
+        let old: FourSlotViews = serde_json::from_slice(&std::fs::read(&legacy).unwrap()).unwrap();
+        assert_eq!(old.selected_slot, 3);
+        assert_eq!(old.slots[0], views.slots[0]);
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|p| {
+                p.file_name()
+                    .to_string_lossy()
+                    .starts_with("views-before-v2-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(), original);
+        // Simulate the old app saving a reset layout. New choices stay independent.
+        let mut old = old;
+        old.slots = [None, None, None, None];
+        std::fs::write(&legacy, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(Views::load_desktop(&legacy).unwrap(), views);
+    }
+    #[test]
+    fn invalid_legacy_views_are_not_rewritten_or_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("views.json");
+        let original = br#"{"future_unknown":true}"#;
+        std::fs::write(&legacy, original).unwrap();
+        assert!(Views::load_desktop(&legacy).is_err());
+        assert_eq!(std::fs::read(&legacy).unwrap(), original);
+        assert!(!dir.path().join("views-v2.json").exists());
+    }
     #[test]
     fn legacy_four_slots_migrate_and_eight_distinct_views_persist() {
         let root = tempfile::tempdir().unwrap();

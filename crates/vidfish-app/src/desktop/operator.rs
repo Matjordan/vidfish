@@ -54,7 +54,7 @@ impl Desktop {
                 .fullscreen_saved
                 .clone()
                 .unwrap_or_else(|| self.views.clone());
-            let path = self.path.with_file_name("views.json");
+            let path = self.path.with_file_name("views-v2.json");
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
                 let _ = sender.send(views.save(&path));

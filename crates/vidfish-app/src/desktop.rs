@@ -51,7 +51,7 @@ pub fn run(
         .unwrap_or([1280.0, 800.0]);
     let update_preferences =
         vidfish::updater::Preferences::load(&path.with_file_name("updates.json"));
-    let views = vidfish_core::views::Views::load(&path.with_file_name("views.json"))?;
+    let views = vidfish_core::views::Views::load_desktop(&path.with_file_name("views.json"))?;
     let engine = {
         let _guard = runtime.enter();
         Engine::start(config.clone())?
@@ -758,7 +758,7 @@ impl Drop for Desktop {
         if self.views_dirty {
             self.views.selected_slot = self.selected_slot;
             let views = self.views.clone();
-            let path = self.path.with_file_name("views.json");
+            let path = self.path.with_file_name("views-v2.json");
             let previous = self.views_saving.take();
             let job = self.runtime.spawn(async move {
                 if let Some(previous) = previous {
