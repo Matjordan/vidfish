@@ -62,6 +62,15 @@ pub fn reserve(
     millis: bool,
     prefix: &str,
 ) -> std::io::Result<(String, PathBuf)> {
+    reserve_excluding(root, ms, millis, prefix, &Default::default())
+}
+pub fn reserve_excluding(
+    root: &Path,
+    ms: u64,
+    millis: bool,
+    prefix: &str,
+    used: &std::collections::BTreeSet<String>,
+) -> std::io::Result<(String, PathBuf)> {
     let time =
         DateTime::<Utc>::from_timestamp_millis(ms.min(i64::MAX as u64) as i64).unwrap_or_default();
     let mut base = time.format("%Y%m%d-%H%M%S").to_string();
@@ -74,6 +83,9 @@ pub fn reserve(
         } else {
             format!("{base}-{n:02}")
         };
+        if used.contains(&id) {
+            continue;
+        }
         let path = root.join(format!("{prefix}{id}"));
         match std::fs::create_dir(&path) {
             Ok(()) => return Ok((id, path)),
@@ -86,6 +98,26 @@ pub fn reserve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reservation_respects_other_roots_and_concurrent_creators() {
+        let root = tempfile::tempdir().unwrap();
+        let used = ["19700101-000000".to_string()].into_iter().collect();
+        assert_eq!(
+            reserve_excluding(root.path(), 0, false, "session-", &used)
+                .unwrap()
+                .0,
+            "19700101-000000-02"
+        );
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let path = root.path().to_owned();
+                std::thread::spawn(move || reserve(&path, 0, true, "").unwrap().0)
+            })
+            .collect();
+        let ids: std::collections::BTreeSet<_> =
+            workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert_eq!(ids.len(), 8);
+    }
     #[test]
     fn collisions_rollover_restart_and_legacy_paths() {
         let root = tempfile::tempdir().unwrap();

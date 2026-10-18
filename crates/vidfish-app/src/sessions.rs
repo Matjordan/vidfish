@@ -106,14 +106,20 @@ pub fn read(directory: &Path) -> Result<Session> {
     }
     Ok(session)
 }
-fn create(config: &AppConfig, label: &str) -> Result<Session> {
+fn create(config: &AppConfig, label: &str, registry: &Registry) -> Result<Session> {
     if label.chars().count() > 128 || label.contains(['\n', '\r']) {
         return Err("Session name must be at most 128 characters on one line".into());
     }
     std::fs::create_dir_all(&config.output_directory)?;
     let root = config.output_directory.canonicalize()?;
     let created = crate::operator_events::now();
-    let (id, directory) = crate::identifiers::reserve(&root, created, false, "session-")?;
+    let (id, directory) = crate::identifiers::reserve_excluding(
+        &root,
+        created,
+        false,
+        "session-",
+        &registry.sessions.iter().map(|s| s.id.clone()).collect(),
+    )?;
     let _lease = file_lock(&directory.join("session.lease"))?;
     for name in ["recordings", "events", "logs"] {
         std::fs::create_dir(directory.join(name))?;
@@ -161,7 +167,7 @@ fn ensure(config_path: &Path, config: &AppConfig, registry: &mut Registry) -> Re
                 .into(),
         );
     }
-    let session = create(config, &config.session_name)?;
+    let session = create(config, &config.session_name, registry)?;
     registry.sessions.push(Entry {
         id: session.id.clone(),
         directory: session.directory.clone(),
@@ -240,7 +246,7 @@ pub fn start_new(config_path: &Path, config: &AppConfig, label: &str) -> Result<
     } else {
         None
     };
-    let next = create(config, label)?;
+    let next = create(config, label, &registry)?;
     if let Some(mut old) = previous {
         old.closed_unix_ms = Some(crate::operator_events::now());
         write_json(&old.directory.join("manifest.json"), &old)?;
