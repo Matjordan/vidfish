@@ -9,7 +9,7 @@ pub(super) struct Library {
     filter: Filter,
     catalog: Option<Catalog>,
     loading: Option<tokio::sync::oneshot::Receiver<Result<Catalog, String>>>,
-    operation: Option<tokio::sync::oneshot::Receiver<Result<String, String>>>,
+    operation: Option<tokio::sync::oneshot::Receiver<Result<OperationResult, String>>>,
     storage_job: Option<tokio::sync::oneshot::Receiver<Result<Storage, String>>>,
     pub storage: Option<Storage>,
     storage_at: Option<Instant>,
@@ -23,6 +23,10 @@ pub(super) struct Library {
     refresh: bool,
     event_page: usize,
     segment_page: usize,
+}
+struct OperationResult {
+    message: String,
+    session: Option<vidfish::sessions::Session>,
 }
 enum Operation {
     New(String),
@@ -64,10 +68,29 @@ impl Desktop {
         }
         if let Some(result) = poll(&mut self.library.operation) {
             self.library.message = match result {
-                Ok(message) => {
+                Ok(result) => {
+                    if let Some(session) = result.session {
+                        let changed = self
+                            .active_session
+                            .as_ref()
+                            .is_none_or(|old| old.id != session.id);
+                        // Drop a pre-mutation history response; it must not restore the old session.
+                        self.history_job = None;
+                        if changed {
+                            self.events.clear();
+                            self.event_revision = self.event_revision.wrapping_add(1);
+                            self.library.presets = None;
+                            self.library.loading = None;
+                            self.library.catalog = None;
+                            self.library.event_page = 0;
+                            self.library.segment_page = 0;
+                            self.library.filter.session = Some(session.id.clone());
+                        }
+                        self.active_session = Some(session);
+                    }
                     self.library.refresh = true;
                     self.history_last = Instant::now() - Duration::from_secs(10);
-                    message
+                    result.message
                 }
                 Err(error) => error,
             };
@@ -215,6 +238,7 @@ impl Desktop {
      if presets.len()<16 && button(ui,"Add preset").clicked(){presets.push("New event".into());}
      ui.add_enabled_ui(!busy,|ui|{if button(ui,"Save event presets").clicked(){action=Some(Operation::Presets(id.clone(),presets.clone()));}});
     }else{ui.label("Start an acquisition session to configure preset events.");}
+    if !self.library.message.is_empty(){ui.label(&self.library.message);}
    });
    if self.library.focus_presets {presets_panel.header_response.scroll_to_me(Some(egui::Align::Min));self.library.focus_presets=false;}
    if let Some(catalog)=&self.library.catalog{
@@ -271,19 +295,32 @@ if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalo
             let path = self.path.clone();
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
+                let mut session_update = None;
                 let result = (|| -> Result<String, String> {
                     let config = AppConfig::load(&path).map_err(|e| e.to_string())?;
                     match action {
                         Operation::Presets(id, presets) => {
                             vidfish::sessions::set_presets(&path, &id, presets)
-                                .map(|_| "Session event presets saved".into())
+                                .map(|session| {
+                                    session_update = Some(session);
+                                    "Session event presets saved".into()
+                                })
                                 .map_err(|e| e.to_string())
                         }
                         Operation::Rename(name) => vidfish::sessions::rename(&path, &name)
-                            .map(|s| format!("Renamed session {} without moving media", s.label))
+                            .map(|s| {
+                                let message =
+                                    format!("Renamed session {} without moving media", s.label);
+                                session_update = Some(s);
+                                message
+                            })
                             .map_err(|e| e.to_string()),
                         Operation::New(name) => vidfish::sessions::start_new(&path, &config, &name)
-                            .map(|s| format!("Started session {}", s.label))
+                            .map(|s| {
+                                let message = format!("Started session {}", s.label);
+                                session_update = Some(s);
+                                message
+                            })
                             .map_err(|e| e.to_string()),
                         Operation::Export(source, destination) => vidfish::event_export::export(
                             &source,
@@ -316,7 +353,10 @@ if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalo
                             .map_err(|e| e.to_string()),
                     }
                 })();
-                let _ = sender.send(result);
+                let _ = sender.send(result.map(|message| OperationResult {
+                    message,
+                    session: session_update,
+                }));
             });
             self.library.operation = Some(receiver);
         }
