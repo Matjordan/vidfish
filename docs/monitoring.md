@@ -7,8 +7,10 @@ thumbnail collection and event work are independent of recorder ownership.
 ## Dynamic camera workspace
 
 Drag from a camera card’s thumbnail, status area or name. A floating preview follows
-the pointer. Drop on **+ Drop camera here to add a view** to add it, or onto a
-tile to replace that view. Drag live tiles onto each other to swap their positions.
+the pointer. Drop anywhere in the workspace, including on an existing tile, to add
+a new view. Existing views stay in place. Dropping an already displayed camera
+selects its view; at the view limit, remove a view before adding another camera.
+Drag live tiles onto each other to swap their positions.
 Card buttons remain clickable; open text editors retain text selection. Empty tiles
 are not retained. One to eight views reflow to suit the actual workspace;
 the final row expands to fill its width, and the configured preview limit can be reduced in Settings and applies after restart.
@@ -122,7 +124,7 @@ Linux uses the desktop's XDG portal: install `xdg-desktop-portal` and your deskt
 portal backend if native dialogs are unavailable. Windows uses the native picker.
 
 Local Linux checks cover eight displayed feeds with nine recorders, real sidebar
-drag replacement, fullscreen for an out-of-grid camera and exact grid restoration,
+drop-anywhere addition and capacity protection, fullscreen for an out-of-grid camera and exact grid restoration,
 hidden-camera thumbnails, note edits, preset persistence/marks, displayed-frame
 grabs and separate snapshot navigation. Optional scripts are in `scripts/` and are
 not enabled in CI. Windows runtime/native tests remain paused at the operator's

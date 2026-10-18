@@ -47,10 +47,11 @@ with tempfile.TemporaryDirectory(prefix='vidfish-eight-') as folder:
   for n in range(1,15):
    mouse.test.XTestFakeMotionEvent(mouse.display,-1,int(sx+(ex-sx)*n/14),int(sy+(ey-sy)*n/14),0);mouse.api.XFlush(mouse.display);time.sleep(.04)
   mouse.test.XTestFakeButtonEvent(mouse.display,1,0,0);mouse.api.XFlush(mouse.display)
-  m.until(lambda:state()['slots'][0]['camera']==ids[8])
+  time.sleep(.7)
+  assert before==[s['camera'] for s in state()['slots']], 'Full workspace must not replace a view'
   click('×');m.until(lambda:sum(s['camera'] is not None for s in state()['slots'])==7)
-  def body_drag_to_add():
-   value=state();card=next(b[1] for b in value['buttons'] if b[0]=='Camera card A hidden camera');target=next(b[1] for b in value['buttons'] if b[0]=='Add view drop area')
+  def body_drag_to_add(target_name='Add view drop area'):
+   value=state();card=next(b[1] for b in value['buttons'] if b[0]=='Camera card A hidden camera');target=next(b[1] for b in value['buttons'] if b[0]==target_name)
    # Start on the thumbnail/status body, well below the alias.
    sx,sy=card[0]+24,card[1]+125;ex,ey=(target[0]+target[2])/2,(target[1]+target[3])/2
    mouse.test.XTestFakeMotionEvent(mouse.display,-1,int(sx),int(sy),0);mouse.test.XTestFakeButtonEvent(mouse.display,1,1,0);mouse.api.XFlush(mouse.display);time.sleep(.2)
@@ -73,7 +74,12 @@ with tempfile.TemporaryDirectory(prefix='vidfish-eight-') as folder:
    spans=[(min(r[0] for r in row),max(r[2] for r in row)) for row in rows.values()]
    assert all(abs(a-spans[0][0])<1 and abs(b-spans[0][1])<1 for a,b in spans)
    return True
-  body_drag_to_add();m.until(lambda:sum(s['camera'] is not None for s in state()['slots'])==8)
+  remaining={s['camera'] for s in state()['slots'] if s['camera']}
+  body_drag_to_add('Viewport 2');m.until(lambda:sum(s['camera'] is not None for s in state()['slots'])==8)
+  assert {s['camera'] for s in state()['slots']}==remaining|{ids[8]}
+  order=[s['camera'] for s in state()['slots']]
+  body_drag_to_add('Viewport 2');time.sleep(.7)
+  assert order==[s['camera'] for s in state()['slots']], 'Duplicate drop must focus without moving views'
   m.until(lambda:layout(8))
   for count in range(7,0,-1):
    click('×');m.until(lambda:sum(s['camera'] is not None for s in state()['slots'])==count)
@@ -82,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='vidfish-eight-') as folder:
   m.until(lambda:layout(2))
   assert all(json.loads(p.read_text())['run_id']==runs[p.name] for p in (root/'acquisition').glob('*.json'))
   assert state()['active_workers']<=8
-  print('PASS: whole-card drag with floating feedback, add/drop, automatic 1–8 tiling, fullscreen ordering, unchanged nine recorder runs')
+  print('PASS: whole-card drag with floating feedback, drop-anywhere addition, capacity protection, duplicate focus, automatic 1–8 tiling, fullscreen ordering, unchanged nine recorder runs')
  except:
   print((root/'run.log').read_text()[-5000:]);raise
  finally:

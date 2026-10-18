@@ -652,7 +652,7 @@ impl Desktop {
                                 if let Some(from) = payload.tile {
                                     swaps = Some((from, index));
                                 } else {
-                                    dropped = Some((payload.id.clone(), index));
+                                    dropped = Some(payload.id.clone());
                                 }
                             }
                             let fill = super::theme::CARD;
@@ -785,7 +785,7 @@ impl Desktop {
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     format!(
-                        "+ Drop camera here to add a view · {} / {}",
+                        "+ Drop a camera anywhere to add a view · {} / {}",
                         indices.len(),
                         self.slots.len()
                     ),
@@ -795,11 +795,8 @@ impl Desktop {
                 super::probe::button(ui, "Add view drop area", &response);
                 if let Some(payload) = response.dnd_release_payload::<DragCamera>()
                     && payload.tile.is_none()
-                    && let Some(index) = self.views.slots[..self.slots.len()]
-                        .iter()
-                        .position(Option::is_none)
                 {
-                    dropped = Some((payload.id.clone(), index));
+                    dropped = Some(payload.id.clone());
                 }
             }
             // Empty workspace is also an add target, including the empty-state message.
@@ -808,15 +805,7 @@ impl Desktop {
                 && payload.tile.is_none()
                 && dropped.is_none()
             {
-                if let Some(index) = self.views.slots[..self.slots.len()]
-                    .iter()
-                    .position(Option::is_none)
-                {
-                    dropped = Some((payload.id.clone(), index));
-                } else {
-                    self.message =
-                        "Eight-view limit reached; drop onto a tile to replace it.".into();
-                }
+                dropped = Some(payload.id.clone());
             }
         });
         if let Some(payload) = egui::DragAndDrop::payload::<DragCamera>(ctx)
@@ -887,10 +876,25 @@ impl Desktop {
             self.views.slots.swap(a, b);
             self.views_dirty = true;
         }
-        if let Some((id, index)) = dropped
+        if let Some(id) = dropped
             && self.fullscreen.is_none()
         {
-            self.show_camera(&id, index);
+            if let Some(index) = self.views.slots[..self.slots.len()]
+                .iter()
+                .position(|camera| camera.as_deref() == Some(id.as_str()))
+            {
+                self.selected_slot = index;
+            } else if let Some(index) = self.views.slots[..self.slots.len()]
+                .iter()
+                .position(Option::is_none)
+            {
+                self.show_camera(&id, index);
+            } else {
+                self.message = format!(
+                    "{}-view limit reached; remove a view to add another camera.",
+                    self.slots.len()
+                );
+            }
         }
         if let Some(index) = maximize {
             if self.fullscreen.is_some() {
