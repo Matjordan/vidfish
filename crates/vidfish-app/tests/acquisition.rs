@@ -223,7 +223,7 @@ fn sixteen_recorders_survive_supervisor_restart() {
     let saved = vidfish::operator_events::save_request(
         &root,
         vidfish::operator_events::Request {
-            kind: "Mark + Grab All".into(),
+            kind: "Grab All".into(),
             note: "sixteen hidden feeds".into(),
             unix_ms: marker_ms,
             elapsed_ns: 1_000_000_000,

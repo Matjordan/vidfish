@@ -10,6 +10,9 @@ pub fn capture(
     profile: Option<&vidfish_onvif::Profile>,
     inventory: &Path,
 ) -> Result<(Arc<vidfish_media::Frame>, String), String> {
+    let recording =
+        crate::acquisition::active(&inventory.with_file_name("config.json"), &camera.id);
+    let profile = if recording { None } else { profile };
     let attempted_http =
         camera.device_url.is_some() && profile.is_some_and(|p| p.snapshot_uri.is_some());
     if let (Some(device), Some(uri)) = (

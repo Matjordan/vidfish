@@ -118,7 +118,7 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
         return Err("Event metadata too large".into());
     }
     let mut event: Event = serde_json::from_slice(&bytes)?;
-    uuid::Uuid::parse_str(&event.id)?;
+    crate::identifiers::validate(&event.id)?;
     for c in &mut event.captures {
         c.recording.resolve();
     }

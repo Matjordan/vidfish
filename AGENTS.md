@@ -60,3 +60,10 @@ still build and package both platforms with optional checks disabled. Do not res
 user direction. The general Windows-check pause remains in place. Physical Toughpad installer
 verification is pending; do not close this epic until its required platform checks
 are actually complete or the user explicitly changes those acceptance criteria.
+
+Issues #47–#52 share `feat/operator-ui-refresh`: native destination pickers, dynamic
+1–8 viewing, bounded roster thumbnails, UTC public IDs with legacy UUID support,
+and virtualized event navigation/persistent non-image details with session presets.
+Maintain recorder ownership through view changes and the separate thumbnail/event
+capture-worker bounds. Keep physical Toughpad eight-view performance and native
+Windows acceptance distinct from Linux fixture checks; Windows tests remain paused.

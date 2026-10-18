@@ -22,6 +22,8 @@ pub struct Capture {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: String,
+    #[serde(default)]
+    pub timestamp: crate::identifiers::Timestamp,
     pub unix_ms: u64,
     pub elapsed_seconds: u64,
     pub kind: String,
@@ -107,9 +109,7 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
     }
     let result = (|| -> Result<Saved, Box<dyn std::error::Error>> {
         let reserve = lock(root)?;
-        let id = uuid::Uuid::new_v4().to_string();
-        let directory = root.join(&id);
-        std::fs::create_dir(&directory)?;
+        let (id, directory) = crate::identifiers::reserve(root, unix_ms, true, "")?;
         #[cfg(unix)]
         std::fs::File::open(root)?.sync_all()?;
         let _event_lock = lock(&directory)?;
@@ -136,6 +136,7 @@ pub fn save_request(root: &Path, request: Request) -> Result<Saved, String> {
         };
         let mut event = Event {
             id,
+            timestamp: crate::identifiers::timestamp(unix_ms),
             unix_ms,
             elapsed_seconds: elapsed_ns / 1_000_000_000,
             elapsed_ns,
@@ -494,7 +495,7 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
     let mut rows = Vec::new();
     writeln!(
         rows,
-        "event_id,session_id,session_name,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status"
+        "event_id,session_id,session_name,utc_unix_ms,monotonic_elapsed_ns,elapsed_scope,kind,note,complete,camera_id,alias,run_id,segment,offset_ns,timing,recording_status,snapshot,capture_unix_ms,delay_ms,capture_status,utc_timestamp,local_timestamp,utc_offset_seconds"
     )?;
     let empty = Capture {
         result: "No registered cameras".into(),
@@ -538,6 +539,9 @@ fn persist_csv(directory: &Path, event: &Event) -> Result<(), Box<dyn std::error
             quote(c.capture_unix_ms.map(|t| t.to_string()).unwrap_or_default()),
             quote(c.delay_ms.map(|t| t.to_string()).unwrap_or_default()),
             quote(&c.result),
+            quote(&event.timestamp.utc),
+            quote(&event.timestamp.local),
+            quote(event.timestamp.offset_seconds),
         ];
         writeln!(rows, "{}", fields.join(","))?;
     }
@@ -563,7 +567,7 @@ pub fn load(root: &Path) -> Result<Vec<Event>, String> {
         drop(reserve);
         paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
         let mut events = Vec::new();
-        for path in paths.into_iter().take(200) {
+        for path in paths.into_iter().take(10000) {
             let file = path.path().join("event.json");
             if !file.exists() {
                 continue;
@@ -602,7 +606,7 @@ pub fn load(root: &Path) -> Result<Vec<Event>, String> {
 }
 pub fn edit_note(root: &Path, id: &str, note: String) -> Result<Saved, String> {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-        uuid::Uuid::parse_str(id)?;
+        crate::identifiers::validate(id)?;
         if note.len() > 16384 {
             return Err("Note exceeds limit".into());
         }

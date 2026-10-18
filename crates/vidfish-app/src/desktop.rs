@@ -1,7 +1,10 @@
 mod camera_cleanup;
+mod event_browser;
 mod library;
 mod operator;
+mod picker;
 mod probe;
+mod roster_thumbnails;
 mod theme;
 mod updates;
 use eframe::egui;
@@ -87,7 +90,7 @@ pub fn run(
     while slots.len() < preview_limit {
         slots.push(Slot::default());
     }
-    let (retired, retiring) = std::sync::mpsc::sync_channel(4);
+    let (retired, retiring) = std::sync::mpsc::sync_channel(8);
     let preview_jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
     let cleanup_jobs = preview_jobs.clone();
     let passed = Arc::new(AtomicBool::new(false));
@@ -136,6 +139,9 @@ pub fn run(
                 .data_mut(|d| d.insert_temp(egui::Id::new("probe-enabled"), probe_path.is_some()));
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(Desktop {
+                roster_thumbnails: Default::default(),
+                event_browser: Default::default(),
+                picker: Default::default(),
                 force_opengl,
                 interface: config
                     .camera_interface
@@ -172,6 +178,7 @@ pub fn run(
                 views_dirty: false,
                 views_saving: None,
                 fullscreen: None,
+                fullscreen_saved: None,
                 page: 0,
                 show_settings: false,
                 updates: updates::Updates {
@@ -189,7 +196,8 @@ pub fn run(
                 active_session: None,
                 history_last: Instant::now() - Duration::from_secs(10),
                 edit_note: None,
-                events: std::collections::VecDeque::new(),
+                event_revision: 0,
+    events: std::collections::VecDeque::new(),
                 thumbnails: Vec::new(),
                 probe_path,
                 probe_last: Instant::now() - Duration::from_secs(2),
@@ -250,6 +258,9 @@ impl Slot {
     }
 }
 struct Desktop {
+    roster_thumbnails: roster_thumbnails::Thumbnails,
+    event_browser: event_browser::Browser,
+    picker: picker::Picker,
     force_opengl: bool,
     adding_camera: bool,
     new_alias: String,
@@ -283,6 +294,7 @@ struct Desktop {
     views_dirty: bool,
     views_saving: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     fullscreen: Option<usize>,
+    fullscreen_saved: Option<vidfish_core::views::Views>,
     page: usize,
     show_settings: bool,
     updates: updates::Updates,
@@ -296,6 +308,7 @@ struct Desktop {
     active_session: Option<vidfish::sessions::Session>,
     history_last: Instant,
     edit_note: Option<(String, String)>,
+    event_revision: u64,
     events: std::collections::VecDeque<vidfish::operator_events::Event>,
     thumbnails: Vec<(String, egui::TextureHandle)>,
     probe_path: Option<PathBuf>,
@@ -310,6 +323,15 @@ struct Desktop {
 }
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if let Some(result) = self.picker.poll() {
+            match result {
+                Ok((picker::Target::Output, path)) => self.config.output_directory = path,
+                Ok((picker::Target::Export, path)) => {
+                    self.library.destination = path.to_string_lossy().into_owned()
+                }
+                Err(error) => self.message = error,
+            }
+        }
         if self.record_snapshot.has_changed().unwrap_or(true) {
             self.record_status = self.record_snapshot.borrow_and_update().clone();
         }
@@ -356,6 +378,7 @@ impl eframe::App for Desktop {
             });
             self.saving = Some(receiver);
         }
+        self.poll_roster_thumbnails(ctx);
         self.reconcile_camera_views();
         self.reconcile_preview_routes();
         self.poll_view_save();

@@ -72,7 +72,7 @@ still records the camera's recording state without waiting for image work.
 
 ## Durability, notes and exports
 
-New events live in `session-…/events/<event-UUID>/` under the acquisition output root.
+New events live in `session-…/events/<event-ID>/` under the acquisition output root.
 Earlier settings-adjacent `operator-events` folders remain accessible in the library. Each folder
 contains `event.json`, `event.csv`, and collision-free `snapshot-N.png` files.
 JSON is the canonical record. CSV has one quoted row per camera, with event ID,
@@ -89,9 +89,8 @@ Failures saving metadata are reported; partial files remain for recovery.
 
 Expand an event in **Show events**, choose **Edit note**, and save the corrected
 note. Notes are optional and may include commas, quotes and newlines; JSON and CSV
-are updated together through the same background service. Latest 200 events load
-on restart, with periodic boundary reconciliation. Up to four latest thumbnails
-are retained. The session library adds historical filtering and portable bundles with associated
+are updated together through the same background service. The newest 10,000 events load
+on restart, with periodic boundary reconciliation. Snapshot viewing is separate from the persistent non-image details pane. The session library adds historical filtering and portable bundles with associated
 closed recording segments; see [sessions and export](sessions.md).
 
 ## Validation
@@ -102,3 +101,11 @@ reconciliation; camera renames; note/CSV recovery; incomplete capture persistenc
 and native touch/mouse workflows at 1280×800 and 800×600. Windows checks remain
 paused at the user's request. Release compilation and Windows packaging continue.
 No physical Toughpad CPU/GPU measurements or synchronized-capture claim is made.
+
+## Navigation and presets
+
+The operator event section has virtualized searchable rows, newest/oldest sorting,
+stable selection and scroll anchoring, and an explicit Follow newest mode. A persistent
+details pane shows full non-image metadata and offers note editing, copying and
+recording/snapshot links. Session Details manages up to 16 ordered quick Mark labels.
+Preset changes affect future events only. See [operator monitoring](monitoring.md).

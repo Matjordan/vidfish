@@ -4,11 +4,12 @@ use vidfish::library::{Catalog, Filter, Storage};
 #[derive(Default)]
 pub(super) struct Library {
     pub open: bool,
+    pub(super) focus_presets: bool,
     pub(super) draft_retention: Option<Option<u32>>,
     filter: Filter,
     catalog: Option<Catalog>,
     loading: Option<tokio::sync::oneshot::Receiver<Result<Catalog, String>>>,
-    operation: Option<tokio::sync::oneshot::Receiver<Result<String, String>>>,
+    operation: Option<tokio::sync::oneshot::Receiver<Result<OperationResult, String>>>,
     storage_job: Option<tokio::sync::oneshot::Receiver<Result<Storage, String>>>,
     pub storage: Option<Storage>,
     storage_at: Option<Instant>,
@@ -16,14 +17,20 @@ pub(super) struct Library {
     maintenance: Option<tokio::sync::oneshot::Receiver<Result<String, String>>>,
     rectangle: Option<egui::Rect>,
     message: String,
-    destination: String,
+    pub(super) destination: String,
     name: String,
+    presets: Option<(String, Vec<String>)>,
     refresh: bool,
     event_page: usize,
     segment_page: usize,
 }
+struct OperationResult {
+    message: String,
+    session: Option<vidfish::sessions::Session>,
+}
 enum Operation {
     New(String),
+    Presets(String, Vec<String>),
     Rename(String),
     Export(PathBuf, PathBuf),
     Open(PathBuf, Option<u64>),
@@ -61,10 +68,29 @@ impl Desktop {
         }
         if let Some(result) = poll(&mut self.library.operation) {
             self.library.message = match result {
-                Ok(message) => {
+                Ok(result) => {
+                    if let Some(session) = result.session {
+                        let changed = self
+                            .active_session
+                            .as_ref()
+                            .is_none_or(|old| old.id != session.id);
+                        // Drop a pre-mutation history response; it must not restore the old session.
+                        self.history_job = None;
+                        if changed {
+                            self.events.clear();
+                            self.event_revision = self.event_revision.wrapping_add(1);
+                            self.library.presets = None;
+                            self.library.loading = None;
+                            self.library.catalog = None;
+                            self.library.event_page = 0;
+                            self.library.segment_page = 0;
+                            self.library.filter.session = Some(session.id.clone());
+                        }
+                        self.active_session = Some(session);
+                    }
                     self.library.refresh = true;
                     self.history_last = Instant::now() - Duration::from_secs(10);
-                    message
+                    result.message
                 }
                 Err(error) => error,
             };
@@ -194,16 +220,37 @@ impl Desktop {
     ui.add_enabled_ui(!busy && !acquisition_busy,|ui|{if button(ui,"Start new session").clicked(){action=Some(Operation::New(self.library.name.clone()));}});
     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Rename active session").clicked(){action=Some(Operation::Rename(self.library.name.clone()));}});
    });ui.small("Stop all recordings and wait for captures first. New session never stops recordings implicitly.");
+   let presets_panel=egui::CollapsingHeader::new("Session Details · preset events").id_salt("session-event-presets").default_open(true).open(self.library.focus_presets.then_some(true)).show(ui,|ui|{
+    if let Some(session)=&self.active_session {
+     if self.library.presets.as_ref().is_none_or(|(id,_)|id!=&session.id){self.library.presets=Some((session.id.clone(),session.event_presets.clone()));}
+     ui.label(format!("{} · {}",session.label,session.id));
+     ui.small("Preset changes affect future marks only. Use ↑ / ↓ to reorder.");
+     let (id,presets)=self.library.presets.as_mut().unwrap();
+     let mut move_row=None;let mut remove=None;
+     for (i,label) in presets.iter_mut().enumerate(){ui.horizontal(|ui|{
+      let field=ui.add(egui::TextEdit::singleline(label).char_limit(128).desired_width(200.0));super::probe::button(ui,&format!("Preset label {i}"),&field);
+      if button(ui,"↑").clicked()&&i>0{move_row=Some((i,i-1));}
+      if button(ui,"↓").clicked(){move_row=Some((i,i+1));}
+      if button(ui,"Remove preset").clicked(){remove=Some(i);}
+     });}
+     if let Some((a,b))=move_row && b<presets.len(){presets.swap(a,b);}
+     if let Some(i)=remove{presets.remove(i);}
+     if presets.len()<16 && button(ui,"Add preset").clicked(){presets.push("New event".into());}
+     ui.add_enabled_ui(!busy,|ui|{if button(ui,"Save event presets").clicked(){action=Some(Operation::Presets(id.clone(),presets.clone()));}});
+    }else{ui.label("Start an acquisition session to configure preset events.");}
+    if !self.library.message.is_empty(){ui.label(&self.library.message);}
+   });
+   if self.library.focus_presets {presets_panel.header_response.scroll_to_me(Some(egui::Align::Min));self.library.focus_presets=false;}
    if let Some(catalog)=&self.library.catalog{
     ui.horizontal_wrapped(|ui|{
      let label=self.library.filter.session.as_ref().and_then(|id|catalog.sessions.iter().find(|s|&s.id==id)).map(|s|s.label.as_str()).unwrap_or(if self.library.filter.session.as_deref()==Some("legacy"){"Earlier events"}else{"All sessions"});
-     egui::ComboBox::from_id_salt("library-session").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.session,None,"All sessions + earlier events");ui.selectable_value(&mut self.library.filter.session,Some("legacy".into()),"Earlier events");for session in &catalog.sessions{ui.selectable_value(&mut self.library.filter.session,Some(session.id.clone()),format!("{} · {}{}",session.label,vidfish::library::date(session.created_unix_ms),if session.closed_unix_ms.is_none(){" · active"}else{""}));}});
+     egui::ComboBox::from_id_salt("library-session").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.session,None,"All sessions + earlier events");ui.selectable_value(&mut self.library.filter.session,Some("legacy".into()),"Earlier events");for session in &catalog.sessions{ui.selectable_value(&mut self.library.filter.session,Some(session.id.clone()),format!("{} · {} · {}{}",session.label,vidfish::identifiers::public_id(&session.id,session.created_unix_ms),vidfish::library::date(session.created_unix_ms),if session.closed_unix_ms.is_none(){" · active"}else{""}));}});
      let label=self.library.filter.camera.as_ref().and_then(|id|catalog.cameras.iter().find(|(camera,_)|camera==id)).map(|(_,label)|label.as_str()).unwrap_or("All cameras");egui::ComboBox::from_id_salt("library-camera").selected_text(label).show_ui(ui,|ui|{ui.selectable_value(&mut self.library.filter.camera,None,"All cameras");for(id,label)in &catalog.cameras{ui.selectable_value(&mut self.library.filter.camera,Some(id.clone()),format!("{label} · {}",id.chars().take(8).collect::<String>()));}});
     });
    }
    ui.small("Choose filters, then Refresh library to apply them.");
    ui.horizontal_wrapped(|ui|{ui.label("UTC dates");ui.add(egui::TextEdit::singleline(&mut self.library.filter.from).hint_text("From YYYY-MM-DD").desired_width(140.0));ui.add(egui::TextEdit::singleline(&mut self.library.filter.to).hint_text("To YYYY-MM-DD").desired_width(140.0));ui.add(egui::TextEdit::singleline(&mut self.library.filter.event).hint_text("Event ID, kind or note").desired_width(180.0));if button(ui,"Refresh library").clicked(){self.library.refresh=true;self.library.event_page=0;self.library.segment_page=0;}});
-   ui.horizontal_wrapped(|ui|{ui.label("Export directory");let response=super::theme::edit(ui,&mut self.library.destination);super::probe::button(ui,"Export directory",&response);});
+   ui.horizontal_wrapped(|ui|{ui.label("Export directory");let response=super::theme::edit(ui,&mut self.library.destination);super::probe::button(ui,"Export directory",&response);if button(ui,"Browse export…").clicked(){self.picker.folder(&self.runtime,super::picker::Target::Export,self.library.destination.clone().into());}});
    if self.library.loading.is_some(){ui.label("Loading session metadata…");}
 if busy{ui.label("Opening / exporting in background… recordings continue");}
 if !self.library.message.is_empty(){ui.label(&self.library.message);}
@@ -248,14 +295,32 @@ if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalo
             let path = self.path.clone();
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.runtime.spawn_blocking(move || {
+                let mut session_update = None;
                 let result = (|| -> Result<String, String> {
                     let config = AppConfig::load(&path).map_err(|e| e.to_string())?;
                     match action {
+                        Operation::Presets(id, presets) => {
+                            vidfish::sessions::set_presets(&path, &id, presets)
+                                .map(|session| {
+                                    session_update = Some(session);
+                                    "Session event presets saved".into()
+                                })
+                                .map_err(|e| e.to_string())
+                        }
                         Operation::Rename(name) => vidfish::sessions::rename(&path, &name)
-                            .map(|s| format!("Renamed session {} without moving media", s.label))
+                            .map(|s| {
+                                let message =
+                                    format!("Renamed session {} without moving media", s.label);
+                                session_update = Some(s);
+                                message
+                            })
                             .map_err(|e| e.to_string()),
                         Operation::New(name) => vidfish::sessions::start_new(&path, &config, &name)
-                            .map(|s| format!("Started session {}", s.label))
+                            .map(|s| {
+                                let message = format!("Started session {}", s.label);
+                                session_update = Some(s);
+                                message
+                            })
                             .map_err(|e| e.to_string()),
                         Operation::Export(source, destination) => vidfish::event_export::export(
                             &source,
@@ -288,7 +353,10 @@ if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalo
                             .map_err(|e| e.to_string()),
                     }
                 })();
-                let _ = sender.send(result);
+                let _ = sender.send(result.map(|message| OperationResult {
+                    message,
+                    session: session_update,
+                }));
             });
             self.library.operation = Some(receiver);
         }
