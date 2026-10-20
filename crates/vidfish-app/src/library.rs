@@ -1,4 +1,4 @@
-//! Read-only catalog work runs off the UI/acquisition threads.
+//! Catalog work and locked orphan recovery run off the UI/acquisition threads.
 use crate::{
     operator_events::Event,
     sessions::{self, Result, Session},
@@ -107,13 +107,18 @@ impl Filter {
 pub fn journal(path: &Path) -> Result<Vec<vidfish_media::segmented::FragmentEvent>> {
     let f = std::fs::File::open(path)?;
     let mut rows = Vec::new();
-    for line in BufReader::new(f).lines().take(100_001) {
+    let mut lines = BufReader::new(f).lines().take(100_001).peekable();
+    while let Some(line) = lines.next() {
         if rows.len() == 100_000 {
             return Err("Segment index limit reached; narrow/archive the recording run".into());
         }
         let line = line?;
         if !line.trim().is_empty() {
-            rows.push(serde_json::from_str(&line)?);
+            match serde_json::from_str(&line) {
+                Ok(row) => rows.push(row),
+                Err(_) if lines.peek().is_none() => break,
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(rows)
@@ -232,6 +237,12 @@ pub fn load(config: &Path, filter: &Filter) -> Result<Catalog> {
             {
                 continue;
             }
+            match crate::recording_recovery::recover_run(config, run) {
+                Ok(warnings) => catalog.warnings.extend(warnings),
+                Err(error) => catalog
+                    .warnings
+                    .push(format!("Recording recovery could not complete: {error}")),
+            }
             let index = run.directory.join("segments.jsonl");
             let rows = match journal(&index) {
                 Ok(rows) => rows,
@@ -265,10 +276,11 @@ pub fn load(config: &Path, filter: &Filter) -> Result<Catalog> {
                 }
             }
             if let Ok(entries) = std::fs::read_dir(&run.directory) {
-                for file in entries
-                    .filter_map(std::result::Result::ok)
-                    .filter(|e| e.path().extension().is_some_and(|e| e == "mkv"))
-                {
+                for file in entries.filter_map(std::result::Result::ok).filter(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|e| e == "mkv" || e == "mp4")
+                }) {
                     files.entry(file.path()).or_insert(Segment {
                         session_id: session.id.clone(),
                         camera_id: run.camera_id.clone(),

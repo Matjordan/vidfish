@@ -6,9 +6,10 @@ Auto-record is enabled by default for registered cameras at startup and hot arri
 The persisted checkbox disables future automatic starts and leaves active recordings
 running. **Record all** resumes suppression and **Stop all** prevents automatic restart
 until Record all or application restart. Per-camera Record/Stop affects that camera.
-The service uses the same saved policy; Ctrl+C drains and closes recorder children.
-Closing or crashing the desktop leaves independent recorder processes running. Reopen
-the desktop to reattach, or use Stop all before exiting to end acquisition.
+The service uses the same saved policy; Ctrl+C or Linux SIGTERM drains recorder
+children. Normal desktop exit also stops and finalizes all recorders. A desktop
+crash leaves independent recorder processes running; reopen to reattach. Closing
+an individual camera viewport never stops its recording.
 
 Each camera owns a separate process, lock, RTSP connection, and output pipeline.
 Preview selection and closing/switching its decoder never send recording stop requests.
@@ -17,11 +18,21 @@ ONVIF availability and preview. A live preview does not establish recording heal
 
 ## Segments and index
 
-The managed camera recorder copies H.264 or H.265 encoded video into MKV with no
+The managed camera recorder copies H.264 or H.265 encoded video into MKV or MP4 with no
 video decoder or encoder in the recording path. Audio is deliberately excluded:
 no audio track is required for acquisition, and codec negotiation/explicit audio
 selection are not implemented. Choose a compatible H.264/H.265 camera profile;
 unsupported video codecs fail with an operator-visible error.
+
+Choose **Settings → Recording container**, save, then restart affected recordings.
+The JSON setting is `"recording_container": "mkv"` or `"mp4"`. MKV remains the default
+until real-camera and Windows-player MP4 compatibility is established. MP4 uses
+one-second fragments and `first-moov-then-finalise`: a completed file receives its
+final duration/index, while interrupted fragments can be recovered best effort.
+The writer parser supplies AVC/HVCC codec headers without changing encoded quality.
+Each run's manifest records codec and container; filename extensions match the muxer.
+Older MKV sessions remain browsable and exportable. H.265 playback depends on the
+player's installed codec support; Windows and VLC hardware decoding need field checks.
 
 Default segments are 600 seconds. Change **Settings → Segment interval** (1–86400
 seconds), Save settings, then stop/resume the affected recorders. Existing recorder
@@ -38,7 +49,7 @@ session-<timestamp>-<name>-<session UUID>/recordings/camera-<local UUID>-<run UU
   segments.jsonl
 ```
 
-Existing run directories cannot be reused. Media is not overwritten or repaired. Session retention is disabled by default;
+Existing run directories cannot be reused. Original media is never overwritten. Session retention is disabled by default;
 explicit opt-in deletion is described in [sessions](sessions.md). `segments.jsonl` is flushed on every open/close
 notification. Each record contains `event` (`opened`/`closed`), `location`,
 `running_time_ns`, and `observed_unix_ms`. Pair records by location to obtain actual
@@ -47,13 +58,54 @@ start/end running times and duration. Times are GStreamer media running time;
 capture timestamp. Running time restarts for a new run. Async finalization can interleave
 notifications for adjacent segments; pair by filename, not adjacent lines.
 
-A clean stop sends EOS and waits up to 10 seconds for muxers. Closed fragments are
-playable independently, including after the recorder is forcibly killed. An opened
-fragment with no corresponding closed record is incomplete/uncertain and is retained
-for recovery. Never infer its end from the configured interval. Inspect retained media
-with `vidfish --inspect PATH`; playable partial media is still not marked finalized.
-The app does not reconstruct or rewrite a damaged MKV. A torn last JSONL record after
-power loss should be ignored while retaining earlier complete lines.
+A clean stop stops the input producer, sends writer EOS, and waits for pipeline EOS
+**and every pending async fragment closure**. The EOS wait has a ten-second deadline;
+per-file discovery is bounded separately. Every closed journal entry is published only
+after media discovery verifies a positive duration and seekability. `finalization.json`
+reports `recording`, `finalizing`, `finalized`, or `incomplete/recovery-needed` and
+pending filenames/errors. Manual Stop, Stop All, planned app/service exit, startup
+errors and stream-loss/reconnect paths all use this cleanup. Failure remains visible
+in recorder status and logs; process exit alone never proves successful finalization.
+
+Completed fragments can be played and scrubbed while the next segment records. The
+current segment is **open/incomplete** until closure is verified, even if a player can
+read some frames. Do not assume full seekability while writing. Never infer the end
+of a partial file from the configured interval.
+
+After abrupt worker loss, the next worker checks that run before acquiring new footage.
+Browsing **Sessions / recordings** also detects stopped orphan MKV/MP4 files, including
+files absent from a damaged journal. Recovery takes the camera's acquisition lock,
+skips live writers and attempts at most two unprocessed files per run per scan, with
+a 30-second remux deadline per file and free-space checks. It writes a separate
+`*.recovered-<UUID>.mkv`, verifies software decode/seek and positive duration, and saves
+an original-file `.recovery.json` report. Originals, original segment journals and event
+references stay intact. Failed repairs remain reported and aren't retried on every
+refresh. Extra recovered copies consume disk space. Power loss/SIGKILL cannot send EOS;
+recovery may fail or lose footage since the last complete fragment/keyframe.
+
+Inspect local footage without camera credentials:
+
+```sh
+vidfish --inspect /path/segment.mkv
+vidfish --inspect /path/segment.mkv --remux-output /path/new-copy.mp4
+```
+
+The JSON report includes codec/profile caps, dimensions, container, media duration,
+seekability and a software-decoded midpoint seek result. Remux refuses an existing
+destination and never re-encodes. Compare the same original and remux in VLC with
+hardware acceleration enabled/disabled; container conversion alone does not prove a
+decoder bug fixed.
+
+## Green VLC playback (#58)
+
+Field testing on a **Panasonic Toughbook CF-33** reported green video with VLC hardware
+decoding enabled, and correct video with hardware decoding disabled. This points to
+the selected hardware decode path; it does not establish a damaged MKV or prove MP4
+fixes the symptom. Use VLC **Preferences → Input / Codecs → Hardware-accelerated
+decoding → Disable**, save and reopen footage as a workaround. No affected recording
+was available for inspection. Camera model/profile, VLC version and GPU/driver details
+remain unconfirmed; no specific GPU or driver defect is claimed. The original failing
+sample, VLC hardware on/off and Windows-player validation remain field acceptance.
 
 ## Disk policy, stalls, and gaps
 
@@ -99,6 +151,21 @@ with segment indexes. These records are available without the desktop; they are 
 an event/session timeline UI (later epics).
 
 ## Validation
+
+Optional Linux independent-player check (requires FFmpeg/ffprobe):
+
+```sh
+cargo build --locked -p vidfish -p vidfish-media --features vidfish-media/fixtures --bin vidfish --example camera-fixture
+python3 scripts/recording-playback-smoke.py --binary target/debug/vidfish --fixture target/debug/examples/camera-fixture
+```
+
+This checks real RTSP H.264/H.265 fixtures with MKV and MP4: software decode/seek,
+non-green decoded pixels, duration agreement between GStreamer and ffprobe, completed
+segment playback while recording continues, and SIGTERM finalization. The fixture uses
+8-bit 4:2:0 video. It does not validate VLC GPU decoding or Windows players. Rust tests
+also cover split/immediate stop, two-camera shutdown, orphan recovery after SIGKILL,
+failed remux, live-writer exclusion and unchanged original bytes. CI remains build/package
+only; Windows tests remain paused.
 
 Native tests exercise H.264/H.265 keyframe segments, collision refusal, actual boundaries,
 clean stop, 16 active recording processes, persisted disabled/manual policy, disk Stop

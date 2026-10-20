@@ -15,3 +15,5 @@ pub mod installation;
 pub mod updater;
 
 pub mod identifiers;
+
+pub mod recording_recovery;

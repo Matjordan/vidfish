@@ -144,13 +144,14 @@ Auto-record starts each available registered/arriving camera by default. **Recor
 **Stop all**, and per-camera **Record**/**Stop recording** controls work independently of
 preview slots. Turning auto-record off persists immediately and leaves active recordings
 running. Stop all suppresses automatic restarts until Record all or an app restart.
-The headless `--service` follows the saved policy and finalizes recordings on Ctrl+C.
+The headless `--service` follows the saved policy and finalizes recordings on Ctrl+C
+or Linux SIGTERM.
 `cameras watch` only monitors metadata and never starts recordings.
 
-Each recorder runs in its own process and holds an exclusive per-camera lock. Closing
-or crashing the desktop leaves it running; restarting the desktop reattaches to its
-status without starting a duplicate. Use Stop all before exiting when acquisition should
-end. A failed camera retries with backoff up to 60 seconds; peers continue. Recording
+Each recorder runs in its own process and holds an exclusive per-camera lock.
+Normal desktop exit finalizes all camera recordings. A desktop crash leaves workers
+running; reopening reattaches without starting duplicates. Closing a camera viewport
+never stops recording. A failed camera retries with backoff up to 60 seconds; peers continue. Recording
 state changes and failures are saved in `acquisition/events.jsonl` beside the configuration,
 with per-run worker logs and atomic status files. Camera metadata disappearance is also
 reported in structured application logs. Stream stalls are detected from actual file

@@ -28,6 +28,8 @@ pub struct Run {
     pub alias: String,
     pub hardware: Option<vidfish_core::cameras::HardwareIdentity>,
     pub codec: String,
+    #[serde(default = "legacy_container")]
+    pub container: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub nominal_fps: Option<f64>,
@@ -300,6 +302,7 @@ impl Lease {
             alias: camera.alias.clone(),
             hardware: camera.hardware.clone(),
             codec: codec.into(),
+            container: settings.recording_container.clone(),
             width,
             height,
             nominal_fps: None,
@@ -402,6 +405,10 @@ pub fn set_presets(config: &Path, expected_id: &str, presets: Vec<String>) -> Re
     session.event_presets = presets.into_iter().map(|p| p.trim().to_owned()).collect();
     write_json(&session.directory.join("manifest.json"), &session)?;
     Ok(session)
+}
+
+fn legacy_container() -> String {
+    "mkv".into()
 }
 
 #[cfg(test)]

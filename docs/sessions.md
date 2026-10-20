@@ -34,7 +34,7 @@ migration. An explicitly selected session is protected from retention while brow
 
 Choose an export directory outside the source session and **Export event**. Each
 attempt creates a unique folder containing event JSON/CSV, snapshots, referenced
-closed MKV segments, selected segment journals, relevant run logs and session metadata.
+closed MKV/MP4 segments, selected segment journals, relevant run logs and session metadata.
 Canonical references are relative to the bundle; `source/` preserves original metadata
 for provenance. Open fragments, missing files, recording gaps and copy failures are
 reported in `export.json`; `complete: false` must not be interpreted as a complete

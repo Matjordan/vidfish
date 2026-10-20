@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub output_directory: PathBuf,
     pub auto_record: bool,
     pub segment_seconds: u64,
+    /// MKV remains the compatibility default until field MP4 playback is validated.
+    pub recording_container: String,
     pub disk_warning_bytes: u64,
     pub disk_stop_bytes: u64,
     pub disk_policy: DiskPolicy,
@@ -37,6 +39,7 @@ impl Default for AppConfig {
             output_directory: "recordings".into(),
             auto_record: true,
             segment_seconds: 600,
+            recording_container: "mkv".into(),
             disk_warning_bytes: 1024 * 1024 * 1024,
             disk_stop_bytes: 256 * 1024 * 1024,
             disk_policy: DiskPolicy::Stop,
@@ -59,6 +62,9 @@ impl AppConfig {
             return Err(io::Error::other(
                 "Session name must be <=128 characters; retention must be disabled or 1–36500 days",
             ));
+        }
+        if !matches!(self.recording_container.as_str(), "mkv" | "mp4") {
+            return Err(io::Error::other("Recording container must be mkv or mp4"));
         }
         if self.schema_version != 1
             || self.output_directory.as_os_str().is_empty()

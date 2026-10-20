@@ -6,7 +6,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (1920, 1080)
     };
-    let fixture = std::sync::Arc::new(vidfish_media::fixtures::RtspFixture::start(width, height)?);
+    let fixture = std::sync::Arc::new(vidfish_media::fixtures::RtspFixture::start_codec(
+        width,
+        height,
+        if std::env::args().any(|a| a == "--h265") {
+            vidfish_media::Codec::H265
+        } else {
+            vidfish_media::Codec::H264
+        },
+    )?);
     println!("{}", fixture.uri);
     let onvif = vidfish_media::fixtures::OnvifFixture::start(fixture.uri.clone())?;
     println!("ONVIF {}", onvif.device_url);

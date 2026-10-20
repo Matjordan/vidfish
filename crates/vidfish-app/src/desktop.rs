@@ -221,10 +221,11 @@ pub fn run(
             let _ = job.await;
         }
     });
-    recordings.join();
+    let recording_shutdown = recordings.finish_all();
     cameras.join();
     runtime.block_on(engine.shutdown())?;
     result?;
+    recording_shutdown?;
     if seconds.is_some() && !passed.load(Ordering::Acquire) {
         return Err(
             "desktop validation failed: every configured preview must deliver and display a frame"
