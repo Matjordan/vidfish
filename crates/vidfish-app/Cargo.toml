@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:eframe", "dep:wgpu", "dep:rfd"]
+desktop = ["dep:eframe", "dep:wgpu", "dep:rfd", "dep:winit"]
 wgpu-desktop = ["desktop", "eframe/wgpu", "wgpu/vulkan", "wgpu/gles"]
 
 [dependencies]
@@ -36,6 +36,11 @@ clap = { version = "4", features = ["derive"] }
 directories = "6"
 eframe = { version = "0.33", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 wgpu = { version = "27.0.1", optional = true, default-features = false, features = ["std", "wgsl"] }
+
+# GNOME Wayland requires client-side decorations. Keep winit's themed frame
+# enabled even though eframe's broad default feature set is disabled.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", optional = true, default-features = false, features = ["wayland-csd-adwaita"] }
 
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.33", optional = true, default-features = false, features = ["wgpu"] }
