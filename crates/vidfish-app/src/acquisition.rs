@@ -157,7 +157,16 @@ impl Supervisor {
             }
             thread::sleep(Duration::from_millis(50));
         }
+        let failed = self
+            .snapshot
+            .borrow()
+            .cameras
+            .iter()
+            .any(|s| s.state == State::Failed);
         self.join();
+        if failed {
+            return Err("One or more recordings failed; inspect recorder status and finalization/recovery reports".into());
+        }
         Ok(())
     }
 }
@@ -266,12 +275,9 @@ fn supervise(
                         && status.state.active()
                         && !active(&path, id)
                     {
-                        status.state = if exit.success() {
-                            State::Stopped
-                        } else {
-                            State::Failed
-                        };
-                        status.error = (!exit.success()).then(|| "Recording process ended; check camera, runtime, log, and output permissions".into());
+                        let _ = exit;
+                        status.state = State::Failed;
+                        status.error = Some("Recording process ended without verified terminal status; inspect finalization/recovery reports".into());
                     }
                     let failures = retries
                         .get(id)
@@ -526,10 +532,29 @@ pub fn record_camera(
         previous.error =
             Some("Recording worker ended abruptly; open segment retained for recovery".into());
         record_event(config_path, &previous, "gap_started_after_worker_loss")?;
+        if let Some(directory) = &previous.session_directory {
+            match crate::sessions::read(directory).and_then(|session| {
+                if let Some(run) = session.runs.iter().find(|run| run.id == previous.run_id) {
+                    crate::recording_recovery::recover_stopped_run(run)
+                } else {
+                    Ok(Vec::new())
+                }
+            }) {
+                Ok(warnings) => {
+                    for warning in warnings {
+                        tracing::warn!(%warning, "startup recording recovery");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "startup recording recovery failed; originals retained")
+                }
+            }
+        }
     }
     write_status(config_path, &status)?;
     record_event(config_path, &status, "attempt")?;
     let mut session_lease = None;
+    let mut writer = None;
     let result = (|| -> Result<()> {
         let inventory = config_path.with_file_name("cameras.json");
         let store = CameraStore::load(&inventory)?;
@@ -590,12 +615,14 @@ pub fn record_camera(
             );
         }
         record_event(config_path, &status, "session_joined")?;
-        let mut recording = vidfish_media::SegmentedRecording::start(
+        let recording = vidfish_media::SegmentedRecording::start_with_container(
             &source,
             codec,
             &run_directory,
             config.segment_seconds,
+            &config.recording_container,
         )?;
+        let recording = writer.insert(recording);
         status.shared_feed = Some(recording.shared_feed());
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;
@@ -639,7 +666,6 @@ pub fn record_camera(
                     record_event(config_path, &status, "disk_low")?;
                 }
                 if config.disk_policy == DiskPolicy::Stop && available <= config.disk_stop_bytes {
-                    status.bytes_written = recording.finish()?;
                     return Err("Disk capacity below configured stop threshold; recording finalized and stopped".into());
                 }
                 if size > status.bytes_written {
@@ -659,9 +685,28 @@ pub fn record_camera(
         status.state = State::Stopping;
         status.heartbeat_unix_ms = now();
         write_status(config_path, &status)?;
-        status.bytes_written = recording.finish()?;
         Ok(())
     })();
+    // Every exit path owns cleanup: source loss, startup timeout, disk/write error,
+    // individual stop and service shutdown all drain the same writer.
+    let result = if let Some(recording) = writer {
+        status.state = State::Stopping;
+        status.heartbeat_unix_ms = now();
+        let _ = write_status(config_path, &status);
+        match recording.finish() {
+            Ok(bytes) => {
+                status.bytes_written = bytes;
+                result
+            }
+            Err(error) => Err(format!(
+                "{}Finalization failed: {error}",
+                result.err().map(|e| format!("{e}; ")).unwrap_or_default()
+            )
+            .into()),
+        }
+    } else {
+        result
+    };
     status.heartbeat_unix_ms = now();
     match &result {
         Ok(()) => status.state = State::Stopped,

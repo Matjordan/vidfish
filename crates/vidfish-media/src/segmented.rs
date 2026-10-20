@@ -7,6 +7,7 @@ use gst::prelude::*;
 use gstreamer as gst;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -38,6 +39,8 @@ pub struct SegmentedRecording {
     journal: std::fs::File,
     input_journal: std::fs::File,
     current: Option<PathBuf>,
+    pending: BTreeSet<PathBuf>,
+    directory: PathBuf,
     closed_bytes: u64,
     finalized: bool,
     video_progress: BufferProgress,
@@ -47,7 +50,19 @@ impl SegmentedRecording {
     /// The caller owns a unique run directory. Refuse an existing directory so even
     /// accidental run-ID reuse can never truncate scientific media.
     pub fn start(source: &Source, codec: Codec, directory: &Path, seconds: u64) -> Result<Self> {
+        Self::start_with_container(source, codec, directory, seconds, "mkv")
+    }
+    pub fn start_with_container(
+        source: &Source,
+        codec: Codec,
+        directory: &Path,
+        seconds: u64,
+        container: &str,
+    ) -> Result<Self> {
         initialize()?;
+        if !matches!(container, "mkv" | "mp4") {
+            return Err(MediaError("unsupported recording container".into()));
+        }
         if seconds == 0 || seconds > u64::MAX / 1_000_000_000 {
             return Err(MediaError("invalid segment interval".into()));
         }
@@ -74,6 +89,7 @@ impl SegmentedRecording {
             },
             "parser",
         )?;
+        parser.set_property("config-interval", -1i32);
         let bridge = recording_input::writer_source();
         pipeline
             .add_many([bridge.upcast_ref(), &parser])
@@ -86,23 +102,64 @@ impl SegmentedRecording {
         sink.set_property(
             "location",
             directory
-                .join("segment-%08d.mkv")
+                .join(format!("segment-%08d.{container}"))
                 .to_str()
                 .ok_or_else(|| MediaError("recording path must be UTF-8".into()))?,
         );
         sink.set_property("max-size-time", seconds * 1_000_000_000);
         sink.set_property("max-size-bytes", 0u64);
         sink.set_property("async-finalize", true);
-        sink.set_property("muxer-factory", "matroskamux");
+        sink.set_property(
+            "muxer-factory",
+            if container == "mp4" {
+                "mp4mux"
+            } else {
+                "matroskamux"
+            },
+        );
+        if container == "mp4" {
+            // Each fragment carries decodable data before segment EOS; EOS still
+            // writes duration/random-access metadata for completed files.
+            sink.connect("muxer-added", false, |values| {
+                let muxer = values[1]
+                    .get::<gst::Element>()
+                    .expect("muxer-added element");
+                muxer.set_property_from_str("fragment-mode", "first-moov-then-finalise");
+                muxer.set_property_from_str("start-time-selection", "first");
+                None
+            });
+            sink.set_property(
+                "muxer-properties",
+                gst::Structure::builder("properties")
+                    .field("fragment-duration", 1000u32)
+                    .field("streamable", false)
+                    .build(),
+            );
+        }
         // Remote encoders may ignore requests. Boundaries are therefore observed,
         // never inferred from the nominal interval.
         sink.set_property("send-keyframe-requests", true);
         pipeline
             .add(&sink)
             .map_err(|_| MediaError("cannot add segmented output".into()))?;
+        // Both muxers require length-prefixed codec framing; the parser converts
+        // the shared reader's Annex B without decoding or re-encoding.
+        let format = match codec {
+            Codec::H264 => "avc",
+            Codec::H265 => "hvc1",
+        };
         parser
-            .link(&sink)
-            .map_err(|_| MediaError("cannot link segmented stream-copy output".into()))?;
+            .link_filtered(
+                &sink,
+                &gst::Caps::builder(match codec {
+                    Codec::H264 => "video/x-h264",
+                    Codec::H265 => "video/x-h265",
+                })
+                .field("stream-format", format)
+                .field("alignment", "au")
+                .build(),
+            )
+            .map_err(|_| MediaError("cannot negotiate segmented stream-copy output".into()))?;
         let mut recording = Self {
             pipeline,
             input: None,
@@ -117,6 +174,8 @@ impl SegmentedRecording {
             journal,
             input_journal,
             current: None,
+            pending: BTreeSet::new(),
+            directory: directory.to_owned(),
             closed_bytes: 0,
             finalized: false,
             video_progress,
@@ -126,6 +185,7 @@ impl SegmentedRecording {
             .pipeline
             .set_state(gst::State::Playing)
             .map_err(|_| MediaError("cannot start segmented recording".into()))?;
+        recording.lifecycle("recording", None)?;
         recording.input = Some(recording_input::start(
             source,
             codec,
@@ -163,6 +223,22 @@ impl SegmentedRecording {
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         };
+                        if !opened {
+                            let info = crate::inspect_recording(&event.location)?;
+                            std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .open(&event.location)
+                                .and_then(|file| file.sync_all())
+                                .map_err(|_| {
+                                    MediaError("cannot persist closed media segment".into())
+                                })?;
+                            if !info.seekable || info.duration_seconds <= 0.0 {
+                                return Err(MediaError(
+                                    "closed segment has no verified duration/seek index".into(),
+                                ));
+                            }
+                        }
                         serde_json::to_writer(&mut self.journal, &event).map_err(|_| {
                             MediaError("cannot write segment index; check disk".into())
                         })?;
@@ -173,8 +249,10 @@ impl SegmentedRecording {
                                 MediaError("cannot persist segment index; check disk".into())
                             })?;
                         if opened {
+                            self.pending.insert(event.location.clone());
                             self.current = Some(event.location);
                         } else {
+                            self.pending.remove(&event.location);
                             self.closed_bytes += std::fs::metadata(&event.location)
                                 .map_err(|_| MediaError("closed segment is unavailable".into()))?
                                 .len();
@@ -369,18 +447,56 @@ impl SegmentedRecording {
             })
     }
     pub fn finish(mut self) -> Result<u64> {
-        self.bridge
-            .end_of_stream()
-            .map_err(|_| MediaError("cannot finalize recording writer".into()))?;
+        // Failure to write diagnostic metadata (for example a full disk) must
+        // never skip EOS/draining of footage that can still be finalized.
+        let state_result = self.lifecycle("finalizing", None);
+        let result = self.finish_inner();
+        match &result {
+            Ok(_) => self.lifecycle("finalized", None)?,
+            Err(error) => {
+                tracing::error!(error = %error, pending = self.pending.len(), "recording finalization failed");
+                let _ = self.lifecycle("incomplete/recovery-needed", Some(&error.to_string()));
+                let _ = self.pipeline.set_state(gst::State::Null);
+                self.finalized = true;
+            }
+        }
+        result.and_then(|bytes| state_result.map(|()| bytes))
+    }
+    fn lifecycle(&self, state: &str, error: Option<&str>) -> Result<()> {
+        let path = self.directory.join("finalization.json");
+        let temp = self.directory.join("finalization.json.tmp");
+        let mut file = std::fs::File::create(&temp)
+            .map_err(|_| MediaError("cannot write finalization state".into()))?;
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "state": state, "pending": self.pending, "error": error
+            }),
+        )
+        .map_err(|_| MediaError("cannot serialize finalization state".into()))?;
+        file.sync_all()
+            .map_err(|_| MediaError("cannot persist finalization state".into()))?;
+        std::fs::rename(temp, path)
+            .map_err(|_| MediaError("cannot publish finalization state".into()))
+    }
+    fn finish_inner(&mut self) -> Result<u64> {
+        // Stop the producer before EOS so no later callback can append buffers.
         if let Some(input) = self.input.take() {
             let _ = input.set_state(gst::State::Null);
         }
+        self.bridge
+            .end_of_stream()
+            .map_err(|_| MediaError("cannot finalize recording writer".into()))?;
         let bus = self
             .pipeline
             .bus()
             .ok_or_else(|| MediaError("recording bus unavailable".into()))?;
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut eos = false;
         loop {
+            if eos && self.pending.is_empty() {
+                break;
+            }
             if Instant::now() >= deadline {
                 return Err(MediaError(
                     "segment finalization timed out; open fragment retained for recovery".into(),
@@ -393,9 +509,8 @@ impl SegmentedRecording {
                     gst::MessageType::Eos,
                     gst::MessageType::Element,
                 ],
-            ) && self.handle(&message)?
-            {
-                break;
+            ) {
+                eos |= self.handle(&message)?;
             }
         }
         self.pipeline
@@ -411,6 +526,10 @@ impl SegmentedRecording {
 impl Drop for SegmentedRecording {
     fn drop(&mut self) {
         if !self.finalized {
+            let _ = self.lifecycle(
+                "incomplete/recovery-needed",
+                Some("writer dropped without verified finalization"),
+            );
             let _ = self.pipeline.set_state(gst::State::Null);
             if let Some(input) = self.input.take() {
                 let _ = input.set_state(gst::State::Null);
@@ -422,6 +541,36 @@ impl Drop for SegmentedRecording {
 #[cfg(all(test, feature = "fixtures"))]
 mod input_grace_tests {
     use super::*;
+
+    #[test]
+    fn finalization_failure_remains_incomplete_and_observable() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("run");
+        let mut recording = SegmentedRecording::start(
+            &Source::TestPattern {
+                width: 320,
+                height: 240,
+            },
+            Codec::H264,
+            &directory,
+            60,
+        )
+        .unwrap();
+        recording.wait_started(Duration::from_secs(10)).unwrap();
+        recording
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::ResourceError::Write, "output fault").build(),
+            )
+            .unwrap();
+        assert!(recording.finish().is_err());
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("finalization.json")).unwrap())
+                .unwrap();
+        assert_eq!(state["state"], "incomplete/recovery-needed");
+        assert!(state["error"].as_str().unwrap().contains("Write"));
+        assert!(!state["pending"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn transient_input_error_preserves_file_but_output_error_is_immediate() {

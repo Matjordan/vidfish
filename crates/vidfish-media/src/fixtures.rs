@@ -103,7 +103,7 @@ impl RtspFixture {
                     crate::Codec::H264 => ("x264enc", "rtph264pay", ""),
                     crate::Codec::H265 => ("x265enc", "rtph265pay", "option-string=pools=1:frame-threads=1"),
                 };
-                factory.set_launch(&format!("( videotestsrc name=fixture-source is-live=true ! video/x-raw,width={width},height={height},framerate=30/1 ! {encoder} name=fixture-encoder tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
+                factory.set_launch(&format!("( videotestsrc name=fixture-source is-live=true ! video/x-raw,format=I420,width={width},height={height},framerate=30/1 ! {encoder} name=fixture-encoder tune=zerolatency speed-preset=ultrafast key-int-max=30 {options} ! {pay} name=pay0 pt=96 config-interval=1 )"));
                 factory.set_shared(true);
                 factory.connect_media_configure(move |_, media| {
                     let Ok(bin) = media.element().downcast::<gst::Bin>() else { return };

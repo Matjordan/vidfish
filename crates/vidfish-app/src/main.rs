@@ -70,6 +70,9 @@ struct Args {
     /// Inspect a finalized recording's codec, dimensions, and media duration.
     #[arg(long)]
     inspect: Option<PathBuf>,
+    /// Stream-copy --inspect footage into a NEW MKV or MP4 file; preserve the original.
+    #[arg(long, requires = "inspect")]
+    remux_output: Option<PathBuf>,
     /// Select H.265 instead of the default H.264 stream profile.
     #[arg(long)]
     h265: bool,
@@ -159,9 +162,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(path) = args.inspect {
         let info = vidfish_media::inspect_recording(&path)?;
+        let frame =
+            vidfish_media::recording_tools::software_frame(&path, info.duration_seconds / 2.0);
+        let software_seek = frame.as_ref().map(|_| true).unwrap_or(false);
+        if let Some(output) = args.remux_output {
+            let container = output
+                .extension()
+                .and_then(|s| s.to_str())
+                .ok_or("Use an .mkv or .mp4 remux destination")?;
+            let codec = if info.caps.contains("h265") {
+                vidfish_media::Codec::H265
+            } else {
+                vidfish_media::Codec::H264
+            };
+            vidfish_media::recording_tools::remux(&path, &output, codec, container)?;
+        }
         println!(
             "{}",
-            serde_json::json!({"width": info.width, "height": info.height, "duration_seconds": info.duration_seconds, "caps": info.caps})
+            serde_json::json!({"width": info.width, "height": info.height,
+            "duration_seconds": info.duration_seconds, "caps": info.caps, "container_caps": info.container_caps, "seekable": info.seekable,
+            "software_decode_and_seek": software_seek, "decode_error": frame.err().map(|e| e.to_string()),
+            "hardware_decode": "Not tested; compare VLC hardware acceleration enabled/disabled",
+            "credentials": "Report contains only local-file media metadata; no camera URLs or logins"})
         );
         return Ok(());
     }
@@ -201,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = interrupted.clone();
         runtime.spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
+            if shutdown_signal().await.is_ok() {
                 stopping.store(true, std::sync::atomic::Ordering::Release);
             }
         });
@@ -233,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.block_on(async {
             tokio::select! {
                 result = &mut worker => { result??; }
-                result = tokio::signal::ctrl_c() => { result?; let _ = stop_tx.send(()); worker.await??; }
+                result = shutdown_signal() => { result?; let _ = stop_tx.send(()); worker.await??; }
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
@@ -261,7 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let result = runtime.block_on(async {
             let engine = Engine::start(config)?;
             if args.service {
-                tokio::signal::ctrl_c().await?;
+                shutdown_signal().await?;
             }
             engine.shutdown().await?;
             Ok::<_, Box<dyn std::error::Error>>(())
@@ -311,4 +333,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     return Err("desktop feature disabled; use --service or --check".into());
     #[cfg(feature = "desktop")]
     Ok(())
+}
+
+/// SIGTERM is the normal Linux service shutdown request; drain the same writers
+/// as Ctrl+C rather than leaving the muxers to abrupt process teardown.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }

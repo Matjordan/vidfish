@@ -224,7 +224,8 @@ pub fn export(event_directory: &Path, destination: &Path, reserve: u64) -> Resul
         };
         let inside = match (&segment, &journal) {
             (Some(path), Some(index)) => {
-                path.parent() == index.parent() && path.extension().is_some_and(|e| e == "mkv")
+                path.parent() == index.parent()
+                    && path.extension().is_some_and(|e| e == "mkv" || e == "mp4")
             }
             _ => false,
         };

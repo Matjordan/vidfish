@@ -44,9 +44,9 @@ login and contain development changes that may not yet be in a stable release.
    to browse acquisitions, recording segments and events or export a portable bundle.
    Use the native **Browse…** controls to select output and export folders.
 
-Recording runs in independent processes. Closing or restarting the viewer does
-not stop an acquisition; a reopened desktop reattaches to active recorders. Stop
-recordings explicitly when finished. **Stop all** suppresses automatic restarts
+Recording runs in independent processes. Closing a camera viewport leaves its
+recorder running. Normal application exit finalizes all recorders; after a desktop
+crash, reopening reattaches to surviving recorders. **Stop all** suppresses automatic restarts
 until **Record all** or an application restart.
 
 ### Events and images

@@ -78,6 +78,7 @@ pub fn check_plugins_for(codec: Codec) -> Result<Vec<&'static str>> {
             Codec::H265 => "avdec_h265",
         },
         "matroskamux",
+        "mp4mux",
         "splitmuxsink",
         "filesink",
         "decodebin",
@@ -793,6 +794,8 @@ pub struct RecordingInfo {
     pub width: u32,
     pub height: u32,
     pub duration_seconds: f64,
+    pub seekable: bool,
+    pub container_caps: String,
     pub caps: String,
 }
 
@@ -825,6 +828,12 @@ pub fn inspect_recording(path: &Path) -> Result<RecordingInfo> {
             .ok_or_else(|| MediaError("recording duration unavailable".into()))?
             .nseconds() as f64
             / 1e9,
+        seekable: info.is_seekable(),
+        container_caps: info
+            .stream_info()
+            .and_then(|s| s.caps())
+            .map(|caps| caps.to_string())
+            .unwrap_or_default(),
         caps: video
             .caps()
             .map(|caps| caps.to_string())
@@ -865,3 +874,5 @@ mod write_failure_tests {
         inspect_recording(&root.path().join("peer.mkv")).unwrap();
     }
 }
+
+pub mod recording_tools;

@@ -280,7 +280,7 @@ if button(ui,"Next events").clicked()&&(self.library.event_page+1)*20<catalog.ev
     ui.horizontal(|ui|{if button(ui,"Previous segments").clicked(){self.library.segment_page=self.library.segment_page.saturating_sub(1);}
 if button(ui,"Next segments").clicked()&&(self.library.segment_page+1)*30<catalog.segments.len(){self.library.segment_page+=1;}});
     for row in catalog.segments.iter().skip(self.library.segment_page*30).take(30){ui.horizontal_wrapped(|ui|{
-     ui.label(format!("{} · {} · {} MiB · {}",row.alias,row.path.file_name().unwrap_or_default().to_string_lossy(),row.bytes/(1024*1024),if !row.exists{"MISSING"}else if row.end_ns.is_none(){"OPEN / unindexed"}else{"closed"}));
+     ui.label(format!("{} · {} · {} MiB · {}",row.alias,row.path.file_name().unwrap_or_default().to_string_lossy(),row.bytes/(1024*1024),if !row.exists{"MISSING"}else if row.path.file_name().is_some_and(|n|n.to_string_lossy().contains(".recovered-")){"RECOVERED COPY / original retained"}else if row.end_ns.is_none(){"OPEN / incomplete — recovery needed if stopped"}else{"FINALIZED"}));
      ui.add_enabled_ui(row.exists&&!busy,|ui|{if button(ui,"Open segment").clicked(){action=Some(Operation::Open(row.path.clone(),None));}});
     });}
    }

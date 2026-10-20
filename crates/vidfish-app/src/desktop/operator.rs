@@ -939,6 +939,10 @@ impl Desktop {
             let mut retention=retention_draft.is_some();if ui.checkbox(&mut retention,"Automatically delete old closed sessions").changed(){*retention_draft=if retention{Some(7)}else{None};}
             if let Some(days)=retention_draft {ui.horizontal(|ui|{ui.label("Keep closed sessions for days");ui.add(egui::DragValue::new(days).range(1..=36500));});ui.colored_label(egui::Color32::LIGHT_RED,"Deletes recordings, snapshots and logs after the saved age. Active/busy sessions and legacy files are preserved.");}
             ui.label("Preview limit (applies after restart)");ui.add(egui::DragValue::new(&mut self.config.preview_slots).range(1..=self.config.max_cameras.min(8)));
+            egui::ComboBox::from_label("Recording container").selected_text(&self.config.recording_container).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.config.recording_container, "mkv".into(), "MKV (compatibility default)");
+                ui.selectable_value(&mut self.config.recording_container, "mp4".into(), "MP4 (fragmented, stream copy)");
+            });
             ui.label("Segment interval / stall deadline (seconds)");ui.add(egui::DragValue::new(&mut self.config.segment_seconds).range(1..=86400));ui.add(egui::DragValue::new(&mut self.config.stall_seconds).range(1..=3600));
             ui.label("Disk warning / stop (MiB)");let mut warning=self.config.disk_warning_bytes/(1024*1024);let mut stop=self.config.disk_stop_bytes/(1024*1024);
             ui.add(egui::DragValue::new(&mut warning).range(0..=1048576));ui.add(egui::DragValue::new(&mut stop).range(0..=warning));self.config.disk_warning_bytes=warning*1024*1024;self.config.disk_stop_bytes=stop.min(warning)*1024*1024;
